@@ -1,0 +1,8 @@
+[
+  {
+    "directory": "@KG_CUDA_FIXTURE_BUILD_DIR@",
+    "command": "/opt/cuda-toolkit/bin/nvcc -forward-unknown-to-host-compiler -DKG_CUDA_FIXTURE=1 -O3 -DNDEBUG -std=c++17 \"--generate-code=arch=compute_75,code=[sm_75]\" \"--generate-code=arch=compute_90,code=[sm_90]\" -Xcompiler=-fPIE -Xcompiler -pthread -x cu -c @KG_CUDA_FIXTURE_CU_FILE@ -o @KG_CUDA_FIXTURE_OUTPUT@",
+    "file": "@KG_CUDA_FIXTURE_CU_FILE@",
+    "output": "@KG_CUDA_FIXTURE_OUTPUT@"
+  }
+]

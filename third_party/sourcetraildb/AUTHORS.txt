@@ -1,0 +1,12 @@
+Main Authors
+============
+
+Malte Langkabel (@mlangkabel) <mlangkabel@coati.io>
+
+Code Contributors
+=================
+
+Andrew Pam (@xanni) <andrew@sericyb.com.au>
+Jørgen Lund (@strangebroadcasts) <jlund@strangebroadcasts.com>
+
+Note: (@user) means a github user name.

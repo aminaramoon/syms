@@ -1,0 +1,18 @@
+# Build output
+/build/
+/build_verify/
+/build-*/
+compile_commands.json
+
+# Databases produced by running kg (index outputs, not source)
+*.srctrldb
+*.srctrlprj
+
+# Editor / tooling caches
+/.cache/
+.vscode/
+*.swp
+*~
+
+# flox: env/ (manifest.toml, manifest.lock, env.json) is intentionally tracked;
+# .flox/.gitignore already excludes run/, cache/, lib/, log/ within .flox/.

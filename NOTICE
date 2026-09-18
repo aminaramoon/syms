@@ -1,0 +1,46 @@
+kg
+Copyright (c) 2026 kg contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+================================================================================
+Third-party components
+================================================================================
+
+This product includes a vendored, unmodified copy of the "core" writer
+library from SourcetrailDB:
+
+    SourcetrailDB
+    https://github.com/CoatiSoftware/SourcetrailDB
+    Copyright 2018 Coati Software KG
+    Licensed under the Apache License, Version 2.0
+
+The vendored source lives under third_party/sourcetraildb/ (include/, src/,
+cpp_sqlite/). See third_party/sourcetraildb/LICENSE.txt for the full license
+text, third_party/sourcetraildb/AUTHORS.txt for upstream authorship, and
+third_party/sourcetraildb/PROVENANCE.md for exactly what was copied, what
+was hand-written, and (if any) what was patched.
+
+This product also depends on, but does not vendor or redistribute source
+for, the following third-party libraries, obtained at build time via the
+project's flox environment:
+
+    - LLVM/libclang (Apache-2.0 WITH LLVM-exception / NCSA)
+    - SQLite (public domain)
+    - nlohmann/json (MIT)
+    - Catch2 (BSL-1.0), test-only dependency
+
+================================================================================
+Clean-room statement
+================================================================================
+
+kg's own indexing and query-engine logic (everything outside of
+third_party/) is an original, clean-room implementation. It was designed
+and written based on publicly available documentation (the libclang C API,
+the SQLite documentation, the Sourcetrail/SourcetrailDB project's published
+database schema and file format as embodied in the Apache-2.0-licensed
+SourcetrailDB writer library vendored above) and independent analysis of
+the externally observable behavior of Sourcetrail (the Sourcetrail
+application itself is GPLv3-licensed). No source code from Sourcetrail
+(the GPLv3 application) was viewed, copied, or otherwise used in the
+implementation of kg.

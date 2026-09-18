@@ -1,0 +1,321 @@
+{
+  "lockfile-version": 1,
+  "manifest": {
+    "schema-version": "1.16.0",
+    "install": {
+      "catch2": {
+        "pkg-path": "catch2_3"
+      },
+      "cmake": {
+        "pkg-path": "cmake",
+        "version": "^4.4.2"
+      },
+      "gcc": {
+        "pkg-path": "gcc",
+        "version": "^15.3.0"
+      },
+      "libclang": {
+        "pkg-path": "llvmPackages_21.libclang",
+        "version": "^21.1.8",
+        "outputs": [
+          "dev",
+          "lib"
+        ]
+      },
+      "ninja": {
+        "pkg-path": "ninja"
+      },
+      "nlohmann_json": {
+        "pkg-path": "nlohmann_json",
+        "version": "^3.12.0"
+      },
+      "pkg-config": {
+        "pkg-path": "pkg-config"
+      },
+      "sqlite": {
+        "pkg-path": "sqlite",
+        "version": "^3.53.3",
+        "outputs": [
+          "bin",
+          "dev",
+          "out"
+        ]
+      }
+    },
+    "vars": {
+      "CMAKE_EXPORT_COMPILE_COMMANDS": "1",
+      "KG_CUCS_DIR": "/home/aaramoon/workspace/oss/cucs"
+    },
+    "hook": {
+      "on-activate": "  export LIBCLANG_INCLUDE_DIR=\"$FLOX_ENV/include\"\n  export LIBCLANG_LIBRARY_DIR=\"$FLOX_ENV/lib\"\n  # KG_RESOURCE_DIR must be what clang's own -resource-dir flag expects: the\n  # *parent* of the include/ directory that holds builtin headers like\n  # stddef.h (i.e. exactly what `clang -print-resource-dir` reports), NOT\n  # the include/ directory itself. Passing the include/ dir one level too\n  # deep silently breaks header discovery for any TU that pulls in a system\n  # header (e.g. `#include <string>`) -- found and fixed in Phase 3.\n  for d in \"$FLOX_ENV\"/lib/clang/*; do\n    [ -f \"$d/include/stddef.h\" ] && export KG_RESOURCE_DIR=\"$d\"\n  done\n  if [ -x \"$KG_CUCS_DIR/.pixi/envs/default/bin/nvcc\" ]; then\n    export KG_CUDA_PATH=\"$KG_CUCS_DIR/.pixi/envs/default\"\n  fi\n  export CMAKE_PREFIX_PATH=\"$FLOX_ENV${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}\"\n"
+    },
+    "profile": {},
+    "options": {
+      "systems": [
+        "x86_64-linux"
+      ]
+    }
+  },
+  "packages": [
+    {
+      "attr_path": "catch2_3",
+      "broken": false,
+      "derivation": "/nix/store/qcgzb5arbicf8wxrkv2lx7qbqr9qwq8j-catch2-3.15.3.drv",
+      "description": "Modern, C++-native, test framework for unit-tests",
+      "install_id": "catch2",
+      "license": "BSL-1.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=b1b875982b17dabde9b4a37f3e229e74913e6db3",
+      "name": "catch2-3.15.3",
+      "pname": "catch2_3",
+      "rev": "b1b875982b17dabde9b4a37f3e229e74913e6db3",
+      "rev_count": 1074753,
+      "rev_date": "2026-09-16T08:07:56Z",
+      "scrape_date": "2026-09-17T06:22:01.363306Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "catch2-3.15.3",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/ll0dc0dfiwmpri6839bx9a3vs4a4iklh-catch2-3.15.3"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "cmake",
+      "broken": false,
+      "derivation": "/nix/store/g9l85mf8f8lbnprx2i3h8b927xbrcwg2-cmake-4.4.2.drv",
+      "description": "Cross-platform, open-source build system generator",
+      "install_id": "cmake",
+      "license": "BSD-3-Clause",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=b1b875982b17dabde9b4a37f3e229e74913e6db3",
+      "name": "cmake-4.4.2",
+      "pname": "cmake",
+      "rev": "b1b875982b17dabde9b4a37f3e229e74913e6db3",
+      "rev_count": 1074753,
+      "rev_date": "2026-09-16T08:07:56Z",
+      "scrape_date": "2026-09-17T06:22:01.664901Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "4.4.2",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "debug": "/nix/store/wzfsyciibdxbn154gk2mxdk0r94q8qxh-cmake-4.4.2-debug",
+        "out": "/nix/store/c3bm9h7k398cmg00d4rss6hcxkl2zbl2-cmake-4.4.2"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "gcc",
+      "broken": false,
+      "derivation": "/nix/store/lyb848yjq8pnlwkqnzlnkvjzqa4cvaqh-gcc-wrapper-15.3.0.drv",
+      "description": "GNU Compiler Collection, version 15.3.0 (wrapper script)",
+      "install_id": "gcc",
+      "license": "GPL-3.0-or-later",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=b1b875982b17dabde9b4a37f3e229e74913e6db3",
+      "name": "gcc-wrapper-15.3.0",
+      "pname": "gcc",
+      "rev": "b1b875982b17dabde9b4a37f3e229e74913e6db3",
+      "rev_count": 1074753,
+      "rev_date": "2026-09-16T08:07:56Z",
+      "scrape_date": "2026-09-17T06:22:03.107518Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "15.3.0",
+      "outputs_to_install": [
+        "man",
+        "man",
+        "out",
+        "out",
+        "out",
+        "out"
+      ],
+      "outputs": {
+        "info": "/nix/store/gja6ahm2ivajy5crhjqrbcws2khxnkaa-gcc-wrapper-15.3.0-info",
+        "man": "/nix/store/x30anv345f9v2ilfm901g18rlcprbpd1-gcc-wrapper-15.3.0-man",
+        "out": "/nix/store/z4c6k0mrlkwl3s4w9ysxc8vq1wylm3ms-gcc-wrapper-15.3.0"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "llvmPackages_21.libclang",
+      "broken": false,
+      "derivation": "/nix/store/lg4cbfppj1fyqq4fi9bkc9dflydzjsc6-clang-21.1.8.drv",
+      "description": "C language family frontend for LLVM",
+      "install_id": "libclang",
+      "license": "[ NCSA, [ Apache-2.0 LLVM-exception ] ]",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=b1b875982b17dabde9b4a37f3e229e74913e6db3",
+      "name": "clang-21.1.8",
+      "pname": "libclang",
+      "rev": "b1b875982b17dabde9b4a37f3e229e74913e6db3",
+      "rev_count": 1074753,
+      "rev_date": "2026-09-16T08:07:56Z",
+      "scrape_date": "2026-09-17T06:22:34.896192Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "21.1.8",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "debug": "/nix/store/i0aa7wjnkm7f0v2l4agl3r7ybyxi8919-clang-21.1.8-debug",
+        "dev": "/nix/store/did4j5wk64y2g930gp8f2bppn7z5kggg-clang-21.1.8-dev",
+        "lib": "/nix/store/a3kjvvlm7f8abcmxh6f8dndiwc4vp726-clang-21.1.8-lib",
+        "out": "/nix/store/0skhb15j2szcq05929gs9m1dbpiydhb7-clang-21.1.8",
+        "python": "/nix/store/wgnsy0wa3ma3r7nzm5rmjzdmr6y9wb39-clang-21.1.8-python"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "ninja",
+      "broken": false,
+      "derivation": "/nix/store/mp3193cvfyy8byfczcz58646w0mhsi3s-ninja-1.13.2.drv",
+      "description": "Small build system with a focus on speed",
+      "install_id": "ninja",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=b1b875982b17dabde9b4a37f3e229e74913e6db3",
+      "name": "ninja-1.13.2",
+      "pname": "ninja",
+      "rev": "b1b875982b17dabde9b4a37f3e229e74913e6db3",
+      "rev_count": 1074753,
+      "rev_date": "2026-09-16T08:07:56Z",
+      "scrape_date": "2026-09-17T06:22:42.511894Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "1.13.2",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/r8a159fqvj0mpczq0dq8d3dwdd2rsz8c-ninja-1.13.2"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "nlohmann_json",
+      "broken": false,
+      "derivation": "/nix/store/8f623qrk513rxkd5n4dwg3n80nk6bpqq-nlohmann_json-3.12.0.drv",
+      "description": "JSON for Modern C++",
+      "install_id": "nlohmann_json",
+      "license": "MIT",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=b1b875982b17dabde9b4a37f3e229e74913e6db3",
+      "name": "nlohmann_json-3.12.0",
+      "pname": "nlohmann_json",
+      "rev": "b1b875982b17dabde9b4a37f3e229e74913e6db3",
+      "rev_count": 1074753,
+      "rev_date": "2026-09-16T08:07:56Z",
+      "scrape_date": "2026-09-17T06:22:42.915133Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "3.12.0",
+      "outputs_to_install": [
+        "out",
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/hl8ixlmpd3qzdqd0xy0j6rl665fgb2wy-nlohmann_json-3.12.0"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "pkg-config",
+      "broken": false,
+      "derivation": "/nix/store/4f4faayl06s0gvr7cnvcpvrcwh7lxaan-pkg-config-wrapper-0.29.2.drv",
+      "description": "Tool that allows packages to find out information about other packages (wrapper script)",
+      "install_id": "pkg-config",
+      "license": "GPL-2.0-or-later",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=b1b875982b17dabde9b4a37f3e229e74913e6db3",
+      "name": "pkg-config-wrapper-0.29.2",
+      "pname": "pkg-config",
+      "rev": "b1b875982b17dabde9b4a37f3e229e74913e6db3",
+      "rev_count": 1074753,
+      "rev_date": "2026-09-16T08:07:56Z",
+      "scrape_date": "2026-09-17T06:23:02.748879Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "0.29.2",
+      "outputs_to_install": [
+        "man",
+        "out",
+        "out",
+        "out"
+      ],
+      "outputs": {
+        "doc": "/nix/store/p5h371q0rzgrsphbbwp0y7svcbpa2faf-pkg-config-wrapper-0.29.2-doc",
+        "man": "/nix/store/889b8rd7z3n69b1m89b4sivmnzmmmm2n-pkg-config-wrapper-0.29.2-man",
+        "out": "/nix/store/29d1c5xk6w3rwl7yvdfwl90whslv5h54-pkg-config-wrapper-0.29.2"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "sqlite",
+      "broken": false,
+      "derivation": "/nix/store/cqnsh5zkzpngh81wgpf79qgzm2prv5dr-sqlite-3.53.3.drv",
+      "description": "Self-contained, serverless, zero-configuration, transactional SQL database engine",
+      "install_id": "sqlite",
+      "license": "blessing",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=b1b875982b17dabde9b4a37f3e229e74913e6db3",
+      "name": "sqlite-3.53.3",
+      "pname": "sqlite",
+      "rev": "b1b875982b17dabde9b4a37f3e229e74913e6db3",
+      "rev_count": 1074753,
+      "rev_date": "2026-09-16T08:07:56Z",
+      "scrape_date": "2026-09-17T06:24:43.944171Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "3.53.3",
+      "outputs_to_install": [
+        "bin",
+        "bin",
+        "bin",
+        "bin",
+        "man",
+        "man"
+      ],
+      "outputs": {
+        "bin": "/nix/store/24gq3bi2yzf7g386p5j32mn78hhanf49-sqlite-3.53.3-bin",
+        "debug": "/nix/store/3m9gqya8f7d4x53xyp47qiq19ljq57yb-sqlite-3.53.3-debug",
+        "dev": "/nix/store/yiinw6sm280sip2bap30f8aszi0lzvgr-sqlite-3.53.3-dev",
+        "doc": "/nix/store/vaisv53962ksj9n9w50xagk038qk2sf4-sqlite-3.53.3-doc",
+        "man": "/nix/store/xs0pqjaiqhr33nwbplxcfsxf0kmy314j-sqlite-3.53.3-man",
+        "out": "/nix/store/7a0nx1a0rdc5s07vxrsdhplqnzncl5z9-sqlite-3.53.3"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    }
+  ]
+}
