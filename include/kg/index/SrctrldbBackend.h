@@ -4,6 +4,8 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include "kg/model/IndexBackend.h"
 
@@ -43,6 +45,13 @@ private:
     int ensureLocalSymbolNode(const std::string& name);
     int ensureReference(int ctxReal, int targetReal, kg::model::ReferenceKind kind);
     void bufferKindDef(int nodeId, kg::model::SymbolKind kind, kg::model::DefinitionKind definition);
+    // Resolves batch.stats.tuFile to a real file node id for range-less
+    // error attachment: reuses a batch FileFact's already-resolved id when
+    // its normalized path matches (avoiding a duplicate `file` row for a
+    // relative/non-canonical CDB spelling of the same file clang itself
+    // reported canonically), falling back to ensureFileNodeByPath() with the
+    // normalized path.
+    int resolveTuFileReal(const kg::model::TuFactBatch& batch, const std::vector<int>& fileReal);
 
     std::unique_ptr<sourcetrail::SourcetrailDBWriter> m_writer;
     std::string m_dbPath;
@@ -56,6 +65,13 @@ private:
     std::unordered_map<std::string, int> m_fileNodeIdByPath;
     std::unordered_set<int> m_nonIndexedFileIds;  // for finish()'s post-write UPDATE/DELETE
 
+    // Set when this pass materialized at least one reference to the
+    // vendored writer's shared "unsolved symbol" node. That node is created
+    // INSIDE the writer (recordReferenceToUnsolvedSymhol()), so it never
+    // passes through m_byKey and would otherwise be missing from
+    // kg_touched -- see finish().
+    bool m_sawUnsolvedReference = false;
+
     std::unordered_map<std::string, int> m_byKey;           // SymbolKey -> real node id
     std::unordered_map<std::string, std::string> m_byName;  // serialized_name -> SymbolKey (first owner)
 
@@ -65,6 +81,21 @@ private:
         kg::model::DefinitionKind definition = kg::model::DefinitionKind::None;
     };
     std::unordered_map<int, BufferedKindDef> m_pendingKindDef;
+
+    // (node id, file node id) pairs buffered across every consume() call --
+    // populated from SymbolFact::declFiles, resolved to real node ids.
+    // Drained into kg_symbol_def by finish(). A std::set-like dedup isn't
+    // needed here (the eventual INSERT OR IGNORE handles duplicates), but a
+    // std::unordered_set of the pair keeps finish()'s statement count sane
+    // on TUs that redeclare the same symbol in the same file many times.
+    struct NodeFilePairHash
+    {
+        std::size_t operator()(const std::pair<int, int>& p) const
+        {
+            return std::hash<int>{}(p.first) ^ (std::hash<int>{}(p.second) << 1);
+        }
+    };
+    std::unordered_set<std::pair<int, int>, NodeFilePairHash> m_pendingSymbolDef;
 
     std::unordered_map<std::string, int> m_localSymbolIdByName;
 

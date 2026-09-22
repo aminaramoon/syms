@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "kg/common/Log.h"
+#include "kg/db/WritableDb.h"
 
 namespace kg::db
 {
@@ -34,25 +35,6 @@ const std::vector<std::pair<std::string, std::string>>& indexDefinitions()
     return kDefs;
 }
 
-bool execSql(sqlite3* db, const std::string& sql, std::string* err)
-{
-    char* errMsg = nullptr;
-    const int rc = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &errMsg);
-    if (rc != SQLITE_OK)
-    {
-        if (err != nullptr)
-        {
-            *err = "sqlite error running '" + sql + "': " + (errMsg != nullptr ? errMsg : "unknown error");
-        }
-        if (errMsg != nullptr)
-        {
-            sqlite3_free(errMsg);
-        }
-        return false;
-    }
-    return true;
-}
-
 }  // namespace
 
 const std::vector<std::string>& expectedIndexNames()
@@ -70,31 +52,19 @@ const std::vector<std::string>& expectedIndexNames()
 
 void ensureIndices(const std::string& dbPath)
 {
-    sqlite3* db = nullptr;
-    if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) != SQLITE_OK)
+    try
     {
-        const std::string msg = "kg query --ensure-indices: failed to open '" + dbPath + "' read-write: " +
-                                 (db != nullptr ? sqlite3_errmsg(db) : "unknown error");
-        if (db != nullptr)
+        WritableDb db(dbPath, /*foreignKeys=*/false);
+        db.begin();
+        for (const auto& [name, stmt] : indexDefinitions())
         {
-            sqlite3_close(db);
+            db.exec(stmt);
         }
-        throw std::runtime_error(msg);
+        db.commit();
     }
-
-    std::string err;
-    bool ok = execSql(db, "BEGIN;", &err);
-    for (const auto& [name, stmt] : indexDefinitions())
+    catch (const std::exception& e)
     {
-        ok = ok && execSql(db, stmt, &err);
-    }
-    ok = ok && execSql(db, "COMMIT;", &err);
-
-    sqlite3_close(db);
-
-    if (!ok)
-    {
-        throw std::runtime_error("kg query --ensure-indices: " + err);
+        throw std::runtime_error("kg query --ensure-indices: " + std::string(e.what()));
     }
 }
 

@@ -12,6 +12,8 @@ add_library(kg_common STATIC
     common/Log.cpp
     common/Shell.cpp
     common/Glob.cpp
+    common/Process.cpp
+    common/Paths.cpp
 )
 target_include_directories(kg_common PUBLIC ${KG_INCLUDE_DIR})
 target_link_libraries(kg_common PRIVATE kg_options)
@@ -31,6 +33,8 @@ add_library(kg_db STATIC
     db/Database.cpp
     db/Enums.cpp
     db/NameDecode.cpp
+    db/WritableDb.cpp
+    db/Meta.cpp
 )
 target_link_libraries(kg_db PUBLIC SQLite::SQLite3 kg_common)
 target_link_libraries(kg_db PRIVATE kg_options)
@@ -47,6 +51,7 @@ add_library(kg_index STATIC
     index/AstWalker.cpp
     index/SrctrldbBackend.cpp
     index/IndexDriver.cpp
+    index/Provenance.cpp
 )
 target_link_libraries(kg_index PUBLIC
     kg_model
@@ -76,6 +81,23 @@ add_library(kg_query STATIC
 target_link_libraries(kg_query PUBLIC kg_db kg_common)
 target_link_libraries(kg_query PRIVATE kg_options)
 
+# --- kg_update ---------------------------------------------------------------
+# Phase 2: the pure/testable pieces of `kg update` (git diff/status parsing,
+# changed-file classification against the DB/CDB, and the logical DB
+# snapshot used for equivalence testing) plus the hidden `kg dbdiff` CLI
+# command built on top of Snapshot. Does NOT include the invalidation SQL or
+# the `update` command itself -- that's Phase 3, added to this same target.
+add_library(kg_update STATIC
+    update/GitDiff.cpp
+    update/Git.cpp
+    update/FileMatcher.cpp
+    update/Snapshot.cpp
+    update/Invalidator.cpp
+    update/UpdateDriver.cpp
+)
+target_link_libraries(kg_update PUBLIC kg_index kg_query kg_db kg_common nlohmann_json::nlohmann_json)
+target_link_libraries(kg_update PRIVATE kg_options)
+
 # --- kg_out ------------------------------------------------------------------
 add_library(kg_out STATIC
     out/Out.cpp
@@ -92,6 +114,7 @@ add_executable(kg
 )
 target_link_libraries(kg PRIVATE
     kg_out
+    kg_update
     kg_index
     kg_query
     kg_db

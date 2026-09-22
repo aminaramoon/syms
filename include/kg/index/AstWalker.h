@@ -69,9 +69,36 @@ private:
     kg::model::LocalId fileSymbolId(CXFile file);
     kg::model::LocalId currentContext();
 
+    // Marks `id` as Explicit-defined (declaration-in-indexed-file counts,
+    // matching Sourcetrail's own semantics -- see docs/KNOWN_LIMITATIONS.md's
+    // Phase 1 section) and records declaredIn(id, <m_currentFile's FileFact>).
+    // Called from every "own declaration" site (visitScopeDecl,
+    // visitFunctionLikeDecl, handleSimpleDecl, handleMacroDefinition).
+    void markDeclaredHere(kg::model::LocalId id);
+
     CXFile cursorFile(CXCursor c) const;
+
+    // True iff `range` is non-null and the file its START location resolves
+    // to is an INDEXED file. Every fact kg emits (occurrence, and therefore
+    // the reference edge that occurrence anchors) must pass this gate: a
+    // cursor can live in an indexed .cpp yet have a spelling/reference range
+    // that resolves INTO a non-indexed header (macro expansions resolve to
+    // the macro's definition site; implicit instantiations resolve into the
+    // template's own header). Recording those facts makes kg describe files
+    // it was explicitly told not to index -- and makes them unreachable for
+    // `kg update`, which can only ever clear facts located in files it
+    // tracks. See docs/KNOWN_LIMITATIONS.md's Phase 5 section.
+    bool rangeFileIndexed(CXSourceRange range);
+
     bool rangeToModelRange(CXSourceRange range, kg::model::SourceRange& out);
     void emitOccurrenceForRange(kg::model::ElementClass cls, kg::model::LocalId element, CXSourceRange range, kg::model::LocationKind kind);
+
+    // A cursor's spelling-name range, falling back to a zero-width range at
+    // the cursor's location if the spelling-name range is null (e.g. some
+    // OVERRIDE/INHERITANCE targets, `delete expr`s, TypeRef/TemplateRef
+    // cursors without a distinct spelling token). Guarantees every non-MEMBER
+    // edge kg emits ends up with >= 1 occurrence.
+    static CXSourceRange spellingRangeOrPoint(CXCursor c);
 
     CXSourceRange findCallLocation(CXCursor callExpr, CXCursor callee);
     void claimLocation(CXSourceRange range);

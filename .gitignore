@@ -13,6 +13,7 @@ compile_commands.json
 .vscode/
 *.swp
 *~
+*.log
 
 # flox: env/ (manifest.toml, manifest.lock, env.json) is intentionally tracked;
 # .flox/.gitignore already excludes run/, cache/, lib/, log/ within .flox/.

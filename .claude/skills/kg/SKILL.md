@@ -36,6 +36,26 @@ Key flags: `--remap OLD=NEW` (repeatable path-prefix substitution — needed if 
 
 Indexing a real project can take a while (the 200-TU `cucascade` corpus above takes ~100s). Prefer `--limit 5` or a narrow `--include` glob for a first smoke test before indexing everything.
 
+## Keeping a database up to date
+
+If a `.srctrldb` already exists for a repo and only a handful of files changed since it was indexed (e.g. after a `git pull`, or after making a small local edit), use **`kg update`** instead of re-running `kg index` from scratch — it re-indexes only what actually changed:
+
+```bash
+flox activate -- ./build/kg update -d mydb.srctrldb -v
+```
+
+No other flags are usually needed: the repo root, baseline commit, `compile_commands.json` path, and every `kg index` option are all read back out of the database's own provenance. `kg update` diffs the stored baseline against the current worktree (uncommitted edits included — it's always the worktree that gets indexed, not just `HEAD`), clears exactly the facts the changed files (and anything transitively `#include`ing them) invalidated, and re-indexes only the affected translation units.
+
+When to use `kg update` vs a fresh `kg index --force`:
+- Use `kg update` for the common case: a database already exists and only some files changed since.
+- Re-index from scratch (`kg index --force`) if `kg update` refuses (exit `2` — see below), if the `compile_commands.json` itself changed shape dramatically (e.g. a totally different build config), or if you just don't have an existing database yet.
+
+Useful flags: `--files PATH...` (classify these files as changed directly, skipping git — handy with no repo, or to force-reindex specific files), `--dry-run` (show what would happen without touching the database — run this first if unsure), `--json` (machine-readable `kg.update-summary/1` summary, see `docs/JSON_SCHEMA.md`).
+
+Exit codes: `0` success, `1` a hard error, `2` refused (no usable provenance, incompatible walker version, or an interrupted `--in-place` run — re-index from scratch in any of these cases), `5` nothing changed since the last run (not an error).
+
+**Symbol/node ids for untouched code are stable across an update.** If a file wasn't touched (directly or transitively via an invalidated `#include`), the ids of the symbols it declares don't change — so cached node ids (e.g. from a previous `kg query search` result) remain valid after a `kg update` as long as the relevant file wasn't part of what changed. A symbol whose OWN declaring file gets cleared and re-indexed, however, gets a fresh id (there's no attempt to preserve ids across a real re-index of a file).
+
 ## Querying — the main event
 
 ```bash

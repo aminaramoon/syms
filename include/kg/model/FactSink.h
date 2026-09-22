@@ -52,6 +52,12 @@ public:
     // adopted only if it ranks higher (Explicit > Implicit > None) than the
     // current one.
     virtual void refineSymbol(LocalId id, SymbolKind kind, DefinitionKind definition) = 0;
+
+    // Records that `symbol` was declared/defined in `file` (both LocalIds,
+    // into `symbols`/`files` respectively) in this TU. Deduped: recording
+    // the same (symbol, file) pair twice is a no-op. No-op if `symbol` is
+    // kNoLocal or otherwise unknown to this sink.
+    virtual void declaredIn(LocalId symbol, LocalId file) = 0;
 };
 
 // Default FactSink implementation: buffers everything into a TuFactBatch,
@@ -67,6 +73,7 @@ public:
     void occurrence(ElementClass cls, LocalId element, SourceRange range, LocationKind kind) override;
     void error(std::string msg, bool fatal, const SourceRange* r) override;
     void refineSymbol(LocalId id, SymbolKind kind, DefinitionKind definition) override;
+    void declaredIn(LocalId symbol, LocalId file) override;
 
     const TuFactBatch& batch() const { return m_b; }
     TuFactBatch take() { return std::move(m_b); }
@@ -78,6 +85,7 @@ private:
     std::unordered_map<std::string, LocalId> m_byLocalName;
     std::unordered_map<uint64_t, LocalId> m_byRefTriple;
     std::unordered_set<uint64_t> m_occurrenceSeen;
+    std::unordered_set<uint64_t> m_declaredInSeen;
 };
 
 }  // namespace kg::model

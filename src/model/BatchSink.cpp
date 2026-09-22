@@ -163,4 +163,20 @@ void BatchSink::refineSymbol(LocalId id, SymbolKind kind, DefinitionKind definit
     upgrade(m_b.symbols[id], kind, definition);
 }
 
+void BatchSink::declaredIn(LocalId symbol, LocalId file)
+{
+    if (symbol == kNoLocal || file == kNoLocal || symbol >= m_b.symbols.size())
+    {
+        return;
+    }
+    uint64_t key = 0;
+    hashCombine(key, symbol);
+    hashCombine(key, file);
+    if (!m_declaredInSeen.insert(key).second)
+    {
+        return;
+    }
+    m_b.symbols[symbol].declFiles.push_back(file);
+}
+
 }  // namespace kg::model

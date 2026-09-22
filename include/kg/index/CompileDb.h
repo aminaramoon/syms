@@ -63,4 +63,13 @@ std::string applyRemaps(const std::string& text, const std::vector<std::pair<std
 // JSON array.
 std::vector<CompileEntry> load(const std::string& path, const CompileDbOptions& options);
 
+// 64-bit FNV-1a over `entry.directory + '\0' + join(entry.args, '\0')`,
+// hex-encoded -- the kg_tu.args_hash recipe. Deliberately computed on the
+// REMAPPED-but-otherwise-raw CompileEntry (i.e. as returned by load(),
+// before sanitize() rewrites/drops/injects anything) so a CDB argv change
+// is detected independent of kg's own sanitizer version. Single source of
+// truth shared by IndexDriver (writes kg_tu rows) and UpdateDriver (flag-
+// change detection) -- see docs/KNOWN_LIMITATIONS.md.
+std::string computeArgsHash(const CompileEntry& entry);
+
 }  // namespace kg::index

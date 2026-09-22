@@ -448,6 +448,133 @@ exiting `3`. Two variants sharing one schema name:
 field -- an empty `suggestions` array, as shown, is the normal/common case
 when nothing fuzzy-matches either.)
 
+## `kg.dbdiff/1`
+
+Printed by `kg dbdiff A B --json`, a HIDDEN maintenance/equivalence-testing
+command (not listed in `kg --help`) built on top of
+`kg::update::{takeSnapshot,diffSnapshots}` (Phase 2 of `kg update`). It
+compares two `.srctrldb` databases *logically* -- by content-derived keys
+(`serialized_name`, paths, etc), never by row id, since ids aren't stable
+across separate `kg index`/`kg update` runs of the same code -- and is how
+Phase 2/3 verify that an incrementally-updated database is identical to a
+full re-index. No `"query"` field (there's no `kg query` verb/db-path pair
+here -- two database paths, not one, are the input).
+
+```json
+{ "kg_version": "0.1.0", "schema": "kg.dbdiff/1",
+  "equal": false,
+  "counts": { "only_in_a": 623, "only_in_b": 233 },
+  "only_in_a": [ "node|::Square|4096", "..." ],
+  "only_in_b": [ "node|::Kernel|4096", "..." ] }
+```
+
+Each entry in `only_in_a`/`only_in_b` is prefixed with its category
+(`node|`, `edge|`, `location|`, `symbol|`, `file|`, `error|`,
+`local_symbol|`, `symbol_def|`, `tu|`) followed by the "|"-joined key for
+that category -- see `include/kg/update/Snapshot.h` for the exact field
+list per category. Exit codes (not specific to `--json`): `0` the databases
+are logically equivalent, `3` they differ, `4` one of the two databases
+couldn't be opened at all (e.g. missing file, wrong `storage_version`) --
+in that last case nothing is printed to stdout, only a plain-text error to
+stderr (there's no well-formed `kg.dbdiff/1` object to emit, since one side
+never got a Snapshot).
+
+## `kg.update-summary/1`
+
+Printed to **stdout** by `kg update ... --json` (Phase 3) on EVERY exit
+code -- `0` (a real update, or `--dry-run`, which sets `"dry_run": true`
+and reports what it *would* clear/re-index via the same fields a real run
+uses), `5` (nothing to do; every count is `0` and `"index"` is an empty
+object), `2` (refused) and `1` (hard error). The stderr plain-text message
+is always printed too, same as before -- `--json` is additive, not a
+replacement for it.
+
+`--dry-run`'s object is the full envelope below with real (not `0`)
+`"files"`/`"tus"` counts reflecting what WOULD be cleared/re-indexed --
+`"gc"` and `"index"` stay at their zero/empty defaults (dry-run never
+invalidates or re-indexes anything).
+
+On a refusal (exit `2`) or hard error (exit `1`), the object is a smaller
+"error envelope" instead of the full summary shape:
+
+```json
+{ "kg_version": "0.1.0", "schema": "kg.update-summary/1",
+  "database": "/tmp/cucs.srctrldb",
+  "error": "an update is already in progress on this database (kg_update_in_progress is set) -- ...",
+  "exit_code": 2 }
+```
+
+(`"error"` is the same text printed to stderr, without the `kg update:
+refused: `/`kg update: error: ` prefix; `"exit_code"` echoes the process's
+actual exit code -- `1` or `2` -- so a caller parsing only stdout can still
+tell success from failure without also capturing stderr.)
+
+```json
+{ "kg_version": "0.1.0", "schema": "kg.update-summary/1",
+  "database": "/tmp/cucs.srctrldb", "dry_run": false, "in_place": false,
+  "repo": { "root": "/home/x/cucs", "from": "a1b2c3d", "to": "e4f5g6h" },
+  "files": { "changed": 3, "deleted": 1, "renamed": 1, "flag_changed": 0,
+             "unmatched": 2, "cleared": 9, "include_closure": 5, "headers_pruned": 1,
+             "cleared_paths": [ "/home/x/cucs/src/a.cpp", "..." ],
+             "unmatched_paths": [ "/home/x/cucs/README.md" ] },
+  "tus": { "to_index": 4, "new": 1, "retried": 0, "skipped_missing": 0 },
+  "gc": { "files": 9, "nodes": 120, "edges": 340, "locations": 900,
+          "local_symbols": 40, "errors": 2, "symbols_reset": 80,
+          "non_indexed_files": 0, "orphan_elements": 3 },
+  "index": { "tus_total": 4, "tus_attempted": 4, "tus_with_content": 4, "tus_failed": 0,
+             "symbols": 71002, "references": 214883, "files": 1183, "errors": 37,
+             "name_collisions": 0 },
+  "elapsed_ms": 1234, "index_elapsed_ms": 1100 }
+```
+
+Notes:
+
+- `"gc"."non_indexed_files"` is always `0` since Phase 5: the sweep that
+  deleted edge-less non-indexed `file` rows was removed (a fresh `kg index`
+  legitimately produces such rows -- see
+  `docs/KNOWN_LIMITATIONS.md`'s Phase 5 section). The field is kept so the
+  object's shape is unchanged.
+- `"repo"."from"` is empty when `--files` was used (no git baseline
+  involved at all).
+- `"files"."renamed"` (Phase 4) is the number of `git diff`-detected
+  `R<score>` rename entries in this run's change set (e.g. `git mv a.cpp
+  b.cpp` counts as 1). `kg update` itself still processes a rename as an
+  independent delete-old + add/index-new pair internally (`matchChanged()`
+  doesn't special-case renames for invalidation purposes -- there's no
+  "skip re-parsing, just relabel" fast path), so a rename's cost is the
+  same as a delete+add; `"renamed"` exists purely as an accurate count of
+  *how many* of `"deleted"`/`"changed"`/`"tus"."new"` were actually one
+  side of a rename, for reporting. (Prior to Phase 4 this field was
+  hardcoded to `0` -- a real gap, not a design choice; fixed alongside the
+  git-driven scenario test that caught it, `test/update/update_scenario.cmake`.)
+- `"files"."cleared_paths"`/`"unmatched_paths"` are always present (possibly
+  empty arrays), even when `"dry_run"` or the "nothing to do" case leaves
+  every count at `0`.
+- `"tus"."retried"` (Phase 4) is the count of CDB entries whose previous
+  `kg_tu.status` (see `include/kg/index/Provenance.h`'s `kKgTuDdl`) was
+  `"partial"` or `"failed"` -- i.e. a TU that produced no content, had a
+  fatal diagnostic, or (CUDA only) only succeeded via a degraded fallback
+  rung last time. These are folded into the same clear-and-reindex set as
+  genuinely changed files, so a healthy corpus reports `"retried": 0` on a
+  repeat run that touches unrelated files (verified by
+  `test_update_driver.cpp`'s "a second no-op run retries nothing" case).
+  Prior to Phase 4, this used an over-broad heuristic ("no outgoing INCLUDE
+  edge OR an INDEXER_ERROR occurrence") that retried every genuinely
+  include-free TU on literally every run, forever -- see
+  `docs/KNOWN_LIMITATIONS.md`'s Phase 3/4 sections.
+- `"index"` mirrors `kg.index-summary/1`'s `"counts"` object exactly (same
+  field names) when at least one TU was actually re-indexed; it's an empty
+  object `{}` when `"tus"."to_index"` is `0` (e.g. a pure-deletion update,
+  or nothing to do at all).
+- No `"query"` field, same rationale as `kg.index-summary/1`/`kg.dbdiff/1`.
+- `kg update` also refuses (exit `2`) if `<db>.kg-lock` already exists (another
+  `kg update` is running, or a previous one crashed and left it behind -- the
+  error message says to remove it if stale) or if a `<db>-journal`/`<db>-wal`
+  file exists next to the database (a hot journal -- some previous writer may
+  have crashed mid-write). The lock file is held (and removed, RAII-style) for
+  the ENTIRE `runUpdate()` call, including the exit-`5` "nothing to do" path's
+  best-effort provenance refresh.
+
 ## Text-mode truncation footer
 
 Unrelated to JSON, but part of the same "surface `truncated` clearly" effort:

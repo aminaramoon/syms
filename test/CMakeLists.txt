@@ -15,6 +15,16 @@ add_executable(kg_unit_tests
     unit/test_query_fixture.cpp
     unit/test_json_shape.cpp
     unit/test_cuda_fixture.cpp
+    unit/test_process.cpp
+    unit/test_writable_db.cpp
+    unit/test_provenance.cpp
+    unit/test_incremental_fixture.cpp
+    unit/test_gitdiff.cpp
+    unit/test_filematcher.cpp
+    unit/test_git.cpp
+    unit/test_snapshot.cpp
+    unit/test_invalidator.cpp
+    unit/test_update_driver.cpp
 )
 target_link_libraries(kg_unit_tests PRIVATE
     Catch2::Catch2WithMain
@@ -25,12 +35,18 @@ target_link_libraries(kg_unit_tests PRIVATE
     kg_index
     kg_query
     kg_out
+    kg_update
     SQLite::SQLite3
     kg_options
 )
 target_compile_definitions(kg_unit_tests PRIVATE
     KG_TEST_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}"
     KG_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    # Absolute path to the `kg` binary itself -- used by a couple of unit
+    # tests that shell out to it directly (e.g. test_snapshot.cpp's
+    # `kg dbdiff` CLI smoke test) rather than re-running library code
+    # in-process, to exercise the real CLI wiring end to end.
+    KG_BINARY="$<TARGET_FILE:kg>"
     # Absolute path to the fixture DB `fixture_index` (below) produces --
     # used by the [fixture]-tagged Phase 4 tests (test_bfs.cpp,
     # test_query_fixture.cpp). Deliberately NOT KG_TEST_BINARY_DIR-relative:
@@ -80,7 +96,7 @@ catch_discover_tests(kg_unit_tests
 
 catch_discover_tests(kg_unit_tests
     TEST_PREFIX "fixture_query."
-    TEST_SPEC "[fixture]~[json_shape]~[cuda_fixture]"
+    TEST_SPEC "[fixture]~[json_shape]~[cuda_fixture]~[snapshot]"
     PROPERTIES FIXTURES_REQUIRED FixtureDb)
 
 catch_discover_tests(kg_unit_tests
@@ -92,6 +108,19 @@ catch_discover_tests(kg_unit_tests
     TEST_PREFIX "cuda_fixture_query."
     TEST_SPEC "[cuda_fixture]"
     PROPERTIES FIXTURES_REQUIRED FixtureCudaDb)
+
+# test_snapshot.cpp's cases are tagged "[fixture][snapshot]" and need BOTH
+# fixture databases (FixtureDb -- build/fixture.srctrldb -- AND
+# FixtureCudaDb -- build/cuda_fixture.srctrldb -- to exercise
+# diffSnapshots() on two genuinely different-but-real databases), so they
+# get their own carve-out ("fixture_query."'s TEST_SPEC above excludes
+# "[snapshot]"; "cuda_fixture_query."'s TEST_SPEC "[cuda_fixture]" never
+# matches these cases in the first place, since they aren't tagged
+# "[cuda_fixture]") and registration requiring both fixtures.
+catch_discover_tests(kg_unit_tests
+    TEST_PREFIX "snapshot."
+    TEST_SPEC "[snapshot]"
+    PROPERTIES FIXTURES_REQUIRED "FixtureDb;FixtureCudaDb")
 
 # --- kg_integration_tests ------------------------------------------------
 # Phase 6: the real cucs-corpus integration test. A plain hand-rolled
@@ -186,3 +215,71 @@ add_test(NAME cuda_fixture_index COMMAND $<TARGET_FILE:kg> index
          -o ${CMAKE_BINARY_DIR}/cuda_fixture.srctrldb --force
          --extra-arg -include --extra-arg ${KG_CUDA_FIXTURE_DIR}/fake_cuda.h)
 set_tests_properties(cuda_fixture_index PROPERTIES FIXTURES_SETUP FixtureCudaDb)
+
+# --- Phase 4: git-driven `kg update` scenario test ---------------------------
+#
+# Unlike every other test above (fixture DBs generated once, shared read-only
+# by many test cases), update_scenario.cmake drives its OWN real git repo
+# through a whole commit history and re-indexes it from scratch several
+# times -- it is deliberately a single, self-contained CTest test (not
+# catch_discover_tests) rather than N Catch2 cases, since each of its steps
+# depends on the previous one's committed state. See the script's own header
+# comment for the full step-by-step design.
+#
+# Needs `git` and `sqlite3` from the flox environment (both located at THIS
+# project's configure time, which itself must run under `flox activate` for
+# them to be found at all) -- SKIP_RETURN_CODE 77 (via the script's own
+# cmake_language(EXIT 77)) reports this as SKIPPED, not FAILED, on a machine
+# where either is missing, matching cucs_integration's convention above.
+find_program(KG_UPDATE_SCENARIO_GIT git)
+find_program(KG_UPDATE_SCENARIO_SQLITE3 sqlite3)
+if(NOT KG_UPDATE_SCENARIO_GIT)
+    message(WARNING "update_scenario: git not found at configure time -- the test will report SKIPPED, not run")
+endif()
+if(NOT KG_UPDATE_SCENARIO_SQLITE3)
+    message(WARNING "update_scenario: sqlite3 not found at configure time -- the test will report SKIPPED, not run")
+endif()
+
+add_test(NAME update_scenario COMMAND ${CMAKE_COMMAND}
+         -DKG=$<TARGET_FILE:kg>
+         -DSRC=${CMAKE_SOURCE_DIR}/test/fixtures/synthetic
+         -DWORK=${CMAKE_BINARY_DIR}/update_scenario
+         -DGIT=${KG_UPDATE_SCENARIO_GIT}
+         -DSQLITE3=${KG_UPDATE_SCENARIO_SQLITE3}
+         -P ${CMAKE_SOURCE_DIR}/test/update/update_scenario.cmake)
+set_tests_properties(update_scenario PROPERTIES
+    LABELS "update"
+    TIMEOUT 600
+    SKIP_RETURN_CODE 77)
+
+# --- Phase 5 (final): real cucs-corpus `kg update` acceptance test ----------
+#
+# Companion to cucs_integration (fresh `kg index` of the real cucs corpus,
+# above) and update_scenario (synthetic-fixture `kg update` correctness,
+# above): this drives `kg update` against the REAL cucs corpus over a REAL
+# commit range (default HEAD~1..HEAD, overridable via the KG_CUCS_UPDATE_FROM
+# environment variable -- read directly by cucs_update_scenario.cmake at its
+# own runtime, NOT baked in here at configure time, so
+# `KG_CUCS_UPDATE_FROM=HEAD~5 ctest -R cucs_update_integration` works without
+# reconfiguring; see the script's own header comment) inside a throwaway
+# `git clone --shared --no-checkout` -- never the user's real checkout at
+# KG_CUCS_DIR itself. Labeled BOTH "integration" (excluded from the default
+# `ctest -LE integration` run, same as cucs_integration -- needs the real
+# corpus) and "update" (so `ctest -L update` runs it alongside
+# update_scenario). Reuses the same git/sqlite3 lookups as update_scenario
+# above and cucs_integration's own KG_CUCS_DIR/KG_BUILD_INTEGRATION_TESTS
+# gating.
+if(KG_BUILD_INTEGRATION_TESTS)
+    add_test(NAME cucs_update_integration COMMAND ${CMAKE_COMMAND}
+             -DKG=$<TARGET_FILE:kg>
+             -DCUCS=${KG_CUCS_DIR}
+             -DWORK=${CMAKE_BINARY_DIR}/cucs_update
+             -DGIT=${KG_UPDATE_SCENARIO_GIT}
+             -DSQLITE3=${KG_UPDATE_SCENARIO_SQLITE3}
+             -DFROM=$ENV{KG_CUCS_UPDATE_FROM}
+             -P ${CMAKE_SOURCE_DIR}/test/update/cucs_update_scenario.cmake)
+    set_tests_properties(cucs_update_integration PROPERTIES
+        LABELS "integration;update"
+        TIMEOUT 3600
+        SKIP_RETURN_CODE 77)
+endif()

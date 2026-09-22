@@ -1,5 +1,7 @@
 #include "kg/index/CompileDb.h"
 
+#include <cstdint>
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -148,6 +150,33 @@ std::vector<CompileEntry> load(const std::string& path, const CompileDbOptions& 
     }
 
     return result;
+}
+
+std::string computeArgsHash(const CompileEntry& entry)
+{
+    constexpr uint64_t kOffsetBasis = 0xcbf29ce484222325ull;
+    constexpr uint64_t kPrime = 0x100000001b3ull;
+
+    uint64_t hash = kOffsetBasis;
+    auto feed = [&](const std::string& s) {
+        for (unsigned char c : s)
+        {
+            hash ^= c;
+            hash *= kPrime;
+        }
+        hash ^= 0;  // the '\0' separator
+        hash *= kPrime;
+    };
+
+    feed(entry.directory);
+    for (const auto& arg : entry.args)
+    {
+        feed(arg);
+    }
+
+    char buf[17];
+    std::snprintf(buf, sizeof(buf), "%016llx", static_cast<unsigned long long>(hash));
+    return std::string(buf);
 }
 
 }  // namespace kg::index

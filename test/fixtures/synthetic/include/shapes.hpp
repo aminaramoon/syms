@@ -40,4 +40,10 @@ private:
     double m_side;
 };
 
+// Declared here, defined out-of-line in ns.cpp -- exercises kg_symbol_def
+// getting a row for BOTH the header (declaration) and the .cpp (definition)
+// for the same symbol, and definition_kind landing on Explicit (from the
+// out-of-line definition) rather than staying at None.
+double squarePerimeter(const Square& s);
+
 }  // namespace fixture

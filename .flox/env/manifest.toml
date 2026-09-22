@@ -35,6 +35,8 @@ nlohmann_json.version  = "^3.12.0"
 
 catch2.pkg-path   = "catch2_3"
 
+git.pkg-path      = "git"
+
 
 ## Environment Variables ---------------------------------------------
 ##  ... available for use in the activated environment

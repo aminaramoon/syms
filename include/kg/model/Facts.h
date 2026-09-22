@@ -59,6 +59,15 @@ struct SymbolFact
     Name name;
     SymbolKind kind = SymbolKind::Unknown;
     DefinitionKind definition = DefinitionKind::None;
+
+    // Files (LocalIds into TuFactBatch::files) in which this symbol was seen
+    // declared or defined in THIS translation unit -- i.e. every file whose
+    // visited decl/definition cursor caused ensureSymbol()/registerOne() to
+    // register this symbol (not files that merely reference it). Populated
+    // via FactSink::declaredIn(); deduped by BatchSink. Consumed by
+    // SrctrldbBackend to populate the kg_symbol_def side table (see
+    // docs/KNOWN_LIMITATIONS.md's Phase 1 section).
+    std::vector<LocalId> declFiles;
 };
 
 // A reference edge between two symbols (both `context` and `target` index

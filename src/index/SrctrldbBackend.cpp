@@ -7,10 +7,15 @@
 
 #include "DefinitionKind.h"
 #include "NameHierarchy.h"
+#include "NodeKind.h"
 #include "ReferenceKind.h"
 #include "SourceRange.h"
 #include "SourcetrailDBWriter.h"
 #include "SymbolKind.h"
+
+#include "kg/common/Paths.h"
+#include "kg/db/WritableDb.h"
+#include "kg/index/Provenance.h"
 
 namespace kg::index
 {
@@ -107,25 +112,6 @@ int resolveLocal(const std::vector<int>& arr, kg::model::LocalId id)
     return (id != kg::model::kNoLocal && id < arr.size()) ? arr[id] : 0;
 }
 
-bool execSql(sqlite3* db, const std::string& sql, std::string* err)
-{
-    char* errMsg = nullptr;
-    const int rc = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &errMsg);
-    if (rc != SQLITE_OK)
-    {
-        if (err != nullptr)
-        {
-            *err = "sqlite error running '" + sql + "': " + (errMsg != nullptr ? errMsg : "unknown error");
-        }
-        if (errMsg != nullptr)
-        {
-            sqlite3_free(errMsg);
-        }
-        return false;
-    }
-    return true;
-}
-
 std::string joinIds(const std::unordered_set<int>& ids)
 {
     std::ostringstream oss;
@@ -199,6 +185,28 @@ int SrctrldbBackend::ensureFileNodeByPath(const std::string& path, const std::st
 int SrctrldbBackend::ensureFileNode(const kg::model::FileFact& fact)
 {
     return ensureFileNodeByPath(fact.path, fact.language, fact.indexed);
+}
+
+int SrctrldbBackend::resolveTuFileReal(const kg::model::TuFactBatch& batch, const std::vector<int>& fileReal)
+{
+    // batch.stats.tuFile is the CDB entry's `file` field (post-remap,
+    // already normalized by IndexDriver before being stashed here), while
+    // every FileFact.path comes from clang's own clang_getFileName() (see
+    // clangutil::fileName()) and can still differ textually (e.g. clang
+    // resolving a symlink the CDB spelled unresolved). A duplicate `file`
+    // row would otherwise get minted here even though clang already
+    // resolved the very same file for this batch -- so look for a batch
+    // FileFact whose normalized path matches first, and only fall back to
+    // minting a new one.
+    const std::string normalizedTuFile = kg::common::paths::normalize(batch.stats.tuFile);
+    for (std::size_t i = 0; i < batch.files.size(); ++i)
+    {
+        if (kg::common::paths::normalize(batch.files[i].path) == normalizedTuFile)
+        {
+            return fileReal[i];
+        }
+    }
+    return ensureFileNodeByPath(normalizedTuFile, "cpp", /*indexed=*/true);
 }
 
 void SrctrldbBackend::bufferKindDef(int nodeId, kg::model::SymbolKind kind, kg::model::DefinitionKind definition)
@@ -324,6 +332,18 @@ bool SrctrldbBackend::consume(const kg::model::TuFactBatch& batch, std::string* 
     for (std::size_t i = 0; i < batch.symbols.size(); ++i)
     {
         symReal[i] = ensureSymbolNode(batch.symbols[i]);
+        const int symId = symReal[i];
+        if (symId != 0)
+        {
+            for (const kg::model::LocalId declFile : batch.symbols[i].declFiles)
+            {
+                const int fileId = resolveLocal(fileReal, declFile);
+                if (fileId != 0)
+                {
+                    m_pendingSymbolDef.emplace(symId, fileId);
+                }
+            }
+        }
     }
 
     std::vector<int> localReal(batch.localSymbols.size());
@@ -413,6 +433,7 @@ bool SrctrldbBackend::consume(const kg::model::TuFactBatch& batch, std::string* 
                 {
                     state.realId = m_writer->recordReferenceToUnsolvedSymhol(state.ctxReal, translateReferenceKind(state.kind), sr);
                     state.solved = true;
+                    m_sawUnsolvedReference = true;
                     m_summary.references++;
                 }
                 break;
@@ -420,6 +441,7 @@ bool SrctrldbBackend::consume(const kg::model::TuFactBatch& batch, std::string* 
         }
     }
 
+    int tuFileReal = 0;
     for (const kg::model::ErrorFact& e : batch.errors)
     {
         sourcetrail::SourceRange sr{0, 1, 1, 1, 1};
@@ -432,9 +454,16 @@ bool SrctrldbBackend::consume(const kg::model::TuFactBatch& batch, std::string* 
                 static_cast<int>(e.range.endLine),
                 static_cast<int>(e.range.endCol)};
         }
-        else if (!fileReal.empty())
+        else if (!batch.stats.tuFile.empty())
         {
-            sr.fileId = fileReal.front();
+            // Attach range-less errors (e.g. a sanitize()/parse failure with
+            // no diagnostic location) to the TU's own main file node rather
+            // than an arbitrary first file of the batch -- never 0.
+            if (tuFileReal == 0)
+            {
+                tuFileReal = resolveTuFileReal(batch, fileReal);
+            }
+            sr.fileId = tuFileReal;
         }
         m_writer->recordError(e.message, e.fatal, sr);
         m_summary.errors++;
@@ -454,14 +483,14 @@ bool SrctrldbBackend::finish(kg::model::IndexSummary& summary, std::string* err)
         return false;
     }
 
-    for (const auto& [nodeId, kd] : m_pendingKindDef)
-    {
-        m_writer->recordSymbolKind(nodeId, translateSymbolKind(kd.kind));
-        if (kd.definition != kg::model::DefinitionKind::None)
-        {
-            m_writer->recordSymbolDefinitionKind(nodeId, translateDefinitionKind(kd.definition));
-        }
-    }
+    // NOTE: kind/definition-kind are NO LONGER pushed through the vendored
+    // writer here (recordSymbolKind unconditionally overwrites node.type;
+    // recordSymbolDefinitionKind is first-write-wins via INSERT OR IGNORE --
+    // neither behavior is safe for a future incremental `kg update` that
+    // re-consumes a symbol observed differently across runs). Instead they're
+    // applied below, via our own WritableDb, with an explicit
+    // never-downgrade guard on node.type and a max()-upgrade on
+    // definition_kind.
 
     if (!m_writer->commitTransaction())
     {
@@ -482,61 +511,223 @@ bool SrctrldbBackend::finish(kg::model::IndexSummary& summary, std::string* err)
     m_writer.reset();
 
     // Post-write correction + reader indices, via our own raw sqlite3
-    // handle -- never patch the vendored writer to do this instead.
-    sqlite3* db = nullptr;
-    if (sqlite3_open_v2(m_dbPath.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) != SQLITE_OK)
+    // handle (kg::db::WritableDb) -- never patch the vendored writer to do
+    // this instead.
+    try
+    {
+        kg::db::WritableDb db(m_dbPath, /*foreignKeys=*/false);
+        db.begin();
+
+        if (!m_nonIndexedFileIds.empty())
+        {
+            const std::string idList = joinIds(m_nonIndexedFileIds);
+            db.exec("UPDATE file SET indexed = 0, complete = 0 WHERE id IN (" + idList + ");");
+            db.exec("DELETE FROM filecontent WHERE id IN (" + idList + ");");
+        }
+
+        // --- kg-private side tables (Phase 1: incremental-update groundwork) ---
+        db.exec(
+            "CREATE TABLE IF NOT EXISTS kg_symbol_def("
+            "node_id INTEGER NOT NULL, "
+            "file_node_id INTEGER NOT NULL, "
+            "PRIMARY KEY(node_id, file_node_id)"
+            ") WITHOUT ROWID;");
+        db.exec(kKgTuDdl);
+
+        // kg_touched: every node id THIS indexing pass created or looked
+        // up (symbols via m_byKey, files via m_fileNodeIdByPath). Written
+        // unconditionally, so it always describes the most recent pass --
+        // for a full `kg index` that is simply "every node in the
+        // database", for the partial re-index `kg update` runs it is
+        // exactly the set of nodes the re-indexed TUs still produce.
+        // Invalidator's post-index sweep needs that distinction: a node
+        // with no occurrence and no non-MEMBER edge is indistinguishable
+        // from a legitimate implicit-instantiation node a fresh index
+        // keeps, UNLESS you know whether the pass that just ran still
+        // produces it. invalidate() empties this table before the
+        // re-index, so a stale entry can never protect a dead node.
+        db.exec("DROP TABLE IF EXISTS kg_touched;");
+        db.exec("CREATE TABLE kg_touched(node_id INTEGER PRIMARY KEY) WITHOUT ROWID;");
+        {
+            static const char* kInsertTouchedSql = "INSERT OR IGNORE INTO kg_touched(node_id) VALUES(?1)";
+            const auto insertTouched = [&](int nodeId) {
+                if (nodeId == 0)
+                {
+                    return;
+                }
+                db.execBound(kInsertTouchedSql, [&](sqlite3_stmt* stmt) { sqlite3_bind_int(stmt, 1, nodeId); });
+            };
+            for (const auto& [key, nodeId] : m_byKey)
+            {
+                insertTouched(nodeId);
+            }
+            for (const auto& [path, nodeId] : m_fileNodeIdByPath)
+            {
+                insertTouched(nodeId);
+            }
+            // Ancestor closure over MEMBER edges: the vendored writer's
+            // addNodeHierarchy() materializes every INTERMEDIATE name
+            // element of a NameHierarchy as its own node but only ever
+            // hands back the LEAF's id, so a purely structural scope node
+            // (e.g. the anonymous scopes around a libc `timespec`) can be
+            // created by this pass without ever passing through m_byKey.
+            // A node whose child this pass produced was produced by this
+            // pass too, by definition.
+            for (;;)
+            {
+                db.exec(
+                    "INSERT OR IGNORE INTO kg_touched(node_id) SELECT e.source_node_id FROM edge e "
+                    "JOIN kg_touched t ON t.node_id = e.target_node_id WHERE e.type = 1;");
+                if (db.changes() <= 0)
+                {
+                    break;
+                }
+            }
+
+            if (m_sawUnsolvedReference)
+            {
+                // The writer's shared "unsolved symbol" node (see
+                // SourcetrailDBWriter::recordReferenceToUnsolvedSymhol) is
+                // created inside the vendored writer and never passes
+                // through m_byKey. Matched on its exact serialized name --
+                // char(9) is the '\t' separator NameHierarchy serializes
+                // with. Only when this pass actually produced an unsolved
+                // reference: if it did not, the node is NOT this pass's
+                // output and must stay collectable like any other.
+                db.exec(
+                    "INSERT OR IGNORE INTO kg_touched(node_id) SELECT id FROM node "
+                    "WHERE serialized_name = char(9) || 'munsolved symbol' || char(9) || 's' || char(9) || 'p';");
+            }
+        }
+
+        // --- node.type / symbol.definition_kind: upgrade-only writes -------
+        //
+        // Rank the STORED node-kind ints (not translateSymbolKind()'s
+        // output -- that maps BOTH Unknown and Type to sourcetrail::
+        // SymbolKind::TYPE, so ranking against it made the ladder
+        // degenerate: every freshly-created node, which the vendored writer
+        // always creates as NodeKind::UNKNOWN (see addNodeHierarchy()), fell
+        // into the CASE's ELSE arm and was never upgraded). rank(UNKNOWN) =
+        // 0 matches kindRank(SymbolKind::Unknown) = 0, and rank(TYPE) = 1
+        // matches kindRank(SymbolKind::Type) = 1, so a pending kind's
+        // kindRank() lines up exactly with the stored node.type's rank.
+        const int unknownNodeKindInt = sourcetrail::nodeKindToInt(sourcetrail::NodeKind::UNKNOWN);
+        const int typeNodeKindInt = sourcetrail::nodeKindToInt(sourcetrail::NodeKind::TYPE);
+
+        // Strictly-upgrading, order-INDEPENDENT: a stored kind is only
+        // replaced by a STRICTLY higher-ranked one (plus the one special
+        // case of a virgin UNKNOWN node, which must still be allowed to
+        // become TYPE even though both rank 0). `<=` here instead of `<`
+        // made EQUAL-ranked kinds last-writer-wins, i.e. dependent on TU
+        // processing order: libstdc++'s `std::pair` is reached both as a
+        // ClassTemplate (-> CLASS, rank 2) and as a StructDecl (-> STRUCT,
+        // rank 2), so a full 200-TU `kg index` and the 1-TU re-index
+        // `kg update` runs on top of it disagreed about node.type for it --
+        // caught by `kg dbdiff` on the cucs corpus. First real kind wins is
+        // stable across both.
+        static const char* kUpdateNodeTypeSql =
+            "UPDATE node SET type = ?1 "
+            "WHERE id = ?2 AND "
+            "((CASE type WHEN ?3 THEN 0 WHEN ?4 THEN 1 ELSE 2 END) < ?5 OR type = ?3)";
+        static const char* kUpsertSymbolSql =
+            "INSERT INTO symbol(id, definition_kind) VALUES(?1, ?2) "
+            "ON CONFLICT(id) DO UPDATE SET definition_kind = max(definition_kind, excluded.definition_kind)";
+
+        for (const auto& [nodeId, kd] : m_pendingKindDef)
+        {
+            // No "newRank > 0" skip here: even a pending Unknown kind
+            // (rank 0) must still be allowed to upgrade a virgin UNKNOWN
+            // node (rank 0) to TYPE, matching the old unconditional
+            // recordSymbolKind() behavior -- the WHERE clause's own
+            // rank(stored) <= newRank guard is what keeps a real kind from
+            // ever being downgraded back to TYPE/UNKNOWN.
+            {
+                const int newNodeKindInt = sourcetrail::nodeKindToInt(sourcetrail::symbolKindToNodeKind(translateSymbolKind(kd.kind)));
+                const int newRank = kg::model::kindRank(kd.kind);
+                db.execBound(
+                    kUpdateNodeTypeSql,
+                    [&](sqlite3_stmt* stmt) {
+                        sqlite3_bind_int(stmt, 1, newNodeKindInt);
+                        sqlite3_bind_int(stmt, 2, nodeId);
+                        sqlite3_bind_int(stmt, 3, unknownNodeKindInt);
+                        sqlite3_bind_int(stmt, 4, typeNodeKindInt);
+                        sqlite3_bind_int(stmt, 5, newRank);
+                    });
+            }
+
+            if (kd.definition != kg::model::DefinitionKind::None)
+            {
+                const int dkInt = sourcetrail::definitionKindToInt(translateDefinitionKind(kd.definition));
+                db.execBound(
+                    kUpsertSymbolSql,
+                    [&](sqlite3_stmt* stmt) {
+                        sqlite3_bind_int(stmt, 1, nodeId);
+                        sqlite3_bind_int(stmt, 2, dkInt);
+                    });
+            }
+        }
+
+        static const char* kInsertSymbolDefSql = "INSERT OR IGNORE INTO kg_symbol_def(node_id, file_node_id) VALUES(?1, ?2)";
+        for (const auto& [nodeId, fileId] : m_pendingSymbolDef)
+        {
+            db.execBound(
+                kInsertSymbolDefSql,
+                [&](sqlite3_stmt* stmt) {
+                    sqlite3_bind_int(stmt, 1, nodeId);
+                    sqlite3_bind_int(stmt, 2, fileId);
+                });
+        }
+
+        static const char* kIndexStatements[] = {
+            "CREATE INDEX IF NOT EXISTS kg_edge_source_idx ON edge(source_node_id);",
+            "CREATE INDEX IF NOT EXISTS kg_edge_target_idx ON edge(target_node_id);",
+            "CREATE INDEX IF NOT EXISTS kg_edge_type_idx ON edge(type);",
+            "CREATE INDEX IF NOT EXISTS kg_node_type_idx ON node(type);",
+            "CREATE INDEX IF NOT EXISTS kg_srcloc_file_idx ON source_location(file_node_id);",
+            "CREATE INDEX IF NOT EXISTS kg_occurrence_elem_idx ON occurrence(element_id);",
+            "CREATE INDEX IF NOT EXISTS kg_occurrence_loc_idx ON occurrence(source_location_id);",
+            "CREATE INDEX IF NOT EXISTS kg_file_path_idx ON file(path);",
+            "CREATE INDEX IF NOT EXISTS kg_symbol_defkind_idx ON symbol(definition_kind);",
+        };
+        for (const char* stmt : kIndexStatements)
+        {
+            db.exec(stmt);
+        }
+
+        db.commit();
+
+        // ANALYZE/VACUUM are best-effort maintenance, not correctness --
+        // a fully-written, already-committed database must not be treated
+        // as a failed `kg index` run just because one of these throws (e.g.
+        // VACUUM needing free disk space it doesn't have). Downgrade each to
+        // an independent stderr warning instead, restoring the previous
+        // ignore-result behavior.
+        try
+        {
+            db.exec("ANALYZE;");
+        }
+        catch (const std::exception& e)
+        {
+            std::fprintf(stderr, "kg index: warning: ANALYZE failed: %s\n", e.what());
+        }
+        if (!m_noVacuum && !m_nonIndexedFileIds.empty())
+        {
+            try
+            {
+                db.exec("VACUUM;");
+            }
+            catch (const std::exception& e)
+            {
+                std::fprintf(stderr, "kg index: warning: VACUUM failed: %s\n", e.what());
+            }
+        }
+    }
+    catch (const std::exception& e)
     {
         if (err != nullptr)
         {
-            *err = "failed to reopen '" + m_dbPath + "' for post-write fixups";
+            *err = e.what();
         }
-        if (db != nullptr)
-        {
-            sqlite3_close(db);
-        }
-        return false;
-    }
-
-    bool ok = execSql(db, "BEGIN;", err);
-
-    if (ok && !m_nonIndexedFileIds.empty())
-    {
-        const std::string idList = joinIds(m_nonIndexedFileIds);
-        ok = ok && execSql(db, "UPDATE file SET indexed = 0, complete = 0 WHERE id IN (" + idList + ");", err);
-        ok = ok && execSql(db, "DELETE FROM filecontent WHERE id IN (" + idList + ");", err);
-    }
-
-    static const char* kIndexStatements[] = {
-        "CREATE INDEX IF NOT EXISTS kg_edge_source_idx ON edge(source_node_id);",
-        "CREATE INDEX IF NOT EXISTS kg_edge_target_idx ON edge(target_node_id);",
-        "CREATE INDEX IF NOT EXISTS kg_edge_type_idx ON edge(type);",
-        "CREATE INDEX IF NOT EXISTS kg_node_type_idx ON node(type);",
-        "CREATE INDEX IF NOT EXISTS kg_srcloc_file_idx ON source_location(file_node_id);",
-        "CREATE INDEX IF NOT EXISTS kg_occurrence_elem_idx ON occurrence(element_id);",
-        "CREATE INDEX IF NOT EXISTS kg_occurrence_loc_idx ON occurrence(source_location_id);",
-        "CREATE INDEX IF NOT EXISTS kg_file_path_idx ON file(path);",
-        "CREATE INDEX IF NOT EXISTS kg_symbol_defkind_idx ON symbol(definition_kind);",
-    };
-    for (const char* stmt : kIndexStatements)
-    {
-        ok = ok && execSql(db, stmt, err);
-    }
-
-    ok = ok && execSql(db, "COMMIT;", err);
-
-    if (ok)
-    {
-        execSql(db, "ANALYZE;", nullptr);
-        if (!m_noVacuum && !m_nonIndexedFileIds.empty())
-        {
-            execSql(db, "VACUUM;", nullptr);
-        }
-    }
-
-    sqlite3_close(db);
-
-    if (!ok)
-    {
         return false;
     }
 

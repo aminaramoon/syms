@@ -364,6 +364,7 @@ CXChildVisitResult AstWalker::visit(CXCursor c, CXCursor /*parent*/)
 CXChildVisitResult AstWalker::visitScopeDecl(CXCursor c)
 {
     const LocalId id = ensureSymbol(c);
+    markDeclaredHere(id);
 
     emitOccurrenceForRange(ElementClass::Symbol, id, clang_Cursor_getSpellingNameRange(c, 0, 0), LocationKind::Token);
     if (clang_isCursorDefinition(c) != 0)
@@ -381,6 +382,7 @@ CXChildVisitResult AstWalker::visitScopeDecl(CXCursor c)
 CXChildVisitResult AstWalker::visitFunctionLikeDecl(CXCursor c)
 {
     const LocalId id = ensureSymbol(c);
+    markDeclaredHere(id);
 
     emitOccurrenceForRange(ElementClass::Symbol, id, clang_Cursor_getSpellingNameRange(c, 0, 0), LocationKind::Token);
     if (clang_isCursorDefinition(c) != 0)
@@ -400,9 +402,13 @@ CXChildVisitResult AstWalker::visitFunctionLikeDecl(CXCursor c)
         clang_getOverriddenCursors(c, &overridden, &count);
         for (unsigned i = 0; i < count; ++i)
         {
+            if (!rangeFileIndexed(spellingRangeOrPoint(c)))
+            {
+                continue;
+            }
             const LocalId targetId = ensureSymbol(overridden[i]);
             const LocalId refId = m_sink.reference(id, targetId, ReferenceKind::Override);
-            emitOccurrenceForRange(ElementClass::Reference, refId, clang_Cursor_getSpellingNameRange(c, 0, 0), LocationKind::Token);
+            emitOccurrenceForRange(ElementClass::Reference, refId, spellingRangeOrPoint(c), LocationKind::Token);
         }
         if (overridden != nullptr)
         {
@@ -422,6 +428,7 @@ CXChildVisitResult AstWalker::visitFunctionLikeDecl(CXCursor c)
 void AstWalker::handleSimpleDecl(CXCursor c)
 {
     const LocalId id = ensureSymbol(c);
+    markDeclaredHere(id);
     emitOccurrenceForRange(ElementClass::Symbol, id, clang_Cursor_getSpellingNameRange(c, 0, 0), LocationKind::Token);
 }
 
@@ -451,6 +458,7 @@ void AstWalker::handleMacroDefinition(CXCursor c)
         return;
     }
     const LocalId id = ensureSymbol(c);
+    markDeclaredHere(id);
     emitOccurrenceForRange(ElementClass::Symbol, id, clang_getCursorExtent(c), LocationKind::Token);
 }
 
@@ -468,10 +476,18 @@ void AstWalker::handleMacroExpansion(CXCursor c)
         return;
     }
 
+    const CXSourceRange range = clang_getCursorExtent(c);
+    // Fact gate (see rangeFileIndexed()): never create an edge we would not
+    // be able to anchor with an occurrence in an indexed file.
+    if (!rangeFileIndexed(range))
+    {
+        return;
+    }
+
     const LocalId ctx = fileSymbolId(file);
     const LocalId targetId = ensureSymbol(referenced);
     const LocalId refId = m_sink.reference(ctx, targetId, ReferenceKind::MacroUsage);
-    emitOccurrenceForRange(ElementClass::Reference, refId, clang_getCursorExtent(c), LocationKind::Token);
+    emitOccurrenceForRange(ElementClass::Reference, refId, range, LocationKind::Token);
 }
 
 // --- Calls -----------------------------------------------------------------
@@ -526,6 +542,12 @@ void AstWalker::handleCallExpr(CXCursor c)
     CXCursor callee = clang_getCursorReferenced(c);
     CXSourceRange range = findCallLocation(c, callee);
     claimLocation(range);
+    // Fact gate (see rangeFileIndexed()): never create an edge we would not
+    // be able to anchor with an occurrence in an indexed file.
+    if (!rangeFileIndexed(range))
+    {
+        return;
+    }
 
     const LocalId ctx = currentContext();
     if (clang_Cursor_isNull(callee))
@@ -580,15 +602,17 @@ void AstWalker::handleDeleteExpr(CXCursor c)
         return;
     }
 
+    const CXSourceRange range = spellingRangeOrPoint(c);
+    // Fact gate (see rangeFileIndexed()): never create an edge we would not
+    // be able to anchor with an occurrence in an indexed file.
+    if (!rangeFileIndexed(range))
+    {
+        return;
+    }
+
     const LocalId targetId = ensureSymbol(dtor);
     const LocalId ctx = currentContext();
     const LocalId refId = m_sink.reference(ctx, targetId, ReferenceKind::Call);
-    CXSourceRange range = clang_Cursor_getSpellingNameRange(c, 0, 0);
-    if (clang_Range_isNull(range) != 0)
-    {
-        CXSourceLocation loc = clang_getCursorLocation(c);
-        range = clang_getRange(loc, loc);
-    }
     emitOccurrenceForRange(ElementClass::Reference, refId, range, LocationKind::Token);
 }
 
@@ -597,6 +621,12 @@ void AstWalker::handleDeleteExpr(CXCursor c)
 void AstWalker::handleDeclOrMemberRef(CXCursor c)
 {
     CXSourceRange range = clang_getCursorReferenceNameRange(c, CXNameRange_WantSinglePiece, 0);
+    // Fact gate (see rangeFileIndexed()): never create an edge we would not
+    // be able to anchor with an occurrence in an indexed file.
+    if (!rangeFileIndexed(range))
+    {
+        return;
+    }
     if (isClaimedByCall(range))
     {
         return;
@@ -629,11 +659,12 @@ void AstWalker::handleTypeOrTemplateRef(CXCursor c)
 {
     CXCursor referenced = clang_getCursorReferenced(c);
     const LocalId ctx = currentContext();
-    CXSourceRange range = clang_Cursor_getSpellingNameRange(c, 0, 0);
-    if (clang_Range_isNull(range) != 0)
+    CXSourceRange range = spellingRangeOrPoint(c);
+    // Fact gate (see rangeFileIndexed()): never create an edge we would not
+    // be able to anchor with an occurrence in an indexed file.
+    if (!rangeFileIndexed(range))
     {
-        CXSourceLocation loc = clang_getCursorLocation(c);
-        range = clang_getRange(loc, loc);
+        return;
     }
 
     if (clang_Cursor_isNull(referenced))
@@ -652,6 +683,10 @@ void AstWalker::handleNamespaceRef(CXCursor c)
 {
     CXCursor referenced = clang_getCursorReferenced(c);
     if (clang_Cursor_isNull(referenced))
+    {
+        return;
+    }
+    if (!rangeFileIndexed(clang_getCursorExtent(c)))
     {
         return;
     }
@@ -677,9 +712,17 @@ void AstWalker::handleBaseSpecifier(CXCursor c)
         return;
     }
 
+    const CXSourceRange range = spellingRangeOrPoint(c);
+    // Fact gate (see rangeFileIndexed()): never create an edge we would not
+    // be able to anchor with an occurrence in an indexed file.
+    if (!rangeFileIndexed(range))
+    {
+        return;
+    }
+
     const LocalId targetId = ensureSymbol(base);
     const LocalId refId = m_sink.reference(derivedId, targetId, ReferenceKind::Inheritance);
-    emitOccurrenceForRange(ElementClass::Reference, refId, clang_Cursor_getSpellingNameRange(c, 0, 0), LocationKind::Token);
+    emitOccurrenceForRange(ElementClass::Reference, refId, range, LocationKind::Token);
 }
 
 // --- Symbol registration ------------------------------------------------
@@ -714,6 +757,30 @@ LocalId AstWalker::registerOne(CXCursor canonicalCursor)
     fact.kind = classifyKind(canonicalCursor);
     fact.definition = clang_isCursorDefinition(canonicalCursor) != 0 ? DefinitionKind::Explicit : DefinitionKind::None;
     return m_sink.symbol(std::move(fact));
+}
+
+void AstWalker::markDeclaredHere(LocalId id)
+{
+    if (id == kNoLocal)
+    {
+        return;
+    }
+    m_sink.refineSymbol(id, SymbolKind::Unknown, DefinitionKind::Explicit);
+    if (m_currentFile != nullptr)
+    {
+        m_sink.declaredIn(id, fileFactId(m_currentFile));
+    }
+}
+
+CXSourceRange AstWalker::spellingRangeOrPoint(CXCursor c)
+{
+    CXSourceRange range = clang_Cursor_getSpellingNameRange(c, 0, 0);
+    if (clang_Range_isNull(range) != 0)
+    {
+        CXSourceLocation loc = clang_getCursorLocation(c);
+        range = clang_getRange(loc, loc);
+    }
+    return range;
 }
 
 LocalId AstWalker::fileFactId(CXFile file)
@@ -754,6 +821,22 @@ LocalId AstWalker::currentContext()
     return kNoLocal;
 }
 
+bool AstWalker::rangeFileIndexed(CXSourceRange range)
+{
+    if (clang_Range_isNull(range) != 0)
+    {
+        return false;
+    }
+    CXFile file = nullptr;
+    unsigned line = 0, col = 0, off = 0;
+    clang_getFileLocation(clang_getRangeStart(range), &file, &line, &col, &off);
+    if (file == nullptr)
+    {
+        return false;
+    }
+    return m_files.infoFor(m_tu, file).indexed;
+}
+
 bool AstWalker::rangeToModelRange(CXSourceRange range, kg::model::SourceRange& out)
 {
     if (clang_Range_isNull(range) != 0)
@@ -787,6 +870,12 @@ void AstWalker::emitOccurrenceForRange(ElementClass cls, LocalId element, CXSour
 {
     if (element == kNoLocal)
     {
+        return;
+    }
+    if (!rangeFileIndexed(range))
+    {
+        // Backstop for the per-handler gates below: an occurrence is only
+        // ever emitted if ITS OWN range lands in an indexed file.
         return;
     }
     kg::model::SourceRange modelRange;

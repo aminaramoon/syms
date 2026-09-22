@@ -5,11 +5,17 @@
 #include <cstdint>
 #include <filesystem>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 
 #include <clang-c/Index.h>
 #include <nlohmann/json.hpp>
 
+#include <sqlite3.h>
+
+#include "kg/common/Paths.h"
+#include "kg/db/Meta.h"
+#include "kg/db/WritableDb.h"
 #include "kg/index/AstWalker.h"
 #include "kg/index/ClangUtil.h"
 #include "kg/index/CudaSupport.h"
@@ -33,6 +39,89 @@ uint64_t millisSince(std::chrono::steady_clock::time_point start)
 {
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
+}
+
+// Writes `prov` (if set) and one kg_tu row per indexed `entries` element
+// into `outputPath`'s `meta`/`kg_tu` tables. Called once, after finish()
+// has already committed the writer's own transaction and created
+// kg_symbol_def/kg_tu -- this opens a SEPARATE short-lived WritableDb
+// transaction rather than trying to thread one through SrctrldbBackend.
+void writeProvenanceAndTus(
+    const std::string& outputPath,
+    const std::optional<Provenance>& prov,
+    const std::vector<CompileEntry>& entries,
+    const std::vector<std::string>& tuStatuses)
+{
+    if (!prov.has_value() && entries.empty())
+    {
+        return;
+    }
+
+    kg::db::WritableDb db(outputPath, /*foreignKeys=*/false);
+    db.begin();
+
+    db.exec(kKgTuDdl);
+
+    if (prov.has_value())
+    {
+        writeProvenance(db, *prov);
+    }
+
+    // file.path (from clang's clang_getFileName()) and entry.file (the CDB
+    // entry's `file` field, post-remap) usually agree textually but can
+    // differ on symlinks or a literal "./" prefix -- an exact string `=`
+    // match would then silently miss and leave kg_tu.file_node_id NULL.
+    // Load every file.path once, normalized, and match both sides through
+    // the same normalization instead of a per-entry exact-match SELECT.
+    std::unordered_map<std::string, int> fileNodeIdByNormalizedPath;
+    db.query("SELECT id, path FROM file", [&](sqlite3_stmt* stmt) {
+        const int id = sqlite3_column_int(stmt, 0);
+        const char* pathText = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        if (pathText != nullptr)
+        {
+            fileNodeIdByNormalizedPath[kg::common::paths::normalize(pathText)] = id;
+        }
+    });
+
+    static const char* kUpsertTuSql =
+        "INSERT INTO kg_tu(path, args_hash, file_node_id, status) VALUES(?1, ?2, ?3, ?4) "
+        "ON CONFLICT(path) DO UPDATE SET args_hash = excluded.args_hash, file_node_id = excluded.file_node_id, "
+        "status = excluded.status";
+    for (std::size_t i = 0; i < entries.size(); ++i)
+    {
+        const auto& entry = entries[i];
+        int fileNodeId = 0;
+        bool found = false;
+        const auto it = fileNodeIdByNormalizedPath.find(kg::common::paths::normalize(entry.file));
+        if (it != fileNodeIdByNormalizedPath.end())
+        {
+            fileNodeId = it->second;
+            found = true;
+        }
+
+        const std::string hash = computeArgsHash(entry);
+        // tuStatuses is index-aligned with entries (built by runIndex()'s
+        // main loop); default to "ok" defensively if a caller ever passes a
+        // shorter vector (should not happen in practice).
+        const std::string status = i < tuStatuses.size() ? tuStatuses[i] : std::string("ok");
+        db.execBound(
+            kUpsertTuSql,
+            [&](sqlite3_stmt* stmt) {
+                sqlite3_bind_text(stmt, 1, entry.file.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 2, hash.c_str(), -1, SQLITE_TRANSIENT);
+                if (found)
+                {
+                    sqlite3_bind_int(stmt, 3, fileNodeId);
+                }
+                else
+                {
+                    sqlite3_bind_null(stmt, 3);
+                }
+                sqlite3_bind_text(stmt, 4, status.c_str(), -1, SQLITE_TRANSIENT);
+            });
+    }
+
+    db.commit();
 }
 
 // Records a single-file, single-error "couldn't even try" batch (used for
@@ -175,9 +264,9 @@ RungResult tryRung(const CompileEntry& entry, SanitizerOptions sanitizerOptions,
 
 }  // namespace
 
-int runIndex(const IndexRunOptions& options)
+int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut)
 {
-    if (std::filesystem::exists(options.outputPath))
+    if (!options.appendToExisting && std::filesystem::exists(options.outputPath))
     {
         if (!options.force)
         {
@@ -194,14 +283,21 @@ int runIndex(const IndexRunOptions& options)
     }
 
     std::vector<CompileEntry> entries;
-    try
+    if (options.presetEntries.has_value())
     {
-        entries = load(options.compileCommandsPath, options.dbOptions);
+        entries = *options.presetEntries;
     }
-    catch (const std::exception& e)
+    else
     {
-        std::fprintf(stderr, "kg index: %s\n", e.what());
-        return 1;
+        try
+        {
+            entries = load(options.compileCommandsPath, options.dbOptions);
+        }
+        catch (const std::exception& e)
+        {
+            std::fprintf(stderr, "kg index: %s\n", e.what());
+            return 1;
+        }
     }
 
     if (options.limit >= 0 && static_cast<std::size_t>(options.limit) < entries.size())
@@ -230,6 +326,8 @@ int runIndex(const IndexRunOptions& options)
     const uint32_t tusTotal = static_cast<uint32_t>(entries.size());
     uint32_t tusAttempted = 0, tusWithContent = 0, tusFailed = 0;
     std::vector<std::string> failedTus;
+    std::vector<std::string> tuStatuses;
+    tuStatuses.reserve(entries.size());
 
     static const cuda::CudaMode kRungs[] = {cuda::CudaMode::Full, cuda::CudaMode::NoWrapper, cuda::CudaMode::HostOnly};
 
@@ -274,7 +372,7 @@ int runIndex(const IndexRunOptions& options)
             rungIndex = 0;
         }
 
-        best.batch.stats.tuFile = entry.file;
+        best.batch.stats.tuFile = kg::common::paths::normalize(entry.file);
         best.batch.stats.parsedRungIndex = rungIndex;
         best.batch.stats.parsedOk = best.contentOk;
         best.batch.stats.parseMs = best.parseMs;
@@ -291,6 +389,25 @@ int runIndex(const IndexRunOptions& options)
         {
             ++tusFailed;
             failedTus.push_back(entry.file);
+        }
+
+        // Per-TU status persisted into kg_tu.status (see Provenance.h) --
+        // "failed" (no content), "partial" (content but a fatal diagnostic,
+        // or a CUDA run that only succeeded on a degraded fallback rung),
+        // "ok" otherwise. rungIndex is only meaningful for the CUDA
+        // Auto-mode retry ladder (0 for non-CUDA / non-auto): 1 = Full
+        // (not degraded), 2/3 = NoWrapper/HostOnly (degraded fallback).
+        if (!hasContent)
+        {
+            tuStatuses.push_back("failed");
+        }
+        else if (best.batch.stats.diagFatal > 0 || rungIndex >= 2)
+        {
+            tuStatuses.push_back("partial");
+        }
+        else
+        {
+            tuStatuses.push_back("ok");
         }
 
         std::string consumeErr;
@@ -314,6 +431,16 @@ int runIndex(const IndexRunOptions& options)
     if (!backend.finish(summary, &err))
     {
         std::fprintf(stderr, "kg index: failed to finalize output database: %s\n", err.c_str());
+        return 1;
+    }
+
+    try
+    {
+        writeProvenanceAndTus(options.outputPath, options.provenance, entries, tuStatuses);
+    }
+    catch (const std::exception& e)
+    {
+        std::fprintf(stderr, "kg index: failed to write provenance/kg_tu rows: %s\n", e.what());
         return 1;
     }
 
@@ -363,6 +490,11 @@ int runIndex(const IndexRunOptions& options)
         j["elapsed_ms"] = summary.elapsedMs;
         j["failed_tus"] = summary.failedTus;
         std::printf("%s\n", j.dump().c_str());
+    }
+
+    if (summaryOut != nullptr)
+    {
+        *summaryOut = summary;
     }
 
     return summary.tusWithContent > 0 ? 0 : 5;
