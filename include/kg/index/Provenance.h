@@ -50,15 +50,31 @@ inline constexpr int kWalkerVersion = 3;
 //   - "failed"  -- produced no content at all (a total parse/walk failure).
 // `kg::update::UpdateDriver` uses `status != 'ok'` as its retry set instead
 // of the old (Phase 3) "no outgoing INCLUDE edge" heuristic -- see
-// docs/KNOWN_LIMITATIONS.md's Phase 4 section. A database whose `kg_tu`
-// table predates this column (no `status` column at all) is treated as
-// legacy and `kg update` refuses to run against it.
+// docs/KNOWN_LIMITATIONS.md's Phase 4 section. When a path's several CDB
+// entries disagree on status (see `entry_count` below), the WORST one wins
+// ("failed" > "partial" > "ok") -- a path is only ever as good as its
+// worst-behaved entry.
+//
+// `entry_count` (added alongside the duplicate-CDB-entry fix) is how many
+// CDB entries (after remap/include/exclude) currently share this path --
+// almost always 1, but real CDBs can compile the same source file more than
+// once (for several targets/configs with different flags). `args_hash` is
+// then `kg::index::pathArgsHashes()`'s COMBINED, order-independent hash
+// over every one of that path's entries (see CompileDb.h's doc comment),
+// not a single entry's `computeArgsHash()` -- a bare per-entry hash would
+// make `args_hash` just "whichever entry happened to be written last",
+// which made `kg update` see a false "flag changed" on every run for any
+// duplicated path (see docs/KNOWN_LIMITATIONS.md). A database whose
+// `kg_tu` table predates this column (no `entry_count` column at all) is
+// treated as legacy and `kg update` refuses to run against it, same as the
+// `status` column above.
 inline constexpr const char* kKgTuDdl =
     "CREATE TABLE IF NOT EXISTS kg_tu("
     "path TEXT PRIMARY KEY, "
     "args_hash TEXT NOT NULL, "
     "file_node_id INTEGER, "
-    "status TEXT NOT NULL DEFAULT 'ok'"
+    "status TEXT NOT NULL DEFAULT 'ok', "
+    "entry_count INTEGER NOT NULL DEFAULT 1"
     ");";
 
 struct Provenance

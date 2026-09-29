@@ -550,6 +550,17 @@ Notes:
 - `"files"."cleared_paths"`/`"unmatched_paths"` are always present (possibly
   empty arrays), even when `"dry_run"` or the "nothing to do" case leaves
   every count at `0`.
+- `"tus"."to_index"`/`"new"`/`"retried"` all count CDB ENTRIES, not distinct
+  files/paths -- almost always the same number, but NOT when the CDB lists
+  a path more than once (e.g. the same source compiled into several
+  targets/configs with different flags): re-indexing such a path
+  re-indexes ALL of its entries together (kg_tu is keyed by path, so
+  there's exactly one row either way, but every one of that path's
+  entries still needs its own parse/walk pass), so these counts can exceed
+  the number of distinct files actually touched. Same caveat applies to
+  `kg.index-summary/1`'s `"counts"."tus_total"` and the human-readable
+  `[k/N]` progress counter -- see `docs/KNOWN_LIMITATIONS.md`'s "Phase 9:
+  duplicate CDB entries" section.
 - `"tus"."retried"` (Phase 4) is the count of CDB entries whose previous
   `kg_tu.status` (see `include/kg/index/Provenance.h`'s `kKgTuDdl`) was
   `"partial"` or `"failed"` -- i.e. a TU that produced no content, had a

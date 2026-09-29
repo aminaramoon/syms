@@ -734,7 +734,21 @@ LocalId AstWalker::ensureSymbol(CXCursor cursor)
     std::vector<CXCursor> chain;
     for (CXCursor cur = canonical; !clang_Cursor_isNull(cur) && clang_getCursorKind(cur) != CXCursor_TranslationUnit;)
     {
-        chain.push_back(cur);
+        // CXCursor_LinkageSpec (`extern "C"`/`extern "C++"` blocks) is
+        // skipped here, mirroring NameBuilder::ancestorChainRootToLeaf's own
+        // skip (see its comment): it isn't a named C++ scope, so it should
+        // never become a symbol/node of its own, and -- the real bug this
+        // fixes -- whether a given libc/CUDA typedef's semantic-parent walk
+        // even PASSES THROUGH a LinkageSpec ancestor is not stable across
+        // separately-parsed TUs (same logical declaration, different
+        // macro/header state), which used to make it order-dependent
+        // whether that TU minted a spurious extra "extern C block" symbol
+        // node at all. Still walks past it to whatever lexically/
+        // semantically encloses it, exactly like the NameBuilder skip does.
+        if (clang_getCursorKind(cur) != CXCursor_LinkageSpec)
+        {
+            chain.push_back(cur);
+        }
         CXCursor parent = clang_getCursorSemanticParent(cur);
         cur = clang_Cursor_isNull(parent) ? parent : clang_getCanonicalCursor(parent);
     }

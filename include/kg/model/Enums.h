@@ -77,4 +77,17 @@ enum class ElementClass : uint8_t
 // downgrade it back).
 int kindRank(SymbolKind kind);
 
+// Deterministic, order-INDEPENDENT "does `candidate` strictly beat `current`"
+// comparison used wherever two observations of the SAME symbol (same TU, or
+// -- see kg::index::SrctrldbBackend -- across TUs/sessions) with EQUAL
+// kindRank() disagree and only one kind can be kept. Compares kindRank()
+// first, then breaks a rank tie on the enum's own fixed underlying integer
+// value (a compile-time constant, never "whichever one was observed
+// first") -- backend-neutral, so kg_model never needs to depend on
+// sourcetrail::NodeKind ints the way SrctrldbBackend's own node.type merge
+// does. Not meant to imply any semantic ranking among equal-rank kinds
+// (e.g. that CLASS is "better than" STRUCT) -- only that the choice is
+// stable and reproducible regardless of processing order.
+bool symbolKindBeats(SymbolKind candidate, SymbolKind current);
+
 }  // namespace kg::model

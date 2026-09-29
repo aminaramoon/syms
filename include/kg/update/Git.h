@@ -45,6 +45,16 @@ std::optional<std::string> diffNameStatusZ(
 // returns its raw (NUL-separated) stdout, or std::nullopt on failure.
 std::optional<std::string> statusPorcelainZ(const std::string& repoRoot);
 
+// Absolute, lexically-normal paths of every submodule declared in
+// `<repoRoot>/.gitmodules` (read via `git config --file .gitmodules`, so
+// submodules need not be initialized/checked out). Empty if there is no
+// .gitmodules or git isn't on PATH.
+std::vector<std::string> submodulePaths(const std::string& repoRoot);
+
+// `submodulePaths()` turned into kg exclude globs (`<abs path>/**`), for
+// `kg index --exclude-submodules` / `kg update --exclude-submodules`.
+std::vector<std::string> submoduleExcludeGlobs(const std::string& repoRoot);
+
 // The combined result of collectChanges(): every changed file (from `git
 // diff`) plus, when comparing against the working tree, every dirty path
 // (staged, unstaged, AND untracked) from `git status` -- see collectChanges'

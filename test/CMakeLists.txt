@@ -9,6 +9,7 @@ add_executable(kg_unit_tests
     unit/test_arg_sanitizer.cpp
     unit/test_cuda_support.cpp
     unit/test_cdb_samples.cpp
+    unit/test_compiledb_dupes.cpp
     unit/test_name_decode.cpp
     unit/test_fuzzy.cpp
     unit/test_bfs.cpp
@@ -25,6 +26,10 @@ add_executable(kg_unit_tests
     unit/test_snapshot.cpp
     unit/test_invalidator.cpp
     unit/test_update_driver.cpp
+    unit/test_progress.cpp
+    unit/test_parallel_fixture.cpp
+    unit/test_resume_fixture.cpp
+    unit/test_kind_determinism.cpp
 )
 target_link_libraries(kg_unit_tests PRIVATE
     Catch2::Catch2WithMain

@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <regex>
+#include <unordered_map>
 #include <vector>
 
+#include "kg/common/Paths.h"
 #include "kg/index/ClangUtil.h"
 
 namespace kg::index
@@ -23,6 +26,44 @@ std::string basenameOf(const std::string& path)
     return std::filesystem::path(path).filename().string();
 }
 
+// Normalized (kg::common::paths::normalize()) file path for a CXFile,
+// memoized per (worker) thread -- normalize() does real filesystem stat
+// calls (weakly_canonical()), so this avoids re-stat'ing the same header
+// for every local-scope declaration/lambda it contains.
+//
+// Real, corpus-observed bug this fixes: every identity/disambiguation
+// string below used to embed clangutil::fileName()'s raw, AS-SPELLED-BY-
+// THIS-TU path verbatim. The SAME physical header reached via two
+// textually different #include spellings (e.g. a relative "../../src/
+// data/io_worker.hpp" from one TU vs a canonical "src/data/io_worker.hpp"
+// from another) therefore produced two DIFFERENT identity keys/
+// disambiguators for the exact same translation-unit-local entity (a
+// lambda, a `static` function, an anonymous-namespace member) depending on
+// which TU happened to be first to touch it this session -- caught via
+// `kg dbdiff` between a fresh `kg index` and a resumed/partial `kg update`
+// on the real cucs corpus (a lambda inside `io_worker.hpp`, reached both
+// via `test/data/../../src/data/io_worker.hpp` and `src/data/io_worker.hpp`,
+// ending up as two distinct nodes). Normalizing first makes the identity a
+// pure function of the physical file, independent of how any particular TU
+// spelled its #include.
+std::string normalizedFileName(CXFile file)
+{
+    if (file == nullptr)
+    {
+        return {};
+    }
+    thread_local std::unordered_map<std::string, std::string> cache;
+    const std::string raw = clangutil::fileName(file);
+    auto it = cache.find(raw);
+    if (it != cache.end())
+    {
+        return it->second;
+    }
+    const std::string normalized = kg::common::paths::normalize(raw);
+    cache.emplace(raw, normalized);
+    return normalized;
+}
+
 // file:line for an anonymous record/enum's synthesized display name.
 void cursorFileAndLine(CXCursor c, std::string& file, unsigned& line)
 {
@@ -30,7 +71,7 @@ void cursorFileAndLine(CXCursor c, std::string& file, unsigned& line)
     CXFile f = nullptr;
     unsigned col = 0, offset = 0;
     clang_getFileLocation(loc, &f, &line, &col, &offset);
-    file = clangutil::fileName(f);
+    file = normalizedFileName(f);
 }
 
 std::string kindWordFor(CXCursorKind kind)
@@ -166,14 +207,44 @@ NameElement elementForCursor(CXCursor c)
 // being added and before walking further up, so identity/naming is always
 // computed from the same canonical cursors NameBuilder would use if asked
 // about that ancestor directly.
+//
+// CXCursor_LinkageSpec (an `extern "C" { ... }`/`extern "C++" { ... }`
+// block) is deliberately SKIPPED here, never pushed onto the chain: it is
+// not a named C++ scope at all (it contributes nothing to a qualified
+// name -- `extern "C" { void f(); }` names `::f`, not `::<something>::f`),
+// so including it was always semantically wrong, not just cosmetic. It was
+// also a real, corpus-observed source of order-dependence: unlike an
+// ordinary namespace/record ancestor, whether libclang's semantic-parent
+// chain reports a LinkageSpec ancestor for a given system typedef (e.g.
+// glibc's `int32_t`/`int64_t`, CUDA's `CUuuid_st`) is NOT stable across
+// separately-parsed translation units -- each TU's own macro/header state
+// can genuinely nest (or not nest) the same logical declaration inside an
+// `extern "C"` block differently, and `SrctrldbBackend::ensureSymbolNode()`
+// only ever calls buildName() ONCE per SymbolKey per session (the first TU
+// to observe a given USR wins; later observations just dedup via m_byKey)
+// -- so which TU happened to be first decided whether the resulting
+// NameHierarchy carried a spurious extra empty-name element, differing
+// between e.g. a full `kg index` and a `kg update` resume that reindexes a
+// different TU subset/order. Skipping LinkageSpec ancestors entirely
+// removes the instability at its source (there's no "sometimes present,
+// sometimes not" element to disagree about) while also fixing the
+// pre-existing cosmetic bug of a bogus empty NameElement showing up in
+// qualified names of anything declared inside `extern "C"` at all.
 std::vector<CXCursor> ancestorChainRootToLeaf(CXCursor cursor)
 {
     std::vector<CXCursor> chain;
     CXCursor cur = clang_getCursorSemanticParent(cursor);
     while (!clang_Cursor_isNull(cur) && clang_getCursorKind(cur) != CXCursor_TranslationUnit)
     {
-        chain.push_back(clang_getCanonicalCursor(cur));
-        cur = clang_getCursorSemanticParent(chain.back());
+        const CXCursor canonicalCur = clang_getCanonicalCursor(cur);
+        if (clang_getCursorKind(canonicalCur) != CXCursor_LinkageSpec)
+        {
+            chain.push_back(canonicalCur);
+        }
+        // Always advance from the CANONICAL cursor (whether or not it was
+        // pushed) -- see the comment above for why identity/naming must be
+        // computed from the same canonical cursors throughout.
+        cur = clang_getCursorSemanticParent(canonicalCur);
     }
     std::reverse(chain.begin(), chain.end());
     return chain;
@@ -231,8 +302,47 @@ std::string disambiguatorFor(CXCursor canonical)
     CXFile file = nullptr;
     unsigned line = 0, col = 0, offset = 0;
     clang_getFileLocation(loc, &file, &line, &col, &offset);
-    const std::string declFile = clangutil::fileName(file);
+    const std::string declFile = normalizedFileName(file);
     return " [" + basenameOf(declFile) + "#" + hex8(fnv1a64(declFile)) + "]";
+}
+
+// clang's own type/cursor spelling for a closure (lambda) type embeds a
+// SYNTHESIZED display name of the form "(lambda at <path>:<line>:<col>)" --
+// e.g. inside a `std::thread`/`std::function`-like template argument's
+// printed type, or an anonymous-namespace-like display name for the
+// closure type itself. `<path>` there comes straight from clang's own
+// PrintingPolicy/SourceManager, NOT from clangutil::fileName()/
+// normalizedFileName() (those only ever see file paths WE explicitly ask
+// libclang for via clang_getFileLocation()), so the same instability
+// normalizedFileName() fixes for ordinary declFile-based identity/
+// disambiguator strings above reappears here through a completely
+// different code path: the exact same lambda, reached via two TUs that
+// #include its enclosing header with different relative spellings, prints
+// with two different embedded paths (real, corpus-observed: cucs's
+// `io_worker.hpp`, included from `test/` both via a canonical relative
+// path and via a `test/data/../../src/data/...` one) -- which, because a
+// function parameter's printed TYPE (e.g. `std::thread::thread(F&&)`'s `F`)
+// becomes part of a NameElement's postfix, made the surrounding function's
+// own qualified name (and therefore its node identity) TU-order-dependent
+// too. Normalizing every embedded "(lambda at ...)" path found anywhere in
+// prefix/name/postfix text closes this the same way normalizedFileName()
+// does for the other cases.
+std::string normalizeLambdaPathsInText(const std::string& text)
+{
+    static const std::regex kLambdaAt(R"(\(lambda at ([^():]+):(\d+):(\d+)\))");
+    std::string result;
+    result.reserve(text.size());
+    std::size_t lastPos = 0;
+    for (auto it = std::sregex_iterator(text.begin(), text.end(), kLambdaAt); it != std::sregex_iterator(); ++it)
+    {
+        const std::smatch& m = *it;
+        const auto matchStart = static_cast<std::size_t>(m.position(0));
+        result.append(text, lastPos, matchStart - lastPos);
+        result += "(lambda at " + kg::common::paths::normalize(m[1].str()) + ":" + m[2].str() + ":" + m[3].str() + ")";
+        lastPos = matchStart + static_cast<std::size_t>(m.length(0));
+    }
+    result.append(text, lastPos, std::string::npos);
+    return result;
 }
 
 // elementForCursor() plus the SAME local-scope disambiguation
@@ -254,6 +364,9 @@ NameElement identityElement(CXCursor canonical)
     {
         el.postfix += disambiguatorFor(canonical);
     }
+    el.prefix = normalizeLambdaPathsInText(el.prefix);
+    el.name = normalizeLambdaPathsInText(el.name);
+    el.postfix = normalizeLambdaPathsInText(el.postfix);
     return el;
 }
 
@@ -303,7 +416,7 @@ SymbolIdentity buildSymbolIdentity(CXCursor cursor)
         unsigned noUsrLine = 0, noUsrCol = 0, noUsrOffset = 0;
         clang_getFileLocation(noUsrLoc, &noUsrFile, &noUsrLine, &noUsrCol, &noUsrOffset);
         usr = "no-usr:" + std::to_string(static_cast<int>(clang_getCursorKind(canonical))) + ":" +
-              clangutil::fileName(noUsrFile) + ":" + std::to_string(noUsrOffset);
+              normalizedFileName(noUsrFile) + ":" + std::to_string(noUsrOffset);
     }
 
     identity.key = usr;
@@ -314,7 +427,7 @@ SymbolIdentity buildSymbolIdentity(CXCursor cursor)
         unsigned line = 0, col = 0, offset = 0;
         clang_getFileLocation(loc, &file, &line, &col, &offset);
         identity.key += '\x1f';
-        identity.key += clangutil::fileName(file);
+        identity.key += normalizedFileName(file);
     }
 
     return identity;
@@ -327,7 +440,7 @@ std::string buildLocalSymbolName(CXCursor cursor)
     CXFile file = nullptr;
     unsigned line = 0, col = 0, offset = 0;
     clang_getFileLocation(loc, &file, &line, &col, &offset);
-    const std::string path = file != nullptr ? clangutil::fileName(file) : std::string("<unknown>");
+    const std::string path = file != nullptr ? normalizedFileName(file) : std::string("<unknown>");
     return path + ":" + std::to_string(line) + ":" + std::to_string(col);
 }
 

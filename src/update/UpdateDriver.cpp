@@ -1,5 +1,6 @@
 #include "kg/update/UpdateDriver.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
@@ -262,6 +263,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
 
     // --- 1. open read-only, read provenance, run refusal checks ------------
     std::optional<kg::index::Provenance> prov;
+    bool resumingInterruptedIndex = false;
     try
     {
         kg::db::Database db(options.dbPath, options.verbose);
@@ -276,6 +278,22 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
                     "an update is already in progress on this database (kg_update_in_progress is set) -- if a "
                     "previous `kg update --in-place` was interrupted, re-index from scratch to recover");
                 return 2;
+            }
+
+            // Phase 8: a database left with kg_index_in_progress="1" is an
+            // INTERRUPTED `kg index` run, not a corrupt/mid-write one (its
+            // provenance and every completed checkpoint's facts are
+            // durable) -- resume it instead of refusing. See the retry-set
+            // computation below (step "Phase 8 resume") for how the
+            // never-indexed suffix gets picked up.
+            const std::optional<std::string> indexInProgress = kg::db::getMeta(db.handle(), "kg_index_in_progress");
+            if (indexInProgress.has_value() && *indexInProgress == "1")
+            {
+                resumingInterruptedIndex = true;
+                if (!options.json)
+                {
+                    std::fprintf(stderr, "kg update: resuming interrupted index (kg_index_in_progress was set)\n");
+                }
             }
         }
     }
@@ -351,6 +369,22 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     if (options.stdGiven)
     {
         eff.sanitizerOptions.stdFallback = options.stdOverride;
+    }
+    if (options.cStdGiven)
+    {
+        eff.sanitizerOptions.cStdFallback = options.cStdOverride;
+    }
+    if (options.excludeSubmodules && !repoRoot.empty())
+    {
+        for (const std::string& glob : submoduleExcludeGlobs(repoRoot))
+        {
+            if (std::find(eff.dbOptions.excludeGlobs.begin(), eff.dbOptions.excludeGlobs.end(), glob) ==
+                eff.dbOptions.excludeGlobs.end())
+            {
+                eff.dbOptions.excludeGlobs.push_back(glob);
+                diverges = true;
+            }
+        }
     }
     if (diverges)
     {
@@ -467,16 +501,31 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
             // Phase 4: kg_tu gained a `status` column (see Provenance.h's
             // kKgTuDdl) that replaces the old (Phase 3) "no outgoing
             // INCLUDE edge" retry heuristic with a precise per-TU outcome.
-            // A kg_tu table that predates this column (PRAGMA table_info
-            // doesn't list it) is legacy: refuse, same as any other
-            // provenance-shape mismatch -- there is no way to retry-classify
-            // it correctly.
+            // Later, kg_tu gained an `entry_count` column (the duplicate-
+            // CDB-entry fix -- args_hash became a COMBINED, per-path hash
+            // instead of a single entry's, see CompileDb.h's
+            // pathArgsHashes()) -- a kg_tu table that predates either
+            // column (PRAGMA table_info doesn't list it) is legacy: refuse,
+            // same as any other provenance-shape mismatch -- there is no
+            // way to retry-classify/flag-compare it correctly (in
+            // particular, a pre-entry_count args_hash is a single entry's
+            // hash, not the combined one this code now compares against).
             bool haveStatusColumn = false;
+            bool haveEntryCountColumn = false;
             db.run("PRAGMA table_info(kg_tu)", [&](sqlite3_stmt* stmt) {
                 const char* colName = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-                if (colName != nullptr && std::string(colName) == "status")
+                if (colName == nullptr)
+                {
+                    return;
+                }
+                const std::string name = colName;
+                if (name == "status")
                 {
                     haveStatusColumn = true;
+                }
+                else if (name == "entry_count")
+                {
+                    haveEntryCountColumn = true;
                 }
             });
             if (!haveStatusColumn)
@@ -484,6 +533,14 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
                 reportRefused(
                     options,
                     "database's kg_tu table predates per-TU status tracking (kg_tu.status) -- re-index from scratch");
+                return 2;
+            }
+            if (!haveEntryCountColumn)
+            {
+                reportRefused(
+                    options,
+                    "database's kg_tu table predates duplicate-CDB-entry tracking (kg_tu.entry_count) -- re-index "
+                    "from scratch");
                 return 2;
             }
 
@@ -517,32 +574,47 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
         return 1;
     }
 
-    // Flag-change detection: an entry's args hash differs from its kg_tu
+    // Flag-change detection: a PATH's combined args hash (see
+    // kg::index::pathArgsHashes()'s doc comment) differs from its kg_tu
     // row -> Modified. A kg_tu row whose path is absent from the CDB ->
-    // Deleted.
+    // Deleted. Compared per PATH, not per CDB entry: a real CDB can list
+    // the same source file more than once (several targets/configs with
+    // different flags), and kg_tu keeps exactly one row per path -- so
+    // there is exactly one hash to compare against, computed once up front
+    // from EVERY entry of that path together (not whichever entry happens
+    // to be iterated), and both entries flag (or don't flag) together
+    // rather than only whichever one is compared last winning.
     std::unordered_map<std::string, const TuRow*> tuByNormPath;
     for (const auto& row : tuRows)
     {
         tuByNormPath[normalizePath(row.path)] = &row;
     }
+    const std::unordered_map<std::string, kg::index::PathArgsInfo> cdbPathHashes = kg::index::pathArgsHashes(cdb);
     std::unordered_set<std::string> cdbNormPaths;
+    std::unordered_set<std::string> flaggedNormPaths;
     uint32_t flagChangedCount = 0;
     for (const auto& entry : cdb)
     {
         const std::string norm = normalizePath(entry.file);
         cdbNormPaths.insert(norm);
         const auto it = tuByNormPath.find(norm);
-        if (it != tuByNormPath.end())
+        if (it == tuByNormPath.end())
         {
-            const std::string hash = kg::index::computeArgsHash(entry);
-            if (hash != it->second->argsHash)
-            {
-                ChangedFile cf;
-                cf.kind = ChangeKind::Modified;
-                cf.newPath = entry.file;
-                changes.push_back(cf);
-                ++flagChangedCount;
-            }
+            continue;  // brand-new path, not a flag-change candidate
+        }
+        if (!flaggedNormPaths.insert(norm).second)
+        {
+            continue;  // already flagged (or checked) this path via an earlier entry
+        }
+        const auto hashIt = cdbPathHashes.find(entry.file);
+        const std::string combinedHash = hashIt != cdbPathHashes.end() ? hashIt->second.combinedHash : std::string();
+        if (combinedHash != it->second->argsHash)
+        {
+            ChangedFile cf;
+            cf.kind = ChangeKind::Modified;
+            cf.newPath = entry.file;
+            changes.push_back(cf);
+            ++flagChangedCount;
         }
     }
     for (const auto& row : tuRows)
@@ -572,6 +644,29 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
         if (it->second->status != "ok")
         {
             retryTuFiles.push_back(entry.file);
+        }
+    }
+
+    // Phase 8 resume: when resuming an interrupted `kg index`, the retry set
+    // must ALSO cover every CDB entry with NO kg_tu row at all -- not just
+    // ones a `git diff` happened to flag as Added (match.newTus, below, is
+    // git-diff-driven only). This is the "untracked suffix" the interrupted
+    // run never got to: since checkpoints commit kg_tu rows for a
+    // contiguous CDB prefix (the parallel reorder buffer guarantees kg_tu
+    // rows land in CDB order regardless of -j), every CDB entry past the
+    // last checkpoint -- and any entry whose file happens to have a `file`
+    // row already (e.g. reached as a header by an earlier, completed TU)
+    // but was never itself indexed as a TU -- has no kg_tu row and lands
+    // here.
+    if (resumingInterruptedIndex)
+    {
+        for (const auto& entry : cdb)
+        {
+            const std::string norm = normalizePath(entry.file);
+            if (tuByNormPath.find(norm) == tuByNormPath.end())
+            {
+                retryTuFiles.push_back(entry.file);
+            }
         }
     }
 
@@ -702,15 +797,26 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
         // Never mutate the real database on a --dry-run -- this refresh is
         // "opportunistic bookkeeping for next time", not something a
         // dry-run is allowed to have side effects for.
-        if (!repoRoot.empty() && !options.dryRun)
+        if ((!repoRoot.empty() || resumingInterruptedIndex) && !options.dryRun)
         {
             try
             {
                 kg::db::WritableDb w(options.dbPath, false);
                 w.begin();
-                kg::db::setMeta(w, "kg_repo_commit", newBaseline);
-                kg::db::setMeta(w, "kg_dirty_paths", nlohmann::json(currentDirtyPaths(repoRoot, dirtyPaths)).dump());
-                kg::db::setMeta(w, "kg_last_update_at", utcTimestampNow());
+                if (!repoRoot.empty())
+                {
+                    kg::db::setMeta(w, "kg_repo_commit", newBaseline);
+                    kg::db::setMeta(w, "kg_dirty_paths", nlohmann::json(currentDirtyPaths(repoRoot, dirtyPaths)).dump());
+                    kg::db::setMeta(w, "kg_last_update_at", utcTimestampNow());
+                }
+                if (resumingInterruptedIndex)
+                {
+                    // Every TU already has a kg_tu row (the interrupted run
+                    // must have reached the very last checkpoint before
+                    // being interrupted) -- there's genuinely nothing left
+                    // to index, so just clear the flag.
+                    kg::db::deleteMeta(w, "kg_index_in_progress");
+                }
                 w.commit();
             }
             catch (const std::exception&)
@@ -924,6 +1030,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
         runOpts.jsonSummary = false;
         runOpts.noVacuum = options.noVacuum;
         runOpts.verbose = options.verbose > 0;
+        runOpts.parallel = options.parallel;
         runOpts.kgVersion = options.kgVersion;
         runOpts.dbOptions = eff.dbOptions;
         runOpts.sanitizerOptions = eff.sanitizerOptions;
@@ -1016,6 +1123,25 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
         std::fprintf(stderr, "kg update: warning: post-index sweep failed: %s\n", e.what());
     }
     summary.gc = gc;
+
+    // Phase 8: clear kg_index_in_progress on `work` -- before the rename/
+    // in-place-commit step below, so it's gone from whichever path
+    // ultimately becomes `options.dbPath`. Idempotent (no-op if absent), so
+    // safe to run unconditionally rather than gating on
+    // resumingInterruptedIndex (a belt-and-suspenders cleanup: e.g. a copy
+    // made via `cp` of an in-progress db that `kg index` itself never got a
+    // chance to clear).
+    try
+    {
+        kg::db::WritableDb wflag(work, false);
+        wflag.begin();
+        kg::db::deleteMeta(wflag, "kg_index_in_progress");
+        wflag.commit();
+    }
+    catch (const std::exception& e)
+    {
+        std::fprintf(stderr, "kg update: warning: failed to clear kg_index_in_progress: %s\n", e.what());
+    }
 
     // --- 9. commit --------------------------------------------------------------
     if (!options.inPlace)

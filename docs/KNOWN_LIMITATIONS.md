@@ -347,16 +347,22 @@ while every current `kg index` run stays a full index.
     necessarily complete for symbols with no declaration site kg visited at
     all (pure reference-only/system symbols) -- those simply have zero
     rows, which is expected, not a bug.
-  - `kg_tu(path PRIMARY KEY, args_hash, file_node_id)` -- one row per
-    indexed CDB entry. `args_hash` is a 64-bit FNV-1a hash (lowercase hex,
-    16 chars, see `kg::index::fnv1aHex()` in `IndexDriver.cpp`) computed
-    over `entry.directory + '\0' + join(entry.args, '\0')` on the
-    REMAPPED-but-otherwise-raw `CompileEntry` (i.e., after `CompileDb::
-    load()`'s remap/include/exclude step, but BEFORE `sanitize()` rewrites/
-    drops/injects anything) -- this is deliberate: it makes the hash
-    sensitive to a real CDB change (new/changed compiler flags) but
-    independent of kg's own sanitizer version, which will keep changing
-    across phases without the underlying compile command changing.
+  - `kg_tu(path PRIMARY KEY, args_hash, file_node_id, status, entry_count)`
+    -- one row per distinct indexed PATH (NOT per CDB entry: a path can have
+    more than one CDB entry, see the "Phase 9: duplicate CDB entries"
+    section below for `args_hash`'s real, combined recipe and what
+    `entry_count` means -- this original description undersold that from
+    Phase 1 through Phase 8, back when every path really did have exactly
+    one entry in every CDB this project's own tests exercised). `args_hash`
+    is a 64-bit FNV-1a hash (lowercase hex, 16 chars) built from each
+    entry's own hash (`kg::index::computeArgsHash()`, `CompileDb.h`/`.cpp`),
+    itself computed over `entry.directory + '\0' + join(entry.args, '\0')`
+    on the REMAPPED-but-otherwise-raw `CompileEntry` (i.e., after
+    `CompileDb::load()`'s remap/include/exclude step, but BEFORE
+    `sanitize()` rewrites/drops/injects anything) -- this is deliberate: it
+    makes the hash sensitive to a real CDB change (new/changed compiler
+    flags) but independent of kg's own sanitizer version, which will keep
+    changing across phases without the underlying compile command changing.
     `file_node_id` is the `file` row id for `entry.file` (looked up by exact
     string equality against `file.path` after the write; null if that TU
     produced no file row at all, e.g. a total parse failure).
@@ -364,8 +370,9 @@ while every current `kg index` run stays a full index.
   `include/kg/index/Provenance.h`): `kg_provenance_version` (currently `1`),
   `kg_version`, `kg_walker_version`, `kg_cdb_path` (absolute), a single
   `kg_options_json` blob (remaps/include/exclude/system_file_rows/
-  drop_args/extra_args/resource_dir/gcc_toolchain/std/cuda_path/cuda_mode --
-  every sanitizer/CDB-loading option that affects indexed output),
+  drop_args/extra_args/resource_dir/gcc_toolchain/std/c_std/cuda_path/
+  cuda_mode -- every sanitizer/CDB-loading option that affects indexed
+  output),
   `kg_repo_root`/`kg_repo_commit`/`kg_dirty_paths` (via `git`, resolved by
   the CLI layer through the new `kg::common::process::run()` subprocess
   helper -- never a shell; empty/best-effort if git isn't available or the
@@ -532,7 +539,13 @@ machinery. `kg update` itself is now a real, non-hidden CLI subcommand
      (see `kg::model::IndexBackend`'s writer); leaving a
      `definition_kind=0` row behind would make an incrementally-updated
      database diverge from a fresh index's `symbol` table shape, exactly
-     the kind of drift `kg dbdiff`/`Snapshot` exist to catch.
+     the kind of drift `kg dbdiff`/`Snapshot` exist to catch. (Phase 8
+     added a sibling step here, 4b: `node.type` is ALSO reset to UNKNOWN
+     for every node that lost >= 1 declaring file this way, not just ones
+     that lost all of them -- see the Phase 8 section's "Design" list for
+     why `node.type`'s own upgrade-only write needs this to let a genuine
+     kind-changing source edit, e.g. `class` -> `struct`, actually take
+     effect on `kg update`.)
      Also: after this step (and after the dead-node fixpoint further down),
      `invalidate()`/`sweepOrphans()` DELETE any `kg_symbol_def` row whose
      `node_id`/`file_node_id` no longer points at a live `node`/`file`, and
@@ -988,3 +1001,543 @@ T_full_head` hard and warns below the `1/5` bar.
 **Docs**: this section; `README.md`'s `## Testing` (`ctest -L update`,
 `KG_CUCS_UPDATE_FROM`); `test/CMakeLists.txt`'s `cucs_update_integration`
 registration comment.
+
+## Phase 7: `kg index` progress display + `--parallel`/`-j`
+
+Two independent additions to `kg index` (and, for `--parallel`/`-j` only,
+`kg update`'s re-index step): a right-aligned `[ k/N] Ts  status  path`
+per-TU progress line plus a periodic running-summary line (replacing the
+old unconditional `path: status` line), and a `--parallel N`/`-j N` flag
+that extracts N TUs concurrently while keeping the single-threaded
+`SrctrldbBackend`/SQLite writer.
+
+### Determinism: the reorder buffer
+
+`SrctrldbBackend::consume()` (the vendored SourcetrailDB writer underneath
+it) is not thread-safe and, more fundamentally, *shouldn't* be made
+concurrent even if it could: node ids, name-collision resolution order, and
+`kg_tu` row order are all a function of the ORDER `consume()` is called in.
+Parallelizing extraction without also controlling consumption order would
+make every downstream artifact (ids in particular) depend on which worker
+thread happened to finish first -- a foot-gun for anyone diffing two
+databases indexed with different `-j` values.
+
+`runIndex()`'s parallel path avoids this with a bounded reorder buffer: N
+worker threads pull CDB indices from a shared counter and each run the
+full, self-contained `sanitize -> parse (own `CXIndex`) -> walk -> fresh
+`BatchSink`` pipeline (including the CUDA rung-retry loop, kept per-TU).
+The MAIN thread is the only consumer: it drains completed `TuOutcome`s
+strictly in CDB order (index 0, 1, 2, ...), blocking on a condition
+variable until each one is ready, and only that thread ever calls
+`backend.consume()`, updates the running counters, or prints a progress
+line. Workers are blocked from getting more than `2*N` indices ahead of the
+consumer (a simple `nextDispatch - nextConsume < 2*N` gate), bounding peak
+memory to roughly `N x (largest in-flight TU's AST + fact batch)`.
+
+Net effect: **the observable result of a `kg index -j N` run is
+byte-for-byte identical to `-j 1` for any N**, verified by
+`test/unit/test_parallel_fixture.cpp` (the synthetic fixture, `-j 1` vs
+`-j 4` vs `-j 0`, snapshot diff empty AND raw `node(id, serialized_name)`
+rows identical) and by `cucs_integration`'s own `-j 8` step (`kg dbdiff`
+against the sequential run on the real corpus, strict/no `--ignore`, must
+be empty). Only wall-clock time should ever differ between `-j` values --
+if a future change makes that assertion start failing, the bug is a
+determinism regression in the reorder buffer (or a newly-introduced piece
+of shared mutable state in the extraction path), not a test to relax.
+
+### Thread-safety audit (extraction path)
+
+Every module `processEntry()` touches was checked for shared/global
+mutable state that a worker-thread pool would race on:
+
+- **libclang**: `TuParser::parseTU()` already creates one `CXIndex` (and
+  one `CXTranslationUnit`) per call, never shared across TUs -- confirmed
+  this stays true when called from N worker threads simultaneously (each
+  thread's `CXIndex`/`CXTranslationUnit` pair is used only by that thread,
+  which is exactly libclang's own concurrency contract: distinct indices
+  may be used concurrently from distinct threads).
+- **`AstWalker`/`NameBuilder`/`FileRegistry`/`ArgSanitizer`/`CudaSupport`/
+  `TuParser`**: no `static`/namespace-scope mutable state anywhere in these
+  (checked directly, not assumed) -- every one of them is either pure
+  functions over their arguments or a small object (`FileRegistry`,
+  `BatchSink`) constructed fresh per TU by `processEntry()`.
+- **stderr writes**: only `SrctrldbBackend::consume()`/`finish()` (verbose
+  collision warnings, VACUUM/ANALYZE warnings) and `IndexDriver`'s own
+  progress/summary lines write to stderr during a `kg index` run, and both
+  only ever run on the single consumer thread -- no worker thread writes to
+  stderr/stdout at all, so there is no interleaving to guard against.
+- **`IndexSummary` counters / `nameCollisions`**: exclusively updated inside
+  `SrctrldbBackend::consume()`/`finish()`, i.e. on the consumer thread only.
+- **no `chdir`** anywhere in the indexing path (confirmed); `getenv`/
+  `std::filesystem` calls are all read-only/thread-safe for this usage.
+- **exceptions**: `processEntry()` wraps the entire extraction pipeline in
+  a `try`/`catch (...)` (on top of the pre-existing per-step handling in
+  `sanitize()`/the CUDA ladder) so a worker thread can never let an
+  exception escape and terminate the process -- it is turned into that
+  TU's own `failed` `TuOutcome` instead.
+
+No shared mutable state needed removing: extraction was already
+TU-isolated by construction (Phase 1's own `FileRegistry`/`BatchSink`
+design), which is what made this seam usable for parallelism at all without
+a rewrite.
+
+### Provenance
+
+`--parallel`/`-j` is deliberately **not** recorded in `kg_options_json`
+(`Provenance`/`UpdateRunOptions`): it does not change what gets indexed,
+only how fast, so a later `kg update` run with a different `-j` value must
+not be treated as an "option changed" event.
+
+**Docs**: this section; `README.md`'s `### Indexing`; `--help`'s `index`/
+`update` option lists; `.claude/skills/kg/SKILL.md`.
+
+## Phase 8: checkpoints & resume (crash-safe, resumable indexing)
+
+Before this phase, `kg index` wrote an entire run in ONE SQLite
+transaction and only wrote provenance/`kg_tu` rows at the very end
+(`IndexDriver`'s old `writeProvenanceAndTus()`) -- a Ctrl-C at minute 40 of
+a 60-minute run lost everything (the hot journal rolls the whole
+transaction back to empty). This phase makes `kg index` checkpoint
+periodically and resumable via `kg update`.
+
+### Design
+
+- **`--commit-every N`** (default 25; `0` = one transaction, the pre-Phase-8
+  behavior). After every N consumed TUs -- and once more at the end --
+  `IndexDriver` calls `SrctrldbBackend::checkpoint()`, which: (a) commits
+  the writer's currently-open transaction; (b) via a SECOND `WritableDb`
+  connection to the same file (safe: the writer's own transaction is closed
+  at this point), in one transaction, flushes everything buffered since the
+  last checkpoint -- the upgrade-only `node.type` UPDATE / `definition_kind`
+  UPSERT, `kg_symbol_def` (INSERT OR IGNORE), the `kg_touched` delta, and
+  the checkpointed TUs' `kg_tu` upserts; (c) reopens a new writer
+  transaction for subsequent `consume()` calls. `finish()` (reader indices,
+  non-indexed-file cleanup, ANALYZE/VACUUM, clearing
+  `kg_index_in_progress`) always runs immediately after the caller's own
+  final `checkpoint()` call -- for `--commit-every 0` that final call is
+  the ONLY checkpoint, covering the whole run, making the result
+  byte-for-byte equivalent to the old single-flush `finish()`.
+- **Tie semantics: fully order-independent, not just "preserved exactly".**
+  Originally (and through most of this phase's development) the `node.type`
+  UPDATE's guard was `WHERE ... rank(stored) < newRank OR stored = UNKNOWN`,
+  strict (`<`) on rank alone -- a stored kind was only ever replaced by a
+  STRICTLY higher-ranked one, so an equal-rank tie (e.g. CLASS vs STRUCT,
+  FUNCTION vs METHOD, GLOBAL_VARIABLE vs FIELD -- all rank 2 under
+  `kindRank()`) kept whichever kind was written FIRST. That was fine
+  *within* a single checkpoint/session (same guard applied once or N times
+  against progressively-updated state gives the same answer either way),
+  but it was NOT fine *across* sessions: which TU counts as "first" depends
+  on which subset/order of TUs a given `kg index`/`kg update` invocation
+  happened to process, so a full 200-TU `kg index` and a 26+174-TU `kg
+  update` resume on top of an interrupted run could -- and, on the real
+  cucs corpus, DID (see the subsection below) -- disagree about `node.type`
+  for a rank-tied symbol. Fixed by extending the guard to a full
+  `kindOrder(kind) = (kindRank(kind), nodeKindInt(kind))` total order:
+  `WHERE ((CASE type ... rank(stored) ...) < newRank OR (rank(stored) =
+  newRank AND type < newKindInt))` (`SrctrldbBackend::flushPending()`'s
+  `kUpdateNodeTypeSql`), with the matching order applied in memory too
+  (`bufferKindDef()`, which now also tie-breaks on `nodeKindInt()` instead
+  of "first buffered wins") and in `BatchSink`'s per-TU merge
+  (`kg::model::symbolKindBeats()`, `src/model/Enums.cpp`, used instead of a
+  bare `kindRank() >` comparison). The final `node.type` for any node is
+  now a pure function of the SET of kinds ever observed for it, independent
+  of processing order or session boundaries -- ties are no longer
+  "preserved", they're **eliminated** (there is always exactly one correct
+  answer for a given set of observations, regardless of order).
+  `symbol.definition_kind` still uses `max()` (order-independent either
+  way, unaffected by this change). Verified by
+  `test_resume_fixture.cpp`'s `--commit-every 1` vs `25` vs `0` equivalence
+  test (snapshot diff AND raw `node(id, serialized_name)` rows identical),
+  `test_parallel_fixture.cpp`'s `-j 4` + `--commit-every 3` case
+  (checkpointing interacting with the Phase 7 reorder buffer), and the new
+  `test_kind_determinism.cpp` (`[fixture]`: indexing the synthetic fixture
+  CDB with its entries in REVERSE order produces an identical
+  `serialized_name -> type` mapping and an empty `diffSnapshots()`).
+- **`kg update`'s invalidation now resets `node.type` for every node whose
+  declaring file was cleared, not just ones that lost EVERY declaring
+  file.** `node.type` is upgrade-only (previous bullet), which is exactly
+  right for correctness across independent OBSERVATIONS -- but wrong for a
+  genuine source EDIT that changes a symbol's own kind (e.g. `class Square`
+  -> `struct Square`): without a reset, the stale CLASS `node.type` a prior
+  session already wrote would never be replaced by the re-index's own
+  STRUCT observation (CLASS and STRUCT rank equally under `kindRank()`, and
+  even the new `kindOrder()` tie-break above only decides between
+  DIFFERENT, still-live observations -- it doesn't know the CLASS
+  observation is now stale/gone). `Invalidator::invalidate()`'s step 4
+  (`src/update/Invalidator.cpp`) already computes `kg_lost` -- every node
+  that lost >= 1 `kg_symbol_def` row to this clear -- for the `symbol` row
+  deletion described below; it now ALSO does `UPDATE node SET type =
+  <NodeKind::UNKNOWN's int> WHERE id IN (SELECT node_id FROM kg_lost)`
+  right after that, letting the re-index that's about to run re-derive
+  `node.type` from scratch via the normal upgrade-only ladder, exactly like
+  a fresh `kg index` of the same edited source would. Verified by
+  `test/update/update_scenario.cmake`'s new step 4b2 (`class Square ->
+  struct Square`, asserting `node.type` is STRUCT's int post-update, and
+  `kg dbdiff` against a fresh index of the same commit is empty).
+  **Residual caveat** (same TU-provenance limitation class as every other
+  gap in this section): if a node's declaration is deleted outright and it
+  survives ONLY as a reference target from an untouched TU (not itself
+  being reindexed this run), nothing re-derives its kind this run, and it
+  can be left at UNKNOWN where a from-scratch `kg index` would show
+  whatever kind that untouched TU's reference implies. Not exercised by any
+  current test (would need a scenario that deletes a declaration while
+  leaving a reference-only user untouched); flagged here rather than
+  silently accepted.
+- **`kg_touched`** (used by `kg update`'s post-index GC sweep) is
+  DROP+recreated exactly ONCE per session -- the first flush, not every
+  checkpoint -- then every later flush in the same session only INSERTs its
+  delta. Dropping it on every checkpoint would un-protect nodes from
+  earlier, already-committed chunks of the SAME run.
+- **Non-indexed-file cleanup** (`UPDATE file SET indexed=0,complete=0`,
+  `DELETE FROM filecontent`) also moved from finish()-only into every
+  flush: a system header first (and only) reached by a TU in an
+  already-checkpointed chunk must not be left with the vendored writer's
+  default `indexed=1/complete=1` just because the run never reached a
+  normal `finish()` (see "Resume via `kg update`" below).
+- **Provenance up front.** `kg_provenance_version`/`kg_version`/
+  `kg_walker_version`/`kg_cdb_path`/`kg_options_json`/`kg_repo_root`/
+  `kg_repo_commit`/`kg_dirty_paths`/`kg_indexed_at`, plus a new
+  `kg_index_in_progress="1"` key, are written via their own tiny
+  `WritableDb` transaction right after `SrctrldbBackend::begin()` (which now
+  only opens the file/creates the schema -- it no longer starts the
+  writer's transaction itself; `startTransaction()` does that, called
+  AFTER provenance is durable) -- so provenance survives even a run
+  interrupted before a single TU is consumed. `kg_index_in_progress` is
+  deleted by `finish()` on success, or by `kg update` once it completes a
+  resumed run.
+- **Graceful Ctrl-C.** A `sig_atomic_t` flag (no I/O in the handler) is set
+  by SIGINT/SIGTERM; the consumer loop (both the sequential and the
+  parallel/reorder-buffer path) checks it once per consumed TU. On
+  interrupt: no new TUs are dispatched (the parallel path freezes
+  `nextDispatch` at its current value and still drains whatever was already
+  in flight, bounded by the `2*N` reorder window), a final checkpoint runs
+  via `SrctrldbBackend::finishInterrupted()` (same flush as `checkpoint()`,
+  but then CLOSES the writer instead of reopening a transaction -- no
+  reader indices/ANALYZE/VACUUM/`kg_index_in_progress`-clearing; those are
+  `kg update`'s job when it eventually finishes the run), and the process
+  prints `kg index: interrupted after K/N TUs -- completed work is saved;
+  resume with: kg update -d <db>` and exits **130**. A hidden
+  `--stop-after K` flag (checked the same way, driven by a plain consumed-
+  TU counter instead of a signal) gives tests an EXACT, deterministic
+  interruption point instead of racing a real `SIGINT`.
+- **Resume via `kg update`.** A database with `kg_index_in_progress="1"` is
+  no longer refused by `kg update` -- it logs "resuming interrupted index"
+  and adds every CDB entry with NO `kg_tu` row at all (not just ones a `git
+  diff` happened to flag as `Added`) to the retry set, on top of the
+  existing `status != 'ok'` retry set. This is necessary because ordinary
+  new-TU detection (`kg::update::matchChanged`'s `newTus`) is entirely
+  git-diff-driven: a CDB entry the interrupted run never reached, but that
+  nothing in git touched, would otherwise be invisible to `kg update` (its
+  `file` row might not even exist yet, or -- the more interesting case --
+  it might already have one, reached only as a header by an earlier,
+  completed TU, despite never itself being indexed as a TU). Because
+  checkpoints commit `kg_tu` rows for a contiguous CDB prefix (the Phase 7
+  reorder buffer's ordering guarantee holds regardless of `-j`), "the
+  untracked suffix" is exactly this "no `kg_tu` row" set -- no CDB-order
+  bookkeeping needed beyond that. `kg update` clears
+  `kg_index_in_progress` unconditionally (idempotent) once it finishes.
+  `kg query` on an in-progress database still works (read-only) but prints
+  a one-line stderr notice, `kg query: index incomplete (interrupted) --
+  run `kg update` to finish`, suppressed by `-q`/`--json`. `kg index`
+  itself now refuses (exit 2, not the generic exit 1) an existing output
+  with `kg_index_in_progress` set, pointing at `kg update -d <db>` or
+  `--force`.
+
+### Known imprecision: `kg_touched` after a resumed run
+
+`kg_touched` always describes "every node THIS indexing pass produced" --
+for a full, uninterrupted `kg index` that's every node in the database; for
+any partial re-index (an ordinary `kg update`, OR `kg update` finishing an
+interrupted `kg index`) it's only the nodes the reindexed TUs still
+produce. A database resumed this way therefore ends up with `kg_touched`
+reflecting only the LAST chunk `kg update` reindexed (e.g. 3 TUs out of an
+original 1000), not the full original run's nodes -- exactly the same
+imprecision an ordinary single-TU `kg update` already has relative to the
+full index it's built on. It is not a NEW gap Phase 8 introduces: nodes
+from the earlier, already-committed chunks remain protected from GC by
+`Invalidator`'s occurrence/edge-based rules regardless (see the Phase 5
+section above); `kg_touched` is only a supplementary signal for purely
+structural, occurrence-less scope nodes. Accepted rather than engineered
+around, given how narrow the affected node population is.
+
+### Order-dependence bugs found (and fixed) by the real-corpus resume test
+
+`test_cucs.cpp`'s Step 4 (`kg update` resuming a real, SIGINT'd `kg index -j
+4` run on the full cucs corpus) found that the resumed-then-completed
+database was NOT always strictly `kg dbdiff`-empty against a fresh `-j 8`
+index. This used to be reported here as a single "pre-existing residual-
+collision (`m_byName`)" limitation with `test_cucs.cpp` only WARNING (not
+hard-failing) on it; a closer forensic pass -- diffing the actual dbdiff
+output row-by-row rather than assuming the cause -- found that explanation
+was wrong (or at least incomplete) for what this corpus actually exercises,
+and turned up two distinct, genuinely fixable order-dependence bugs
+instead. Both are now fixed, `test_cucs.cpp`'s Step [13] is a hard
+assertion again (no WARNING fallback), and a real `kg dbdiff` between a
+fresh `-j 8` cucs index and a `--stop-after`-interrupted, `kg update`-
+resumed one is empty.
+
+1. **Node-kind (`node.type`) ties broke first-observed-wins, not
+   order-independently.** `SrctrldbBackend::bufferKindDef()` kept the
+   in-memory buffered kind on an EQUAL-`kindRank()` tie (e.g. CLASS vs
+   STRUCT, FUNCTION vs METHOD, GLOBAL_VARIABLE vs FIELD -- all rank 2), and
+   `flushPending()`'s `kUpdateNodeTypeSql` UPDATE was strict `<` on rank
+   alone, so it never re-decided a rank tie already committed to disk
+   either. Both meant "whichever TU/session observed a real kind FIRST"
+   decided the final `node.type` for any name whose observers disagreed at
+   equal rank -- and "first" depends on which TU subset/order a given `kg
+   index`/`kg update` invocation happened to process, which differs between
+   a single 200-TU session and a 26+174-TU resume. Fixed by extending the
+   comparison to the full `kindOrder(kind) = (kindRank(kind),
+   nodeKindInt(kind))` total order everywhere a kind is merged
+   (`bufferKindDef()`, `kUpdateNodeTypeSql`, and `BatchSink`'s per-TU merge
+   via the new `kg::model::symbolKindBeats()`) -- see the "Tie semantics"
+   bullet above for the exact SQL. This alone eliminated the overwhelming
+   majority of the real dbdiff rows this test was seeing (a ~200-TU repro
+   at one point showed 586/531 differing node/edge/location/symbol rows;
+   most were a handful of ambiguous system typedefs' node.type disagreeing,
+   fixed by this change alone -- see point 2 below for why the typedefs'
+   NAMES also disagreed, a separate bug).
+2. **`NameBuilder`'s ancestor-chain and identity/disambiguator strings
+   embedded TU-as-spelled (unnormalized) file paths**, in two different
+   ways, both making a symbol's NameHierarchy (and therefore its node
+   identity) depend on which TU happened to construct it first in a given
+   session:
+   - `ancestorChainRootToLeaf()`/`AstWalker::ensureSymbol()` included
+     `CXCursor_LinkageSpec` (`extern "C" { ... }`) ancestors in a symbol's
+     name/registration chain. libclang's semantic-parent walk does not
+     reliably agree, across separately-parsed TUs, on whether a given
+     system typedef (observed: glibc's `int32_t`/`int64_t`, CUDA's
+     `CUuuid_st`) is reached through such a block at all -- each TU's own
+     macro/header state can genuinely nest the identical logical
+     declaration differently -- so the resulting `NameHierarchy` gained (or
+     didn't gain) a spurious empty-name element depending on which TU's
+     view "won" the session's `m_byKey`/`m_byName` cache. Fixed by skipping
+     `CXCursor_LinkageSpec` entirely in both places: it isn't a named C++
+     scope to begin with (`extern "C" { void f(); }` names `::f`, not
+     `::<something>::f`), so this is a correctness fix, not just a
+     determinism one.
+   - Declaration-file paths embedded in a translation-unit-local entity's
+     disambiguator (`disambiguatorFor()`) and identity key
+     (`buildSymbolIdentity()`'s local-scope/no-USR branches), and paths
+     libclang itself prints inside a synthesized lambda closure-type
+     spelling (`"(lambda at <path>:<line>:<col>)"`, which can end up
+     embedded in a NameElement's postfix via a function parameter's printed
+     type, e.g. `std::thread::thread(F&&)`), were used verbatim as
+     libclang/that TU spelled them. The exact same physical header,
+     `#include`d with two different relative spellings by two different
+     TUs (real corpus case: cucs's `src/data/io_worker.hpp`, reached both
+     directly and via `test/data/../../src/data/io_worker.hpp`), therefore
+     produced two different disambiguator/identity strings for the exact
+     same TU-local lambda. Fixed by normalizing every such embedded path
+     via `kg::common::paths::normalize()` before it becomes part of any
+     identity/disambiguator string (`NameBuilder.cpp`'s new
+     `normalizedFileName()` helper, and `normalizeLambdaPathsInText()` for
+     the synthesized-lambda-spelling case specifically).
+
+Both fixes are order-independence fixes at the *identity* layer (which
+node a given real-world entity resolves to, and what NameHierarchy it
+gets), complementary to the `node.type` merge-order fix documented above
+(which kind a given, already-identified node ends up with). Verified: (a)
+`test_kind_determinism.cpp` (reverse-CDB-order equivalence on the synthetic
+fixture) and `test/update/update_scenario.cmake`'s new `class Square ->
+struct Square` commit (the node.type reset in Invalidator's step 4, see
+below, is what makes THAT specific edit take effect at all); (b) directly
+against the real cucs corpus, per the "Tests" section below.
+
+### Tests
+
+`test/unit/test_resume_fixture.cpp` ("[fixture][resume]"): commitEvery
+equivalence (1 vs 25 vs 0, snapshot + raw node-id diff), and the full
+interrupt/resume scenario (`--stop-after 3` with `--commit-every 2` on the
+6-TU synthetic fixture -- exit 130, no hot journal, `kg_index_in_progress`
+set, exactly 3 `kg_tu` rows, `kg index` without `--force` refuses with exit
+2, `kg query stats` succeeds and prints the notice, then `kg update`
+completes it with a strict-empty `dbdiff` against the canonical fixture
+database). `test/unit/test_parallel_fixture.cpp` gained a `-j 4` +
+`--commit-every 3` equivalence case. `test/unit/test_kind_determinism.cpp`
+("[fixture]", new): indexes the synthetic fixture CDB in forward vs
+REVERSED entry order and asserts both an empty `diffSnapshots()` and an
+identical raw `serialized_name -> type` mapping -- the direct regression
+test for the `node.type` merge-order fix above.
+`test/update/update_scenario.cmake` gained step 4b2 (`class Square ->
+struct Square`), asserting `node.type` reflects the edit (not the stale
+CLASS kind) and `kg dbdiff` against a fresh index of the same commit is
+empty -- the regression test for the `Invalidator` `kg_lost` node.type
+reset above. `test/integration/test_cucs.cpp`'s Step 4 sends a REAL
+`SIGINT` to a `kg index -j 4 --commit-every 5` run against the full cucs
+corpus (via a small bash wrapper -- `std::system()` itself can't signal a
+child), asserts exit 130 and no hot journal, then `kg update -d`s it to
+completion and `kg dbdiff`s the result against a fresh `-j 8` index
+(strict, no `--ignore`) -- a HARD assertion (must be empty; no longer a
+WARNING fallback, now that the two bugs above are fixed).
+
+**Docs**: this section; `README.md`'s `### Indexing`; `--help`'s
+`--commit-every`; `.claude/skills/kg/SKILL.md`.
+
+## Phase 9: duplicate CDB entries (one path, several args)
+
+### The bug
+
+Real `compile_commands.json` files can list the SAME `file` path more than
+once -- typically because a source is compiled into several targets/configs
+with different flags (e.g. Sirius's real CDB: 975 entries after kg's own
+excludes, for only 738 distinct `file` paths -- 237 files appear twice).
+`kg_tu` is (and stays) `path TEXT PRIMARY KEY`, so it can only ever hold ONE
+row per path -- but before this fix, `args_hash` was whichever entry's
+`computeArgsHash()` happened to be UPSERTed LAST during that indexing pass
+(`IndexDriver`'s `chunkTuRows.push_back(...)` used the CURRENT entry's own
+hash, and the `kg_tu` UPSERT unconditionally overwrote the stored value).
+On the NEXT `kg update`, comparing EVERY CDB entry's own hash against that
+one stored value meant one of the path's two entries would, deterministically,
+never match -- "flag changed" -- so ALL of that path's entries got
+re-indexed, on EVERY SINGLE run, forever, regardless of what `--files` (or
+git) actually said changed. Observed on a real corpus: a one-file `--files`
+update re-indexed 475 TUs (237 duplicated files x 2 entries each, plus the
+one file actually requested).
+
+A secondary, cosmetic (not fixed, just documented) confusion: `kg index`'s
+progress counter (`[k/N]`) counts CDB ENTRIES (975 in the Sirius example),
+while `kg_tu` counts distinct PATHS (738) -- `N` in the progress line and
+`SELECT count(*) FROM kg_tu` will legitimately disagree whenever the CDB has
+any duplicated path. `kg.update-summary/1`'s `tus.to_index` (and the
+in-process `UpdateSummary::tusToIndex`) similarly counts ENTRIES, not
+distinct paths -- re-indexing a duplicated path re-indexes ALL of its
+entries together (see below), so this can exceed the number of distinct
+files being touched.
+
+### The fix: one combined, order-independent hash per path
+
+`kg_tu` gains an `entry_count INTEGER NOT NULL DEFAULT 1` column
+(`kg::index::kKgTuDdl`, `include/kg/index/Provenance.h`) and `args_hash`'s
+recipe changes from "one CDB entry's `computeArgsHash()`" to "the COMBINED
+hash of every CDB entry that currently shares this path" --
+`kg::index::pathArgsHashes()` (`CompileDb.h`/`.cpp`), the single source of
+truth both `IndexDriver` (writes `kg_tu` rows) and `UpdateDriver`
+(flag-change detection) now share:
+
+1. Group the (already remapped/include/exclude-filtered) CDB entries by
+   `file` path.
+2. For each path, compute `computeArgsHash()` for every one of its entries,
+   sort the resulting hex strings, and de-duplicate (two entries with
+   byte-identical args collapse to one).
+3. FNV-1a-64 over the sorted, deduped hashes joined with `'\0'` separators,
+   hex-encoded the same way `computeArgsHash()` is.
+4. `entry_count` is the raw (non-deduplicated) number of CDB entries
+   observed for that path.
+
+This makes the stored `args_hash` a pure function of the SET of
+compile-flag variants a path currently has, independent of (a) which entry
+happens to be consumed/compared first, and (b) the ORDER the CDB lists that
+path's entries in (which can legitimately vary run to run -- e.g. after
+`cmake --build` regenerates `compile_commands.json` -- without any entry's
+actual content changing).
+
+- **`IndexDriver`**: computes `pathArgsHashes(entries)` ONCE, up front, from
+  the full (already limit-applied) entry list, and additionally tracks
+  `remainingEntriesByPath` -- each path's `entryCount`, decremented every
+  time one of its entries is consumed. A path's `PendingTuRow` (combined
+  `argsHash`/`entryCount`, and `status` = the WORST seen so far across that
+  path's entries consumed THIS session, `"failed" > "partial" > "ok"`,
+  tracked in `worstStatusByPath`) is only ever pushed into `chunkTuRows`
+  once that decrement reaches 0 -- i.e. once the path's LAST entry, in CDB
+  order, has actually been consumed -- NOT re-upserted speculatively on
+  every earlier entry. This is deliberate, not just "the simplest option
+  that happens to work": since `consumeOutcome()` runs strictly in CDB
+  order (true both for the sequential path and for the parallel path's
+  reorder-buffer consumer), gating the UPSERT on "last entry consumed"
+  guarantees a `kg_tu` row only ever exists for a path once EVERY one of
+  its entries has genuinely been processed in THIS run -- see "Interrupted
+  `kg index` + a split duplicated path" below for why that matters.
+- **`UpdateDriver`**: flag-change detection now compares each PATH's
+  combined hash (from `pathArgsHashes(cdb)`, the freshly-loaded CDB) against
+  its stored `kg_tu.args_hash` exactly ONCE per path (not once per CDB
+  entry) -- both of a duplicated path's entries flag (or don't flag)
+  together, and a path is never double-counted in `files.flag_changed`.
+  "Removed" (a `kg_tu` path with no CDB entry left) and "new" (a CDB path
+  with no `kg_tu` row) detection are unaffected -- they were already
+  path-keyed. The re-index set (`selectEntries()`, `FileMatcher.cpp`)
+  already operated on PATHS, not entry identities, and therefore already
+  picked up every one of a flagged path's entries once that path was
+  queued for re-indexing -- no change needed there.
+- **A database whose `kg_tu` table predates `entry_count` is treated as
+  legacy and refused (exit `2`)**, same as the existing `status`-column
+  check: `UpdateDriver` runs `PRAGMA table_info(kg_tu)` and requires BOTH
+  columns before doing anything else with `kg_tu` -- a pre-`entry_count`
+  `args_hash` is a single entry's hash, not the new combined one, and can't
+  be compared against `pathArgsHashes()`'s output correctly.
+
+### Fixed: interrupted `kg index` + a split duplicated path
+
+An earlier version of this fix UPSERTed a path's `kg_tu` row (with the
+FULL combined hash/entry_count, computed up front from the WHOLE CDB) the
+moment ANY ONE of that path's entries was consumed -- not only once ALL of
+them were. That was simple and correct for an uninterrupted run (every
+entry gets consumed before the process exits, so the row's `status`
+converges to the true worst-of-all-entries value by the time the run
+ends), but NOT correct for the Phase 8 "resume an interrupted `kg index`"
+path if the interrupt happened to land strictly BETWEEN two entries of the
+SAME duplicated path: the first entry's consumption would already have
+written a `kg_tu` row for that path, so `UpdateDriver`'s "no `kg_tu` row at
+all" resume-retry check (`resumingInterruptedIndex`'s branch in
+`runUpdate()`) would incorrectly treat the WHOLE path -- including the
+sibling entry that was NEVER actually consumed -- as already fully
+indexed, and silently skip re-indexing that sibling entry forever.
+
+Fixed by gating the `kg_tu` UPSERT on "this path's LAST entry (in CDB
+order) was just consumed" instead of "any entry was just consumed" (see
+`remainingEntriesByPath` in the `IndexDriver` bullet above). Consequences:
+
+- An interrupt (real `SIGINT`/`SIGTERM`, or `--stop-after`) that lands
+  strictly between two entries of a duplicated path now leaves NO `kg_tu`
+  row for that path at all -- not a stale one, not one that wrongly claims
+  completeness. The facts/checkpoint already written for the FIRST entry
+  are still durably on disk (`SrctrldbBackend::checkpoint()`'s usual
+  crash-safety guarantee is unaffected -- only the `kg_tu` bookkeeping row
+  is deferred, not the actual indexed content).
+- `kg update`'s Phase 8 resume then correctly sees "no `kg_tu` row" for
+  that path and re-indexes it -- and, since `selectEntries()`
+  (`FileMatcher.cpp`) already selects whole paths rather than individual
+  entries, that means BOTH of the path's CDB entries get re-consumed, even
+  though the first one was already (partially) processed before the
+  interrupt. Re-processing it a second time is harmless: it produces
+  byte-identical facts, and `SrctrldbBackend`'s node/symbol dedup
+  (`m_byKey` et al.) is idempotent for identical input -- confirmed by the
+  regression test below, whose post-resume `dbdiff` against a fresh full
+  index is strictly empty.
+- An uninterrupted `kg index`, or a `kg update` re-index of an
+  already-fully-indexed database, are both unaffected either way (every
+  entry of every path gets consumed regardless of when the `kg_tu` row is
+  written).
+
+### Tests
+
+`test/unit/test_compiledb_dupes.cpp` (new): `pathArgsHashes()` unit
+coverage -- order independence, sensitivity to any one entry's flags
+changing, `entry_count` counting raw entries (not deduped hashes), and
+per-path isolation. `test/fixtures/synthetic/CMakeLists.txt` gained a
+`fixture_lib_dup` target compiling `templates.cpp` a second time with
+`-DKG_DUP=1` (unused by the source -- same AST content, different flags,
+matching what a real duplicated-but-differently-configured TU usually looks
+like), giving the fixture CDB 8 entries for 7 distinct paths.
+`test/unit/test_incremental_fixture.cpp` gained an `entry_count` assertion
+(templates.cpp = 2, everything else = 1) and its existing `kg_tu` row-count
+test's comment was corrected (7 PATHS, not "7 CDB entries" -- the CDB now
+has 8). `test/unit/test_update_driver.cpp` gained the actual regression
+test: updating an UNRELATED file (`chain.cpp`) via `--files` must report
+`files.flag_changed == 0` and leave templates.cpp's `kg_tu` row (hash +
+entry_count) byte-for-byte untouched, both on the first run and a repeated
+one. `test/unit/test_resume_fixture.cpp`'s `--stop-after 3` scenario's
+`tus.to_index` assertion was updated (4 -> 5 CDB entries: the fixture's 8th
+entry, templates.cpp's duplicate, is now part of the never-indexed
+suffix) with a comment explaining the new arithmetic. `test/unit/
+test_resume_fixture.cpp` also gained the direct regression test for the
+"interrupted `kg index` + a split duplicated path" fix above:
+`--stop-after 4` (chosen so it lands exactly between templates.cpp's two
+CDB entries, at indices 3 and 7) asserts NO `kg_tu` row exists for
+templates.cpp right after the interrupt, then that `kg update` completes
+the database with an empty `dbdiff` against a fresh full index and the
+final `kg_tu` row's `entry_count` is 2.
+
+**Docs**: this section; `docs/JSON_SCHEMA.md`'s `tus.to_index` note
+(entries, not distinct files, per the `[k/N]` progress-counter confusion
+above).

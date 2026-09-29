@@ -315,6 +315,50 @@ kg_index("${WORK}/full_b.srctrldb")
 kg_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_b.srctrldb")
 
 # ------------------------------------------------------------------------
+# Step 4b2: class Square -> struct Square (kind-change regression, see
+# docs/KNOWN_LIMITATIONS.md's Phase 8 section). Square's node.type was
+# already CLASS from the baseline full index; node.type is written
+# upgrade-only (see SrctrldbBackend::flushPending()'s kUpdateNodeTypeSql),
+# so without Invalidator's step-4b node.type reset (UPDATE node SET
+# type=UNKNOWN for every node in kg_lost), this genuine source edit would
+# silently NOT take effect on `kg update` -- CLASS (rank 2) would never be
+# "downgraded" back to STRUCT (also rank 2, but a different node-kind int)
+# by the re-index's own upgrade-only write, unlike a fresh `kg index` of
+# the same edited source, which sees only STRUCT and writes STRUCT from
+# scratch. This is exactly the class of bug the reset exists to prevent.
+# ------------------------------------------------------------------------
+
+message(STATUS "update_scenario: step b2 -- class Square -> struct Square")
+file(READ "${WORK}/repo/include/shapes.hpp" SHAPES_TEXT)
+string(REPLACE
+    "class Square : public Polygon, public Colored"
+    "struct Square : public Polygon, public Colored"
+    SHAPES_TEXT "${SHAPES_TEXT}")
+file(WRITE "${WORK}/repo/include/shapes.hpp" "${SHAPES_TEXT}")
+git_commit_all("${WORK}/repo" "b2: class Square -> struct Square")
+reconfigure()
+
+kg_update_json(J 0)
+json_field(v "${J}" files cleared)
+assert_ge("step b2: files.cleared" "${v}" "3")
+
+# Match Square's own node precisely by its exact leaf NameElement encoding
+# (char(9) || 'mSquare' || char(9) || 's' || char(9) || 'p' -- prefix and
+# postfix both empty, i.e. the bare record itself, NOT e.g. its
+# `Square(double)` constructor, which has a non-empty postfix).
+# '_' is sqlite LIKE's single-char wildcard, matching whichever of 'm'
+# (first/root NameElement) or 'n' (a later one -- Square is nested under
+# the `fixture` namespace, so 'n' in practice) precedes the name.
+sqlite_scalar(SQUARE_TYPE "${WORK}/inc.srctrldb"
+    "select type from node where serialized_name like ('%' || char(9) || '_Square' || char(9) || 's' || char(9) || 'p')")
+# NodeKind::STRUCT's int (1 << 6 = 64, see third_party/sourcetraildb/include/NodeKind.h) --
+# a fresh index of the edited source (struct Square) writes exactly this.
+assert_eq("step b2: Square's node.type reflects the struct edit, not the stale CLASS kind" "${SQUARE_TYPE}" "64")
+
+kg_index("${WORK}/full_b2.srctrldb")
+kg_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_b2.srctrldb")
+
+# ------------------------------------------------------------------------
 # Step 4c: git rm src/overloads.cpp
 # ------------------------------------------------------------------------
 

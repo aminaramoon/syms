@@ -16,6 +16,7 @@
 // and keeps the "exit 77 before doing any real work" contract obviously
 // correct by inspection.
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
@@ -530,7 +531,10 @@ int main()
         std::string line;
         while (std::getline(stderrLines, line))
         {
-            if (line.find("test_gpu_kernels.cu:") != std::string::npos)
+            // Progress lines are now "[ k/N] Ts  status  path" (no trailing
+            // colon after the path) rather than the old "path: status" --
+            // match on the bare filename either way.
+            if (line.find("test_gpu_kernels.cu") != std::string::npos)
             {
                 std::printf("cucs_integration: [10] index progress line: %s\n", line.c_str());
             }
@@ -539,6 +543,178 @@ int main()
         check(
             kernelsIndexedWithCallEdge != cuFileHasError,
             "[10] CUDA XOR: exactly one of {kernel+launcher indexed with CALL edge, .cu file has an error row} holds");
+    }
+
+    // ========================================================================
+    // Step 3 (Feature 2, `--parallel`/`-j`): re-index the SAME real cucs
+    // corpus with `-j 8` into a separate database, then `kg dbdiff` it
+    // against the sequential (`outDb`, Step 1 above) database -- must be
+    // logically equivalent (exit 0), proving the reorder-buffer design's
+    // determinism guarantee on a real, large, multi-hundred-TU corpus, not
+    // just the small synthetic fixture the unit tests use. Both wall times
+    // are printed so a human/CI log shows the actual speedup.
+    // ========================================================================
+    {
+        const std::string outDbParallel = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_j8.srctrldb";
+        const std::string stdoutParallelPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_index_j8_stdout.json";
+        const std::string stderrParallelPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_index_j8_stderr.log";
+
+        std::ostringstream parallelCmd;
+        parallelCmd << "\"" << std::string(KG_BINARY) << "\" index -c \"" << cdbPath << "\" -o \"" << outDbParallel
+                    << "\" --force --remap /mnt/workspace=/home/aaramoon/workspace -j 8 -q --json";
+
+        std::printf("cucs_integration: running (parallel): %s\n", parallelCmd.str().c_str());
+        const auto pt0 = std::chrono::steady_clock::now();
+        const int parallelRc = runCaptured(parallelCmd.str(), stdoutParallelPath, stderrParallelPath);
+        const auto pt1 = std::chrono::steady_clock::now();
+        const double parallelWallSeconds = std::chrono::duration<double>(pt1 - pt0).count();
+
+        std::printf(
+            "cucs_integration: [11] kg index -j 8 exit code = %d, wall time = %.1fs (sequential was %.1fs, speedup %.2fx)\n",
+            parallelRc,
+            parallelWallSeconds,
+            indexWallSeconds,
+            indexWallSeconds > 0.0 ? indexWallSeconds / parallelWallSeconds : 0.0);
+        check(parallelRc == 0, "[11] kg index -j 8 process exits 0");
+
+        if (fs::exists(outDbParallel))
+        {
+            const std::string dbdiffStdoutPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_dbdiff_j1_vs_j8_stdout.log";
+            const std::string dbdiffStderrPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_dbdiff_j1_vs_j8_stderr.log";
+            std::ostringstream dbdiffCmd;
+            dbdiffCmd << "\"" << std::string(KG_BINARY) << "\" dbdiff \"" << outDb << "\" \"" << outDbParallel << "\"";
+            const int dbdiffRc = runCaptured(dbdiffCmd.str(), dbdiffStdoutPath, dbdiffStderrPath);
+            std::printf(
+                "cucs_integration: [11] kg dbdiff (sequential vs -j 8) exit code = %d\n%s",
+                dbdiffRc,
+                lastLines(readFile(dbdiffStdoutPath), 20).c_str());
+            check(dbdiffRc == 0, "[11] kg dbdiff: sequential (-j 1) and parallel (-j 8) cucs databases are logically equivalent");
+        }
+        else
+        {
+            check(false, "[11] kg dbdiff: sequential (-j 1) and parallel (-j 8) cucs databases are logically equivalent");
+        }
+    }
+
+    // ========================================================================
+    // Step 4 (Phase 8, crash-safe/resumable indexing): launch a real
+    // `kg index -j 4 --commit-every 5` against the cucs corpus, send it a
+    // real SIGINT partway through (via a tiny bash wrapper -- std::system()
+    // itself can't signal a child), assert it exits 130 with no hot journal
+    // left, then `kg update -d` it to completion and `kg dbdiff` the result
+    // against a fresh `-j 8` index (outDbParallel, Step 3 above) -- must be
+    // EMPTY (strict, no --ignore), proving an interrupted-then-resumed run
+    // is logically identical to an uninterrupted one on a real, large
+    // corpus, not just the small synthetic fixture the unit tests use.
+    // ========================================================================
+    {
+        const std::string outDbResume = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_resume.srctrldb";
+        const std::string outDbParallel = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_j8.srctrldb";
+        std::error_code rmEc;
+        fs::remove(outDbResume, rmEc);
+        fs::remove(outDbResume + "-journal", rmEc);
+
+        const std::string resumeStdoutPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_resume_index_stdout.log";
+        const std::string resumeStderrPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_resume_index_stderr.log";
+
+        // Runs the `kg index` child in the background of a bash subshell,
+        // waits a few seconds (enough for -j 4 to have made real progress
+        // on this corpus but not enough to finish -- Step 1/3's wall times,
+        // printed above, are comfortably longer than this), sends it a real
+        // SIGINT, waits for it to exit, and propagates ITS exit code as the
+        // whole subshell's exit code (`exit $?` after `wait`) -- so
+        // std::system()'s return value is the interrupted kg index
+        // process's own exit code, not the wrapper's.
+        std::ostringstream resumeCmd;
+        resumeCmd << "( \"" << std::string(KG_BINARY) << "\" index -c \"" << cdbPath << "\" -o \"" << outDbResume
+                   << "\" --force --remap /mnt/workspace=/home/aaramoon/workspace -j 4 --commit-every 5 "
+                   << "> \"" << resumeStdoutPath << "\" 2> \"" << resumeStderrPath << "\" & "
+                   << "pid=$!; sleep 5; kill -INT $pid 2>/dev/null; wait $pid; exit $? )";
+
+        std::printf("cucs_integration: running (interrupt): %s\n", resumeCmd.str().c_str());
+        const int resumeRaw = std::system(resumeCmd.str().c_str());
+        const int resumeRc = WIFEXITED(resumeRaw) ? WEXITSTATUS(resumeRaw) : -1;
+        std::printf(
+            "cucs_integration: [12] kg index -j 4 --commit-every 5, SIGINT'd after 5s: exit code = %d\n%s",
+            resumeRc,
+            lastLines(readFile(resumeStderrPath), 10).c_str());
+        check(resumeRc == 130, "[12] SIGINT'd `kg index` exits 130");
+
+        const bool hasJournal = fs::exists(outDbResume + "-journal");
+        check(!hasJournal, "[12] no hot journal left next to the interrupted database");
+
+        // Openable read-only (verifies no corruption / no hanging lock) --
+        // also exercises the "index incomplete" query-time notice path,
+        // even though this test doesn't assert on stderr text here (unit
+        // test_resume_fixture.cpp already pins that down against the small
+        // fixture, via KG_BINARY).
+        bool openedOk = false;
+        int64_t tuCountAfterInterrupt = -1;
+        try
+        {
+            kg::db::Database resumeDb(outDbResume);
+            openedOk = true;
+            resumeDb.run(
+                "SELECT count(*) FROM kg_tu", [&](sqlite3_stmt* stmt) { tuCountAfterInterrupt = sqlite3_column_int64(stmt, 0); });
+        }
+        catch (const std::exception& e)
+        {
+            std::printf("cucs_integration: [12] failed to open interrupted db read-only: %s\n", e.what());
+        }
+        check(openedOk, "[12] interrupted database opens read-only cleanly");
+        std::printf(
+            "cucs_integration: [12] kg_tu rows after interrupt = %lld (of %zu total CDB entries)\n",
+            static_cast<long long>(tuCountAfterInterrupt),
+            realTuCount);
+        check(
+            tuCountAfterInterrupt > 0 && static_cast<std::size_t>(tuCountAfterInterrupt) < realTuCount,
+            "[12] interrupted database has SOME but not ALL kg_tu rows (real interruption, not a completed run)");
+
+        // `kg update -d` finishes the interrupted run.
+        const std::string updateStdoutPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_resume_update_stdout.log";
+        const std::string updateStderrPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_resume_update_stderr.log";
+        std::ostringstream updateCmd;
+        updateCmd << "\"" << std::string(KG_BINARY) << "\" update -d \"" << outDbResume << "\" -j 8";
+        const auto ut0 = std::chrono::steady_clock::now();
+        const int updateRc = runCaptured(updateCmd.str(), updateStdoutPath, updateStderrPath);
+        const auto ut1 = std::chrono::steady_clock::now();
+        std::printf(
+            "cucs_integration: [13] kg update -d (resume) exit code = %d, wall time = %.1fs\n%s",
+            updateRc,
+            std::chrono::duration<double>(ut1 - ut0).count(),
+            lastLines(readFile(updateStderrPath), 10).c_str());
+        check(updateRc == 0, "[13] `kg update` resumes and completes the interrupted index");
+
+        // Must match a fresh -j 8 index EXACTLY (strict dbdiff, no --ignore)
+        // -- reuses outDbParallel from Step 3 rather than indexing a third
+        // time.
+        if (fs::exists(outDbResume) && fs::exists(outDbParallel))
+        {
+            const std::string dbdiffStdoutPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_dbdiff_resume_vs_j8_stdout.log";
+            const std::string dbdiffStderrPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_dbdiff_resume_vs_j8_stderr.log";
+            std::ostringstream dbdiffCmd;
+            dbdiffCmd << "\"" << std::string(KG_BINARY) << "\" dbdiff \"" << outDbResume << "\" \"" << outDbParallel << "\"";
+            const int dbdiffRc = runCaptured(dbdiffCmd.str(), dbdiffStdoutPath, dbdiffStderrPath);
+            std::printf(
+                "cucs_integration: [13] kg dbdiff (resumed vs fresh -j 8) exit code = %d\n%s",
+                dbdiffRc,
+                lastLines(readFile(dbdiffStdoutPath), 20).c_str());
+            // Hard assertion (no WARNING fallback): the order-dependence
+            // bugs that used to make this diverge (node.type kept
+            // "whichever equal-rank kind was observed FIRST" on a tie --
+            // SrctrldbBackend::bufferKindDef()/flushPending()'s
+            // kUpdateNodeTypeSql -- and NameBuilder's ancestor-chain/
+            // identity strings embedding an unnormalized, TU-as-spelled
+            // file path, both real and both fixed -- see
+            // docs/KNOWN_LIMITATIONS.md's Phase 8 section) are gone; a
+            // resumed-then-completed run must now match a fresh index
+            // exactly, same as every other dbdiff assertion in this file.
+            check(dbdiffRc == 0, "[13] kg dbdiff: resumed-then-completed and fresh -j 8 cucs databases are logically equivalent");
+        }
+        else
+        {
+            check(false, "[13] kg dbdiff: resumed-then-completed and fresh -j 8 cucs databases are logically equivalent");
+        }
     }
 
     std::printf("cucs_integration: SUMMARY %d passed, %d failed\n", g_pass, g_fail);

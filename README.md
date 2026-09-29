@@ -66,7 +66,10 @@ flox activate -- ./build/kg index \
 
 Useful flags: `--remap OLD=NEW` (literal path substring remap, for a corpus
 compiled in a container/CI path different from where you're indexing it
-from), `--include`/`--exclude GLOB` (filter which TUs get processed),
+from), `--include`/`--exclude GLOB` (filter which TUs get processed; also
+gates which headers are walked, so list your own `include/**` when using
+`--include`), `--exclude-submodules` (exclude every git submodule declared in
+the repo's `.gitmodules` — the easy way to skip vendored dependencies),
 `--cuda-mode auto|full|nowrapper|host-only|skip` (how to handle `.cu`
 files — `auto`, the default, retries a `.cu` TU across progressively more
 permissive rungs until one succeeds), `--json` (also print a
@@ -74,6 +77,39 @@ permissive rungs until one succeeds), `--json` (also print a
 and `--dry-run` (print each TU's fully-sanitized clang argv and exit,
 without actually indexing — useful for debugging a compile-command that
 won't parse).
+
+`-j N`/`--parallel N` extracts N TUs concurrently (0 = use every CPU;
+default is 1, fully sequential). The output is byte-for-byte
+**deterministic regardless of N** — node ids, `kg_tu` rows, and progress
+lines all come out identical to a sequential run, because a single
+reorder-buffered consumer thread still feeds the one SQLite writer in
+strict `compile_commands.json` order; only wall-clock time changes. Peak
+memory scales roughly with N (≈ N × largest TU's AST + fact batch), so pick
+N based on available RAM as well as CPU count — `-j 8` is a reasonable
+default on a big multi-core box. `kg update` accepts the same `-j`/
+`--parallel` flag for its re-index step.
+
+By default (no `-q`), `kg index` prints one right-aligned `[ k/N] Ts  status
+path` line per TU as it completes, plus a periodic one-line running summary
+(`kg index: 120/975 done, 12.3 TU/min, elapsed 9m41s, eta ~68m`) every ~10
+TUs or 5s. `-q` drops the per-TU lines but keeps that summary (now every
+~60s) — the useful mode for a long unattended run; `-qq` silences
+everything except the final summary line. `-v` is unaffected and still adds
+its own extra detail (collision warnings, etc).
+
+**Ctrl-C is safe.** `kg index` checkpoints every 25 consumed TUs by default
+(`--commit-every N`, `0` disables checkpointing entirely and matches the
+pre-checkpointing behavior of one transaction for the whole run) — a
+SIGINT/SIGTERM (or a crash) loses at most the TUs since the last
+checkpoint, never the whole run. An interrupted run exits 130 and prints
+`kg index: interrupted after K/N TUs — completed work is saved; resume
+with: kg update -d <output>`; running that `kg update` finishes exactly the
+untracked remainder and produces a database logically identical to an
+uninterrupted `kg index`. `kg query` still works against an in-progress
+database (read-only), with a one-line stderr notice
+(`index incomplete (interrupted) — run `kg update` to finish`, suppressed
+by `-q`/`--json`). `kg index` itself refuses (exit 2) to overwrite an
+in-progress output without `--force`, pointing at `kg update` instead.
 
 ### Updating
 

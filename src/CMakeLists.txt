@@ -52,7 +52,9 @@ add_library(kg_index STATIC
     index/SrctrldbBackend.cpp
     index/IndexDriver.cpp
     index/Provenance.cpp
+    index/Progress.cpp
 )
+find_package(Threads REQUIRED)
 target_link_libraries(kg_index PUBLIC
     kg_model
     kg_db
@@ -60,6 +62,7 @@ target_link_libraries(kg_index PUBLIC
     kg_sourcetraildb
     LibClang::LibClang
     nlohmann_json::nlohmann_json
+    Threads::Threads
 )
 target_link_libraries(kg_index PRIVATE kg_options)
 

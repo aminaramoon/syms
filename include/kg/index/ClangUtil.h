@@ -98,9 +98,13 @@ private:
     CXTranslationUnit m_tu = nullptr;
 };
 
-// Absolute-ish file path for a CXFile, as libclang reports it (no extra
-// realpath/normalization beyond what libclang already does internally --
-// see NameBuilder.cpp's canonicalDeclFilePath() comment for the rationale).
+// Absolute-ish file path for a CXFile, exactly as libclang/THIS TU reports
+// it (no realpath/normalization) -- i.e. the as-#include'd spelling, which
+// can differ textually between two TUs that reach the same physical file
+// via different include paths. Callers that embed this in an identity/
+// disambiguation string that must be STABLE across TUs (anything in
+// NameBuilder.cpp building a symbol's Name/SymbolKey) need to normalize it
+// first -- see NameBuilder.cpp's normalizedFileName().
 inline std::string fileName(CXFile file)
 {
     if (file == nullptr)

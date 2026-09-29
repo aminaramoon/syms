@@ -1,5 +1,6 @@
 #include "kg/cli/Cli.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -19,6 +20,7 @@
 #include "kg/common/Process.h"
 #include "kg/db/Database.h"
 #include "kg/db/Enums.h"
+#include "kg/db/Meta.h"
 #include "kg/db/NameDecode.h"
 #include "kg/index/ArgSanitizer.h"
 #include "kg/index/CompileDb.h"
@@ -31,6 +33,7 @@
 #include "kg/query/FuzzyMatcher.h"
 #include "kg/query/QueryEngine.h"
 #include "kg/query/SymbolResolver.h"
+#include "kg/update/Git.h"
 #include "kg/update/GitDiff.h"
 #include "kg/update/Snapshot.h"
 #include "kg/update/UpdateDriver.h"
@@ -87,6 +90,8 @@ void printHelp(const char* programName)
         "      --remap OLD=NEW           literal substring path remap (repeatable)\n"
         "      --include GLOB            only process files matching GLOB (repeatable)\n"
         "      --exclude GLOB            never process files matching GLOB (repeatable)\n"
+        "      --exclude-submodules      exclude every git submodule listed in the repo's\n"
+        "                                 .gitmodules (adds <submodule>/** exclude globs)\n"
         "      --drop-arg PATTERN        drop any compiler arg token matching GLOB PATTERN (repeatable)\n"
         "      --extra-arg ARG           append ARG to every TU's argv, after all built-in\n"
         "                                 injections (repeatable, order preserved)\n"
@@ -98,12 +103,25 @@ void printHelp(const char* programName)
         "      --cuda-mode MODE          auto|full|nowrapper|host-only|skip (default: auto)\n"
         "      --system-file-rows MODE   none|direct|all: how many non-indexed files get a\n"
         "                                 `file` table row (default: direct)\n"
-        "      --std STD                 fallback -std= value if none survives sanitizing\n"
-        "                                 (default: c++17)\n"
+        "      --std STD                 fallback -std= value if none survives sanitizing,\n"
+        "                                 for C++/CUDA TUs (default: c++17)\n"
+        "      --c-std STD               fallback -std= value if none survives sanitizing,\n"
+        "                                 for C TUs (default: gnu17)\n"
         "      --limit N                 only process the first N (post-filter) TUs\n"
         "      --no-vacuum               skip the VACUUM step after indexing\n"
         "      --json                    also print a JSON summary object to stdout\n"
-        "  -q, --quiet                   suppress the per-TU progress line\n"
+        "  -j, --parallel N              extract N TUs concurrently (0 = all CPUs, default: 1 =\n"
+        "                                 sequential). Output is byte-for-byte deterministic\n"
+        "                                 regardless of N -- only wall-clock time changes. Peak\n"
+        "                                 memory is roughly N x (largest TU's AST + batch)\n"
+        "      --commit-every N          checkpoint (commit + flush kg_tu rows) every N consumed\n"
+        "                                 TUs, so Ctrl-C/SIGTERM loses at most N TUs' work instead\n"
+        "                                 of the whole run (default: 25; 0 = single transaction,\n"
+        "                                 no checkpoints). Resume an interrupted run with `kg\n"
+        "                                 update -d OUTPUT`.\n"
+        "  -q, --quiet                   suppress the per-TU progress line, but keep the periodic\n"
+        "                                 (every ~60s) running-summary line; repeat (-qq) to\n"
+        "                                 silence that too (the final summary always prints)\n"
         "      --dry-run                 print each TU's fully-sanitized argv and exit,\n"
         "                                 instead of actually indexing\n"
         "  -v, --verbose                 increase verbosity (repeatable)\n"
@@ -129,6 +147,9 @@ void printHelp(const char* programName)
         "      --json                    print machine-readable JSON instead of text\n"
         "                                 (see docs/JSON_SCHEMA.md)\n"
         "  -v, --verbose                 increase verbosity (repeatable)\n"
+        "  -q, --quiet                   suppress the \"index incomplete (interrupted)\" notice\n"
+        "                                 (printed when DB has kg_index_in_progress set; never\n"
+        "                                 printed under --json)\n"
         "\n"
         "update subcommand (incrementally re-index files changed since the last index/update):\n"
         "  kg update -d DB                 everything else is inferred from the provenance stored in DB\n"
@@ -137,10 +158,13 @@ void printHelp(const char* programName)
         "      --to REV                    treat REV as the new baseline (default: HEAD; worktree must match)\n"
         "  -c, --compile-commands PATH     (default: stored path)\n"
         "      --files PATH...             explicit changed files instead of git\n"
-        "      --remap/--include/--exclude/--cuda-mode/--system-file-rows/--extra-arg/--drop-arg/--std\n"
+        "      --remap/--include/--exclude/--cuda-mode/--system-file-rows/--extra-arg/--drop-arg/--std/--c-std\n"
         "                                  override stored options (otherwise inherited)\n"
+        "      --exclude-submodules        also exclude every git submodule in the repo's .gitmodules\n"
         "      --dry-run                   show what would be cleared/re-indexed, change nothing\n"
         "      --in-place                  modify DB directly instead of temp-copy + atomic rename\n"
+        "  -j, --parallel N                extract N TUs concurrently for the re-index step (0 = all\n"
+        "                                   CPUs, default: 1); deterministic regardless of N\n"
         "      --no-vacuum, --json, -q, -v\n"
         "\n"
         "Exit codes: 0 ok, 1 usage error, 2 ambiguous symbol / refused (legacy db / update in progress),\n"
@@ -262,15 +286,19 @@ int runIndex(int argc, char** argv, int startIdx)
 
     bool dryRun = false;
     bool force = false;
-    bool quiet = false;
+    int quietCount = 0;
     bool jsonSummary = false;
     bool noVacuum = false;
     kg::index::SystemFileRows systemFileRows = kg::index::SystemFileRows::Direct;
     int verbosity = 0;
     long limit = -1;  // -1 = no limit
+    int parallel = 1;  // --parallel/-j; 0 = hardware_concurrency(), 1 (default) = sequential
+    int commitEvery = 25;  // --commit-every; 0 = single transaction (no checkpoints)
+    long stopAfter = -1;    // hidden --stop-after testing hook; -1 = disabled
     bool resourceDirGiven = false;
     bool cudaPathGiven = false;
     bool gccToolchainGiven = false;
+    bool excludeSubmodules = false;
     std::string repoDir;
 
     auto requireValue = [&](int i, const std::string& flagName) -> std::string {
@@ -319,6 +347,10 @@ int runIndex(int argc, char** argv, int startIdx)
         {
             dbOptions.excludeGlobs.push_back(requireValue(i, arg));
             ++i;
+        }
+        else if (arg == "--exclude-submodules")
+        {
+            excludeSubmodules = true;
         }
         else if (arg == "--drop-arg")
         {
@@ -375,7 +407,26 @@ int runIndex(int argc, char** argv, int startIdx)
         }
         else if (arg == "-q" || arg == "--quiet")
         {
-            quiet = true;
+            ++quietCount;
+        }
+        else if (arg == "--parallel" || arg == "-j")
+        {
+            const std::string value = requireValue(i, arg);
+            ++i;
+            try
+            {
+                parallel = std::stoi(value);
+            }
+            catch (const std::exception&)
+            {
+                printIndexUsageError("invalid --parallel/-j value: " + value);
+                return 2;
+            }
+            if (parallel < 0)
+            {
+                printIndexUsageError("--parallel/-j must be >= 0 (0 = hardware_concurrency())");
+                return 2;
+            }
         }
         else if (arg == "--cuda-path")
         {
@@ -402,6 +453,11 @@ int runIndex(int argc, char** argv, int startIdx)
             sanitizerOptions.stdFallback = requireValue(i, arg);
             ++i;
         }
+        else if (arg == "--c-std")
+        {
+            sanitizerOptions.cStdFallback = requireValue(i, arg);
+            ++i;
+        }
         else if (arg == "--limit")
         {
             const std::string value = requireValue(i, arg);
@@ -413,6 +469,40 @@ int runIndex(int argc, char** argv, int startIdx)
             catch (const std::exception&)
             {
                 printIndexUsageError("invalid --limit value: " + value);
+                return 2;
+            }
+        }
+        else if (arg == "--commit-every")
+        {
+            const std::string value = requireValue(i, arg);
+            ++i;
+            try
+            {
+                commitEvery = std::stoi(value);
+            }
+            catch (const std::exception&)
+            {
+                printIndexUsageError("invalid --commit-every value: " + value);
+                return 2;
+            }
+            if (commitEvery < 0)
+            {
+                printIndexUsageError("--commit-every must be >= 0 (0 = single transaction, no checkpoints)");
+                return 2;
+            }
+        }
+        else if (arg == "--stop-after")
+        {
+            // Hidden testing hook -- deliberately not in printHelp().
+            const std::string value = requireValue(i, arg);
+            ++i;
+            try
+            {
+                stopAfter = std::stol(value);
+            }
+            catch (const std::exception&)
+            {
+                printIndexUsageError("invalid --stop-after value: " + value);
                 return 2;
             }
         }
@@ -464,6 +554,29 @@ int runIndex(int argc, char** argv, int startIdx)
         if (const char* env = std::getenv("KG_GCC_TOOLCHAIN"))
         {
             sanitizerOptions.gccToolchain = env;
+        }
+    }
+
+    if (excludeSubmodules)
+    {
+        const std::string startDir =
+            !repoDir.empty() ? repoDir : std::filesystem::absolute(compileCommandsPath).parent_path().string();
+        const std::optional<std::string> root = kg::update::topLevel(startDir);
+        if (!root)
+        {
+            printIndexUsageError("--exclude-submodules: '" + startDir + "' is not inside a git repository (pass --repo DIR)");
+            return 2;
+        }
+        for (const std::string& glob : kg::update::submoduleExcludeGlobs(*root))
+        {
+            if (std::find(dbOptions.excludeGlobs.begin(), dbOptions.excludeGlobs.end(), glob) == dbOptions.excludeGlobs.end())
+            {
+                dbOptions.excludeGlobs.push_back(glob);
+                if (verbosity > 0)
+                {
+                    std::fprintf(stderr, "kg index: --exclude-submodules: excluding %s\n", glob.c_str());
+                }
+            }
         }
     }
 
@@ -520,10 +633,14 @@ int runIndex(int argc, char** argv, int startIdx)
     runOptions.outputPath = outputPath;
     runOptions.force = force;
     runOptions.limit = limit;
-    runOptions.quiet = quiet;
+    runOptions.quiet = quietCount >= 1;
+    runOptions.superQuiet = quietCount >= 2;
     runOptions.jsonSummary = jsonSummary;
     runOptions.noVacuum = noVacuum;
     runOptions.verbose = verbosity > 0;
+    runOptions.parallel = parallel;
+    runOptions.commitEvery = commitEvery;
+    runOptions.stopAfter = stopAfter;
     runOptions.dbOptions = dbOptions;
     runOptions.sanitizerOptions = sanitizerOptions;
     runOptions.systemFileRows = systemFileRows;
@@ -582,6 +699,7 @@ struct QueryFlags
     int errorsLimit = 100;
     int verbosity = 0;
     bool json = false;
+    bool quiet = false;
 };
 
 // Parses everything after the verb into `flags` and (if present) the single
@@ -710,6 +828,10 @@ bool parseQueryFlags(int argc, char** argv, int startIdx, QueryFlags& flags, std
         else if (arg == "-v" || arg == "--verbose")
         {
             ++flags.verbosity;
+        }
+        else if (arg == "-q" || arg == "--quiet")
+        {
+            flags.quiet = true;
         }
         else if (arg == "-h" || arg == "--help")
         {
@@ -966,6 +1088,19 @@ int runQuery(int argc, char** argv, int startIdx)
     {
         std::fprintf(stderr, "kg query: %s\n", e.what());
         return 4;
+    }
+
+    // Phase 8: a database left with kg_index_in_progress="1" is an
+    // interrupted `kg index` run -- still fully queryable (read-only), just
+    // incomplete. One-line stderr notice, suppressed by -q/--quiet or
+    // --json (stdout stays pure JSON either way).
+    if (!flags.json && !flags.quiet)
+    {
+        const std::optional<std::string> inProgress = kg::db::getMeta(dbPtr->handle(), "kg_index_in_progress");
+        if (inProgress.has_value() && *inProgress == "1")
+        {
+            std::fprintf(stderr, "kg query: index incomplete (interrupted) -- run `kg update` to finish\n");
+        }
     }
 
     try
@@ -1381,13 +1516,42 @@ bool parseUpdateFlags(int argc, char** argv, int startIdx, kg::update::UpdateRun
             ++i;
             opts.stdGiven = true;
         }
+        else if (arg == "--c-std")
+        {
+            opts.cStdOverride = requireValue(i, arg);
+            ++i;
+            opts.cStdGiven = true;
+        }
         else if (arg == "--dry-run")
         {
             opts.dryRun = true;
         }
+        else if (arg == "--exclude-submodules")
+        {
+            opts.excludeSubmodules = true;
+        }
         else if (arg == "--in-place")
         {
             opts.inPlace = true;
+        }
+        else if (arg == "--parallel" || arg == "-j")
+        {
+            const std::string value = requireValue(i, arg);
+            ++i;
+            try
+            {
+                opts.parallel = std::stoi(value);
+            }
+            catch (const std::exception&)
+            {
+                printUpdateUsageError("invalid --parallel/-j value: " + value);
+                return false;
+            }
+            if (opts.parallel < 0)
+            {
+                printUpdateUsageError("--parallel/-j must be >= 0 (0 = hardware_concurrency())");
+                return false;
+            }
         }
         else if (arg == "--no-vacuum")
         {

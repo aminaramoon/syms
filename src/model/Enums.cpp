@@ -16,4 +16,15 @@ int kindRank(SymbolKind kind)
     }
 }
 
+bool symbolKindBeats(SymbolKind candidate, SymbolKind current)
+{
+    const int candidateRank = kindRank(candidate);
+    const int currentRank = kindRank(current);
+    if (candidateRank != currentRank)
+    {
+        return candidateRank > currentRank;
+    }
+    return static_cast<int>(candidate) > static_cast<int>(current);
+}
+
 }  // namespace kg::model

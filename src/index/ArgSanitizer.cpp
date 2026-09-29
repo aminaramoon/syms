@@ -32,6 +32,95 @@ std::string basenameOf(const std::string& path)
     return std::filesystem::path(path).filename().string();
 }
 
+// --- Language detection for the step-5 -std fallback ------------------------
+
+enum class TuLang
+{
+    Cxx,
+    C,
+    Cuda,
+    ObjC,     // .m/.mm or -x objective-c[++]: no -std fallback is ever injected
+    Unknown,  // couldn't tell from -x or extension; argv0 is consulted as a tie-breaker
+};
+
+// Maps a clang `-x <lang>` value to a TuLang bucket; Unknown for anything
+// this sanitizer doesn't specifically special-case (e.g. asm, fortran).
+TuLang langFromDashX(const std::string& lang)
+{
+    if (lang == "c" || lang == "c-header" || lang == "cpp-output")
+    {
+        return TuLang::C;
+    }
+    if (lang == "c++" || lang == "c++-header" || lang == "c++-cpp-output")
+    {
+        return TuLang::Cxx;
+    }
+    if (lang == "cuda")
+    {
+        return TuLang::Cuda;
+    }
+    if (lang == "objective-c" || lang == "objective-c++" || lang == "objective-c-header" || lang == "objective-c++-header")
+    {
+        return TuLang::ObjC;
+    }
+    return TuLang::Unknown;
+}
+
+// Maps `file`'s extension to a TuLang bucket; Unknown if unrecognized.
+TuLang langFromExtension(const std::string& file)
+{
+    if (endsWith(file, ".c"))
+    {
+        return TuLang::C;
+    }
+    if (endsWith(file, ".cu"))
+    {
+        return TuLang::Cuda;
+    }
+    if (endsWith(file, ".cpp") || endsWith(file, ".cc") || endsWith(file, ".cxx") || endsWith(file, ".C") ||
+        endsWith(file, ".c++"))
+    {
+        return TuLang::Cxx;
+    }
+    if (endsWith(file, ".m") || endsWith(file, ".mm"))
+    {
+        return TuLang::ObjC;
+    }
+    return TuLang::Unknown;
+}
+
+// Determines the TU's language for the step-5 -std fallback: an explicit
+// `-x <lang>` surviving the rewrite pass (step 3) wins outright; otherwise
+// `entry.file`'s extension; otherwise (only when the extension itself is
+// unrecognized) argv0's basename is consulted as a tie-breaker -- a bare
+// "cc"/"gcc"/"clang"-style name (no "++", not nvcc) hints C, anything else
+// falls back to C++ (matching this function's pre-existing default).
+TuLang detectTuLang(const std::vector<std::string>& out, const std::string& file, const std::string& argv0Basename)
+{
+    for (std::size_t k = 0; k + 1 < out.size(); ++k)
+    {
+        if (out[k] == "-x")
+        {
+            const TuLang fromX = langFromDashX(out[k + 1]);
+            if (fromX != TuLang::Unknown)
+            {
+                return fromX;
+            }
+        }
+    }
+
+    const TuLang fromExt = langFromExtension(file);
+    if (fromExt != TuLang::Unknown)
+    {
+        return fromExt;
+    }
+
+    // Ambiguous/unknown extension: use argv0 as a tie-breaker only.
+    const bool argv0HintsC =
+        argv0Basename.find("++") == std::string::npos && argv0Basename.find("nvcc") == std::string::npos;
+    return argv0HintsC ? TuLang::C : TuLang::Cxx;
+}
+
 // nvcc lives at <toolkit>/bin/nvcc, so the toolkit root is two directories up.
 std::string deriveCudaPathFromNvcc(const std::string& nvccPath)
 {
@@ -385,7 +474,18 @@ SanitizeResult sanitize(const CompileEntry& entry, const SanitizerOptions& optio
         std::any_of(out.begin(), out.end(), [](const std::string& tok) { return startsWith(tok, "-std="); });
     if (!hasStd)
     {
-        out.push_back("-std=" + options.stdFallback);
+        const TuLang tuLang = detectTuLang(out, entry.file, result.basename);
+        if (tuLang == TuLang::C)
+        {
+            out.push_back("-std=" + options.cStdFallback);
+        }
+        else if (tuLang != TuLang::ObjC)
+        {
+            // C++ and CUDA both use the C++/CUDA fallback (detectTuLang()
+            // never returns Unknown -- it ties C/C++ by argv0). ObjC/ObjC++
+            // gets no fallback at all.
+            out.push_back("-std=" + options.stdFallback);
+        }
     }
 
     if (!options.gccToolchain.empty())

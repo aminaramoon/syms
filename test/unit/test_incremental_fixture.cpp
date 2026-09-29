@@ -38,16 +38,23 @@ TEST_CASE("incremental: provenance is present and looks right on a freshly-index
     REQUIRE_FALSE(prov->indexedAtUtc.empty());
 }
 
-TEST_CASE("incremental: kg_tu has one row per CDB entry, each with a 16-hex-char args_hash", "[fixture]")
+TEST_CASE("incremental: kg_tu has one row per distinct TU PATH, each with a 16-hex-char args_hash", "[fixture]")
 {
     kg::db::Database db(fixtureDbPath());
 
     int tuCount = 0;
     db.run("SELECT count(*) FROM kg_tu", [&](sqlite3_stmt* stmt) { tuCount = sqlite3_column_int(stmt, 0); });
-    // The synthetic fixture project has 6 TU source files (see
+    // The synthetic fixture project has 7 distinct TU source files (see
     // test_query_fixture.cpp's own assumptions about ns/overloads/chain/
-    // templates/tu_a/tu_b.cpp).
-    REQUIRE(tuCount == 6);
+    // templates/tu_a/tu_b.cpp, plus cfile.c -- a plain C TU added to
+    // exercise the language-aware -std fallback) -- but 8 CDB ENTRIES:
+    // templates.cpp is compiled twice, by two targets with different flags
+    // (fixture_lib and fixture_lib_dup, see fixtures/synthetic/
+    // CMakeLists.txt), exercising the duplicate-CDB-entry path
+    // (kg::index::pathArgsHashes()) that kg_tu -- keyed by PATH, not by
+    // (path, entry) -- has to collapse down to one row. kg_tu row count
+    // tracks distinct paths (7), not CDB entries (8).
+    REQUIRE(tuCount == 7);
 
     db.run("SELECT args_hash FROM kg_tu", [&](sqlite3_stmt* stmt) {
         const std::string hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
@@ -57,6 +64,33 @@ TEST_CASE("incremental: kg_tu has one row per CDB entry, each with a 16-hex-char
             REQUIRE(std::isxdigit(static_cast<unsigned char>(c)));
         }
     });
+}
+
+TEST_CASE("incremental: kg_tu.entry_count reflects the real CDB entry count per path (templates.cpp is 2, everything else is 1)", "[fixture]")
+{
+    // Regression coverage for the duplicate-CDB-entry fix: templates.cpp is
+    // compiled twice (see the TEST_CASE above), so its kg_tu row must carry
+    // entry_count=2; every other (non-duplicated) path must carry the
+    // legacy-compatible default of 1.
+    kg::db::Database db(fixtureDbPath());
+
+    int templatesEntryCount = -1;
+    bool foundTemplates = false;
+    db.run("SELECT path, entry_count FROM kg_tu", [&](sqlite3_stmt* stmt) {
+        const std::string path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        const int entryCount = sqlite3_column_int(stmt, 1);
+        if (path.size() >= 13 && path.compare(path.size() - 13, 13, "templates.cpp") == 0)
+        {
+            templatesEntryCount = entryCount;
+            foundTemplates = true;
+        }
+        else
+        {
+            REQUIRE(entryCount == 1);
+        }
+    });
+    REQUIRE(foundTemplates);
+    REQUIRE(templatesEntryCount == 2);
 }
 
 TEST_CASE("incremental: every kg_tu row from a fresh index has status='ok'", "[fixture]")
@@ -69,7 +103,7 @@ TEST_CASE("incremental: every kg_tu row from a fresh index has status='ok'", "[f
 
     int tuCount = 0;
     db.run("SELECT count(*) FROM kg_tu", [&](sqlite3_stmt* stmt) { tuCount = sqlite3_column_int(stmt, 0); });
-    REQUIRE(tuCount == 6);
+    REQUIRE(tuCount == 7);
 
     int notOkCount = 0;
     db.run("SELECT count(*) FROM kg_tu WHERE status != 'ok'", [&](sqlite3_stmt* stmt) { notOkCount = sqlite3_column_int(stmt, 0); });

@@ -60,6 +60,7 @@ TEST_CASE("provenance: write/read round-trips every field")
     prov.sanitizerOptions.resourceDir = "/opt/clang/lib/clang/21";
     prov.sanitizerOptions.gccToolchain = "/opt/gcc";
     prov.sanitizerOptions.stdFallback = "c++20";
+    prov.sanitizerOptions.cStdFallback = "gnu11";
     prov.sanitizerOptions.cudaPath = "/opt/cuda";
     prov.sanitizerOptions.cudaMode = kg::index::cuda::CudaMode::NoWrapper;
     prov.systemFileRows = kg::index::SystemFileRows::All;
@@ -87,6 +88,7 @@ TEST_CASE("provenance: write/read round-trips every field")
     REQUIRE(readBack->sanitizerOptions.resourceDir == prov.sanitizerOptions.resourceDir);
     REQUIRE(readBack->sanitizerOptions.gccToolchain == prov.sanitizerOptions.gccToolchain);
     REQUIRE(readBack->sanitizerOptions.stdFallback == prov.sanitizerOptions.stdFallback);
+    REQUIRE(readBack->sanitizerOptions.cStdFallback == prov.sanitizerOptions.cStdFallback);
     REQUIRE(readBack->sanitizerOptions.cudaPath == prov.sanitizerOptions.cudaPath);
     REQUIRE(readBack->sanitizerOptions.cudaMode == prov.sanitizerOptions.cudaMode);
     REQUIRE(readBack->systemFileRows == prov.systemFileRows);

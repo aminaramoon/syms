@@ -45,6 +45,7 @@ nlohmann::json optionsToJson(const Provenance& prov)
     j["resource_dir"] = prov.sanitizerOptions.resourceDir;
     j["gcc_toolchain"] = prov.sanitizerOptions.gccToolchain;
     j["std"] = prov.sanitizerOptions.stdFallback;
+    j["c_std"] = prov.sanitizerOptions.cStdFallback;
     j["cuda_path"] = prov.sanitizerOptions.cudaPath;
     j["cuda_mode"] = cuda::cudaModeName(prov.sanitizerOptions.cudaMode);
     j["limit"] = prov.limit;
@@ -92,6 +93,10 @@ void optionsFromJson(const nlohmann::json& j, Provenance& prov)
     if (j.contains("std"))
     {
         prov.sanitizerOptions.stdFallback = j.at("std").get<std::string>();
+    }
+    if (j.contains("c_std"))
+    {
+        prov.sanitizerOptions.cStdFallback = j.at("c_std").get<std::string>();
     }
     if (j.contains("cuda_path"))
     {

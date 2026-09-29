@@ -206,6 +206,29 @@ TEST_CASE("git: collectChanges refuses a repo with unmerged (conflicted) paths")
     std::filesystem::remove_all(repo);
 }
 
+TEST_CASE("git: submoduleExcludeGlobs reads .gitmodules without initialized submodules")
+{
+    if (!gitAvailable())
+    {
+        SKIP("git not found on PATH");
+    }
+    const std::filesystem::path repo = freshRepoDir();
+    run({"git", "init", "-q"}, repo.string());
+
+    REQUIRE(kg::update::submodulePaths(repo.string()).empty());
+
+    writeFile(
+        repo / ".gitmodules",
+        "[submodule \"duckdb\"]\n\tpath = duckdb\n\turl = https://example.invalid/duckdb.git\n"
+        "[submodule \"nested\"]\n\tpath = experimental/deps/nested lib\n\turl = https://example.invalid/nested.git\n");
+
+    const std::vector<std::string> globs = kg::update::submoduleExcludeGlobs(repo.string());
+    REQUIRE(globs.size() == 2);
+    const std::string root = std::filesystem::path(repo).lexically_normal().string();
+    CHECK(globs[0] == root + "/duckdb/**");
+    CHECK(globs[1] == root + "/experimental/deps/nested lib/**");
+}
+
 TEST_CASE("git: topLevel resolves the repo root")
 {
     if (!gitAvailable())

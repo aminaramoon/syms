@@ -37,6 +37,7 @@ struct UpdateRunOptions
     // must not be confused with "not given at all".
     kg::index::CompileDbOptions dbOverrides;
     bool dbOverridesGiven = false;  // true if --remap/--include/--exclude given at all
+    bool excludeSubmodules = false;  // append `<submodule>/**` exclude globs from the repo's .gitmodules
     kg::index::cuda::CudaMode cudaModeOverride = kg::index::cuda::CudaMode::Auto;
     bool cudaModeGiven = false;
     kg::index::SystemFileRows systemFileRowsOverride = kg::index::SystemFileRows::Direct;
@@ -47,6 +48,8 @@ struct UpdateRunOptions
     bool dropArgGiven = false;
     std::string stdOverride;
     bool stdGiven = false;
+    std::string cStdOverride;
+    bool cStdGiven = false;
 
     bool dryRun = false;
     bool inPlace = false;
@@ -54,6 +57,12 @@ struct UpdateRunOptions
     bool json = false;
     int verbose = 0;
     std::string kgVersion;
+
+    // --parallel/-j N for the re-index step (kg::index::runIndex's
+    // IndexRunOptions::parallel) -- see its doc comment. Default 1
+    // (sequential, unchanged behavior). Deliberately NOT part of
+    // kg_options_json/Provenance: it doesn't affect what gets indexed.
+    int parallel = 1;
 };
 
 struct UpdateSummary

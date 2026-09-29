@@ -46,7 +46,8 @@ struct SanitizerOptions
     std::vector<std::string> extraArgs;                    // --extra-arg tokens, appended last (step 5)
     std::string resourceDir;                                // resolved --resource-dir / $KG_RESOURCE_DIR, or empty
     std::string gccToolchain;                                // --gcc-toolchain value, or empty = omit
-    std::string stdFallback = "c++17";                       // --std value or default; used only if no -std=* survives
+    std::string stdFallback = "c++17";                       // --std value or default; C++/CUDA fallback, used only if no -std=* survives
+    std::string cStdFallback = "gnu17";                       // --c-std value or default; C-only fallback, used only if no -std=* survives
     std::string cudaPath;                                    // resolved --cuda-path / $KG_CUDA_PATH, or empty
     cuda::CudaMode cudaMode = cuda::CudaMode::Auto;           // --cuda-mode
 };
@@ -67,6 +68,15 @@ struct SanitizeResult
 // when argv0 is nvcc), and 5 (injections: working-directory, resource-dir,
 // -fsyntax-only, -w, -ferror-limit=0, -std fallback, --gcc-toolchain,
 // --extra-arg) against a single (already step-1-remapped) CompileEntry.
+//
+// The -std fallback (step 5) is language-aware: the TU's language is
+// determined from an explicit `-x <lang>` surviving the rewrite pass (if
+// any), else from `entry.file`'s extension, else (only for an otherwise-
+// unrecognized extension) from argv[0]'s basename as a tie-breaker. A C TU
+// (`.c`, or `-x c`) gets `options.cStdFallback` (default gnu17), never
+// `options.stdFallback`; a C++ or CUDA TU gets `options.stdFallback`
+// (default c++17); an Objective-C/C++ TU (`.m`/`.mm`, or `-x objective-c*`)
+// gets no fallback injected at all.
 SanitizeResult sanitize(const CompileEntry& entry, const SanitizerOptions& options);
 
 }  // namespace kg::index

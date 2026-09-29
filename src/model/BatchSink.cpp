@@ -43,7 +43,13 @@ uint64_t occurrenceKey(ElementClass cls, LocalId element, const SourceRange& ran
 // refineSymbol().
 void upgrade(SymbolFact& existing, SymbolKind kind, DefinitionKind definition)
 {
-    if (kindRank(kind) > kindRank(existing.kind))
+    // symbolKindBeats() (not a bare kindRank() > comparison) so an
+    // equal-rank disagreement within one TU is resolved the same
+    // deterministic, order-independent way as the cross-TU/cross-session
+    // merge in kg::index::SrctrldbBackend::bufferKindDef() -- see its
+    // comment for the corpus bug this class of "first observed wins" tie-
+    // break caused.
+    if (symbolKindBeats(kind, existing.kind))
     {
         existing.kind = kind;
     }

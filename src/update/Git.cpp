@@ -74,6 +74,47 @@ std::optional<std::string> statusPorcelainZ(const std::string& repoRoot)
     return result.out;
 }
 
+std::vector<std::string> submodulePaths(const std::string& repoRoot)
+{
+    std::vector<std::string> paths;
+    const kg::common::process::Result result = kg::common::process::run(
+        {"git", "-C", repoRoot, "config", "--file", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"});
+    if (result.exitCode != 0)  // exit 1 = no .gitmodules / no matches
+    {
+        return paths;
+    }
+    std::size_t start = 0;
+    while (start < result.out.size())
+    {
+        std::size_t end = result.out.find('\n', start);
+        if (end == std::string::npos)
+        {
+            end = result.out.size();
+        }
+        const std::string line = result.out.substr(start, end - start);
+        start = end + 1;
+        // "submodule.<name>.path <value>" -- the value may contain spaces.
+        const std::size_t sep = line.find(' ');
+        if (sep == std::string::npos || sep + 1 >= line.size())
+        {
+            continue;
+        }
+        const std::filesystem::path abs = (std::filesystem::path(repoRoot) / line.substr(sep + 1)).lexically_normal();
+        paths.push_back(abs.string());
+    }
+    return paths;
+}
+
+std::vector<std::string> submoduleExcludeGlobs(const std::string& repoRoot)
+{
+    std::vector<std::string> globs;
+    for (const std::string& p : submodulePaths(repoRoot))
+    {
+        globs.push_back(p + "/**");
+    }
+    return globs;
+}
+
 std::optional<ChangeSet> collectChanges(
     const std::string& repoRoot, const std::string& baseline, const std::optional<std::string>& to, std::string* err)
 {

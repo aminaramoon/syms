@@ -1,5 +1,6 @@
 #include "kg/index/CompileDb.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -177,6 +178,51 @@ std::string computeArgsHash(const CompileEntry& entry)
     char buf[17];
     std::snprintf(buf, sizeof(buf), "%016llx", static_cast<unsigned long long>(hash));
     return std::string(buf);
+}
+
+std::unordered_map<std::string, PathArgsInfo> pathArgsHashes(const std::vector<CompileEntry>& entries)
+{
+    // path -> every entry's own computeArgsHash(), in CDB order (order
+    // doesn't matter for the final result -- sorted below -- but collecting
+    // in one pass keeps this O(N)).
+    std::unordered_map<std::string, std::vector<std::string>> hashesByPath;
+    std::unordered_map<std::string, uint32_t> countByPath;
+    for (const CompileEntry& entry : entries)
+    {
+        hashesByPath[entry.file].push_back(computeArgsHash(entry));
+        ++countByPath[entry.file];
+    }
+
+    std::unordered_map<std::string, PathArgsInfo> result;
+    result.reserve(hashesByPath.size());
+    for (auto& [path, hashes] : hashesByPath)
+    {
+        std::sort(hashes.begin(), hashes.end());
+        hashes.erase(std::unique(hashes.begin(), hashes.end()), hashes.end());
+
+        constexpr uint64_t kOffsetBasis = 0xcbf29ce484222325ull;
+        constexpr uint64_t kPrime = 0x100000001b3ull;
+        uint64_t combined = kOffsetBasis;
+        for (const std::string& h : hashes)
+        {
+            for (unsigned char c : h)
+            {
+                combined ^= c;
+                combined *= kPrime;
+            }
+            combined ^= 0;  // the '\0' separator
+            combined *= kPrime;
+        }
+
+        char buf[17];
+        std::snprintf(buf, sizeof(buf), "%016llx", static_cast<unsigned long long>(combined));
+
+        PathArgsInfo info;
+        info.combinedHash = buf;
+        info.entryCount = countByPath[path];
+        result.emplace(path, std::move(info));
+    }
+    return result;
 }
 
 }  // namespace kg::index

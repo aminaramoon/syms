@@ -8,6 +8,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <string>
+#include <utility>
 
 #include <sqlite3.h>
 
@@ -100,6 +102,31 @@ int64_t nodeIdBySerializedNameLike(const std::string& dbPath, const std::string&
     return id;
 }
 
+// (args_hash, entry_count) of the kg_tu row whose path ends with `suffix`
+// (e.g. "templates.cpp") -- used to prove a duplicated path's row is left
+// completely untouched by an update that never re-indexes it.
+std::pair<std::string, int64_t> kgTuArgsHashAndCount(const std::string& dbPath, const std::string& suffix)
+{
+    kg::db::WritableDb db(dbPath, false);
+    std::pair<std::string, int64_t> result;
+    bool found = false;
+    db.query(
+        "SELECT path, args_hash, entry_count FROM kg_tu",
+        [&](sqlite3_stmt* stmt) {
+            const char* p = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+            const std::string path = p != nullptr ? p : "";
+            if (path.size() >= suffix.size() && path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0)
+            {
+                const char* h = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+                result.first = h != nullptr ? h : "";
+                result.second = sqlite3_column_int64(stmt, 2);
+                found = true;
+            }
+        });
+    REQUIRE(found);
+    return result;
+}
+
 }  // namespace
 
 TEST_CASE("update_driver: --files chain.cpp reproduces the fresh fixture db exactly (dbdiff empty)", "[fixture][update_driver]")
@@ -150,6 +177,71 @@ TEST_CASE("update_driver: a second no-op --files chain.cpp run retries nothing (
     REQUIRE(second.tusRetried == 0);
     REQUIRE(second.tusToIndex == 1);
 
+    const auto diff = kg::update::diffSnapshots(kg::update::takeSnapshot(path), kg::update::takeSnapshot(fixtureDbPath()));
+    REQUIRE(diff.onlyInA.empty());
+    REQUIRE(diff.onlyInB.empty());
+}
+
+TEST_CASE(
+    "update_driver: duplicate-CDB-entry regression -- updating an UNRELATED file never false-flags a duplicated "
+    "path, and a duplicated path's kg_tu row covers ALL its entries",
+    "[fixture][update_driver]")
+{
+    // The bug this fixes: kg_tu is keyed by PATH, but the fixture's CDB has
+    // TWO entries for templates.cpp (see fixtures/synthetic/CMakeLists.txt's
+    // fixture_lib_dup target, KG_DUP=1) -- one file, two different sets of
+    // compiler flags. Before the fix, kg_tu.args_hash was whichever entry's
+    // computeArgsHash() happened to be UPSERTed LAST during indexing, so
+    // the OTHER entry's hash would never match on the next `kg update` --
+    // "flag changed" -- and templates.cpp's TWO entries would be
+    // re-indexed on EVERY SINGLE run, even one that only touches a
+    // completely unrelated file (chain.cpp here). With the fix (a single
+    // combined, order-independent hash per path -- kg::index::
+    // pathArgsHashes()), templates.cpp must never show up as flag-changed
+    // just because chain.cpp changed.
+    const std::string path = copyFixture("dup_entry_unrelated_update");
+
+    const auto templatesRowBefore = kgTuArgsHashAndCount(path, "templates.cpp");
+    REQUIRE(templatesRowBefore.second == 2);  // entry_count -- see fixture_lib_dup
+
+    UpdateRunOptions opts;
+    opts.dbPath = path;
+    opts.cdbPath = fixtureCdbPath();
+    opts.explicitFiles = {synthPath("src/chain.cpp")};  // unrelated to templates.cpp's duplicate entries
+    opts.kgVersion = "test";
+
+    UpdateSummary first;
+    REQUIRE(runUpdate(opts, &first) == 0);
+    // The regression itself: no path (in particular not templates.cpp) is
+    // reported as flag-changed by an update that never touched it.
+    REQUIRE(first.flagChangedCount == 0);
+    // Only chain.cpp's own single CDB entry is re-indexed -- not
+    // templates.cpp's two entries, which the pre-fix hash thrashing would
+    // have dragged in as a false "flag changed".
+    REQUIRE(first.tusToIndex == 1);
+    // templates.cpp's kg_tu row (combined hash + entry_count) is untouched.
+    REQUIRE(kgTuArgsHashAndCount(path, "templates.cpp") == templatesRowBefore);
+
+    // --files always forces its own target to be treated as Modified
+    // (that's what --files is FOR), so a second identical --files chain.cpp
+    // run legitimately re-indexes chain.cpp again too -- --files bypasses
+    // the flag-change machinery for its OWN targets entirely. What must NOT
+    // happen, on this or any other run, is templates.cpp's path getting
+    // dragged in as a false "flag changed": before the fix, kg_tu.args_hash
+    // was whichever of templates.cpp's two entries happened to be UPSERTed
+    // last, so the OTHER entry's computeArgsHash() would never match on the
+    // NEXT run -- re-indexing templates.cpp's two entries on EVERY update,
+    // forever, regardless of --files.
+    UpdateSummary second;
+    REQUIRE(runUpdate(opts, &second) == 0);
+    REQUIRE(second.flagChangedCount == 0);
+    REQUIRE(second.tusToIndex == 1);
+    REQUIRE(kgTuArgsHashAndCount(path, "templates.cpp") == templatesRowBefore);
+
+    // The resulting db must still be logically identical to the canonical
+    // fresh fixture (templates.cpp's kg_tu row -- combined hash,
+    // entry_count=2 -- was never touched by either update, and correctly
+    // still describes both of its CDB entries).
     const auto diff = kg::update::diffSnapshots(kg::update::takeSnapshot(path), kg::update::takeSnapshot(fixtureDbPath()));
     REQUIRE(diff.onlyInA.empty());
     REQUIRE(diff.onlyInB.empty());

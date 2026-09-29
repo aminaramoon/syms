@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -71,5 +73,39 @@ std::vector<CompileEntry> load(const std::string& path, const CompileDbOptions& 
 // truth shared by IndexDriver (writes kg_tu rows) and UpdateDriver (flag-
 // change detection) -- see docs/KNOWN_LIMITATIONS.md.
 std::string computeArgsHash(const CompileEntry& entry);
+
+// Combined per-path args_hash + entry count, as written to kg_tu (see
+// Provenance.h's kKgTuDdl) once per distinct `file` path in a CDB.
+struct PathArgsInfo
+{
+    std::string combinedHash;  // 16-hex-char, see pathArgsHashes()'s doc comment
+    uint32_t entryCount = 0;   // number of CDB entries (after remap/include/exclude) with this path
+};
+
+// Real compile_commands.json files can list the SAME source `file` more
+// than once (e.g. compiled for several targets with different flags) --
+// kg_tu is keyed by path, not by (path, entry), so it needs ONE args_hash
+// per path that's still sensitive to every one of that path's entries and,
+// critically, independent of the ORDER those entries appear in the CDB
+// (which can vary run to run, e.g. after `cmake --build` regenerates
+// compile_commands.json, without any entry's actual content changing).
+//
+// For each distinct `entry.file` in `entries`: compute computeArgsHash()
+// for every entry with that path, sort the resulting hex strings
+// lexicographically and de-duplicate them (two entries with byte-identical
+// args collapse to one), then FNV-1a-64 over the sorted hashes joined with
+// '\0' separators, hex-encoded the same way computeArgsHash() is. A path
+// with exactly one entry therefore reduces to hashing that entry's own
+// single hash string -- NOT byte-identical to computeArgsHash(entry)
+// itself (the two are deliberately different recipes -- see
+// docs/KNOWN_LIMITATIONS.md), but just as stable: unchanged unless that
+// entry's own args/directory change.
+//
+// `entryCount` is the raw (non-deduplicated) number of CDB entries observed
+// for that path -- persisted as kg_tu.entry_count.
+//
+// Single source of truth shared by IndexDriver (writes kg_tu rows) and
+// UpdateDriver (flag-change detection) -- see docs/KNOWN_LIMITATIONS.md.
+std::unordered_map<std::string, PathArgsInfo> pathArgsHashes(const std::vector<CompileEntry>& entries);
 
 }  // namespace kg::index

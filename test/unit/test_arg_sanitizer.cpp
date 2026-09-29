@@ -259,6 +259,65 @@ TEST_CASE("arg_sanitizer: ArgSanitizer: --std CLI value overrides the c++17 defa
     CHECK(std::find(result.args.begin(), result.args.end(), "-std=c++23") != result.args.end());
 }
 
+// --- Language-aware -std fallback (bug fix: a .c TU must never get a C++
+// std injected, and vice versa) ---------------------------------------------
+
+TEST_CASE("arg_sanitizer: ArgSanitizer: a .c file with no -std= gets the C fallback (gnu17), not c++17", "[argsanitizer][inject][c]")
+{
+    SanitizerOptions options;
+    options.resourceDir = "/opt/resource-dir";
+
+    const CompileEntry entry = makeEntry("foo.c", {"-DKEEP"}, "/work", "/usr/bin/cc");
+    const auto result = sanitize(entry, options);
+    CHECK(std::find(result.args.begin(), result.args.end(), "-std=gnu17") != result.args.end());
+    CHECK(std::find(result.args.begin(), result.args.end(), "-std=c++17") == result.args.end());
+}
+
+TEST_CASE("arg_sanitizer: ArgSanitizer: a .c file with an explicit -std=c11 is left untouched", "[argsanitizer][inject][c]")
+{
+    SanitizerOptions options;
+    options.resourceDir = "/opt/resource-dir";
+
+    const CompileEntry entry = makeEntry("foo.c", {"-std=c11"}, "/work", "/usr/bin/cc");
+    const auto result = sanitize(entry, options);
+    const int stdCount = static_cast<int>(
+        std::count_if(result.args.begin(), result.args.end(), [](const std::string& t) { return t.rfind("-std=", 0) == 0; }));
+    CHECK(stdCount == 1);
+    CHECK(std::find(result.args.begin(), result.args.end(), "-std=c11") != result.args.end());
+}
+
+TEST_CASE("arg_sanitizer: ArgSanitizer: a .cpp file with no -std= still gets the C++ fallback (c++17)", "[argsanitizer][inject]")
+{
+    SanitizerOptions options;
+    options.resourceDir = "/opt/resource-dir";
+
+    const CompileEntry entry = makeEntry("foo.cpp", {"-DKEEP"}, "/work", "/usr/bin/c++");
+    const auto result = sanitize(entry, options);
+    CHECK(std::find(result.args.begin(), result.args.end(), "-std=c++17") != result.args.end());
+}
+
+TEST_CASE("arg_sanitizer: ArgSanitizer: -x c on a .cpp-named file gets the C fallback, not C++", "[argsanitizer][inject][c]")
+{
+    SanitizerOptions options;
+    options.resourceDir = "/opt/resource-dir";
+
+    const CompileEntry entry = makeEntry("foo.cpp", {"-x", "c", "-DKEEP"}, "/work", "/usr/bin/c++");
+    const auto result = sanitize(entry, options);
+    CHECK(std::find(result.args.begin(), result.args.end(), "-std=gnu17") != result.args.end());
+    CHECK(std::find(result.args.begin(), result.args.end(), "-std=c++17") == result.args.end());
+}
+
+TEST_CASE("arg_sanitizer: ArgSanitizer: --c-std CLI value overrides the gnu17 default C fallback", "[argsanitizer][inject][c]")
+{
+    SanitizerOptions options;
+    options.resourceDir = "/opt/resource-dir";
+    options.cStdFallback = "c99";
+
+    const CompileEntry entry = makeEntry("foo.c", {"-DKEEP"}, "/work", "/usr/bin/cc");
+    const auto result = sanitize(entry, options);
+    CHECK(std::find(result.args.begin(), result.args.end(), "-std=c99") != result.args.end());
+}
+
 // --- Remap substring replacement (step 1) -----------------------------------
 // Step 1 itself lives in kg::index::CompileDb (applyRemaps / parseRemapArg),
 // tested directly here per the Phase 2 test plan.

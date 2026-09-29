@@ -14,6 +14,7 @@
 #include "SymbolKind.h"
 
 #include "kg/common/Paths.h"
+#include "kg/db/Meta.h"
 #include "kg/db/WritableDb.h"
 #include "kg/index/Provenance.h"
 
@@ -146,6 +147,31 @@ bool SrctrldbBackend::begin(const std::string& dbPath, std::string* err)
         }
         return false;
     }
+
+    // Opened here (schema now exists -- SourcetrailDBWriter::open() creates
+    // it) rather than lazily on first checkpoint(), so IndexDriver can write
+    // provenance via its own tiny WritableDb transaction on the SAME file
+    // before startTransaction() -- deliberately NOT this m_sideDb instance
+    // (kept exclusively for the checkpoint/finish flush path, never held
+    // open across a consume() call).
+    try
+    {
+        m_sideDb = std::make_unique<kg::db::WritableDb>(dbPath, /*foreignKeys=*/false);
+    }
+    catch (const std::exception& e)
+    {
+        if (err != nullptr)
+        {
+            *err = e.what();
+        }
+        return false;
+    }
+
+    return true;
+}
+
+bool SrctrldbBackend::startTransaction(std::string* err)
+{
     if (!m_writer->beginTransaction())
     {
         if (err != nullptr)
@@ -174,10 +200,19 @@ int SrctrldbBackend::ensureFileNodeByPath(const std::string& path, const std::st
             m_summary.files++;
         }
         m_fileNodeIdByPath.emplace(path, id);
+        if (id != 0)
+        {
+            m_normalizedFileNodeId[kg::common::paths::normalize(path)] = id;
+        }
+    }
+    if (id != 0)
+    {
+        m_touchedSinceFlush.insert(id);
     }
     if (!indexed && id != 0)
     {
         m_nonIndexedFileIds.insert(id);
+        m_anyNonIndexedFiles = true;
     }
     return id;
 }
@@ -212,7 +247,29 @@ int SrctrldbBackend::resolveTuFileReal(const kg::model::TuFactBatch& batch, cons
 void SrctrldbBackend::bufferKindDef(int nodeId, kg::model::SymbolKind kind, kg::model::DefinitionKind definition)
 {
     BufferedKindDef& buffered = m_pendingKindDef[nodeId];
-    if (kg::model::kindRank(kind) > kg::model::kindRank(buffered.kind))
+    const int newRank = kg::model::kindRank(kind);
+    const int curRank = kg::model::kindRank(buffered.kind);
+    bool takeKind = newRank > curRank;
+    if (!takeKind && newRank == curRank)
+    {
+        // Deterministic, order-INDEPENDENT tie-break on equal rank: compare
+        // the actual stored-node-kind ints (the exact same total order the
+        // kUpdateNodeTypeSql guard in flushPending() uses below), not
+        // "first observed wins". Two equal-rank kinds that disagree (e.g.
+        // CLASS vs STRUCT for a merged/collapsed name, or FUNCTION vs
+        // METHOD) used to keep whichever TU's observation happened to reach
+        // this node first -- which differs between a single full `kg index`
+        // session and a multi-session resume/`kg update` that re-observes
+        // the same node in a different TU order. Comparing the deterministic
+        // kindOrder(kind) = (kindRank(kind), nodeKindInt(kind)) pair instead
+        // makes the buffered (and, transitively, the persisted) kind a pure
+        // function of the SET of observations, independent of order or
+        // session boundaries.
+        const int newKindInt = sourcetrail::nodeKindToInt(sourcetrail::symbolKindToNodeKind(translateSymbolKind(kind)));
+        const int curKindInt = sourcetrail::nodeKindToInt(sourcetrail::symbolKindToNodeKind(translateSymbolKind(buffered.kind)));
+        takeKind = newKindInt > curKindInt;
+    }
+    if (takeKind)
     {
         buffered.kind = kind;
     }
@@ -236,9 +293,10 @@ int SrctrldbBackend::ensureSymbolNode(const kg::model::SymbolFact& fact)
         auto it = m_byKey.find(fact.key);
         if (it != m_byKey.end())
         {
+            m_touchedSinceFlush.insert(it->second);
             return it->second;
         }
-        const int id = ensureFileNodeByPath(fact.key, "cpp", /*indexed=*/true);
+        const int id = ensureFileNodeByPath(fact.key, "cpp", /*indexed=*/true);  // already inserts into m_touchedSinceFlush
         m_byKey.emplace(fact.key, id);
         return id;
     }
@@ -247,6 +305,7 @@ int SrctrldbBackend::ensureSymbolNode(const kg::model::SymbolFact& fact)
     if (it != m_byKey.end())
     {
         bufferKindDef(it->second, fact.kind, fact.definition);
+        m_touchedSinceFlush.insert(it->second);
         return it->second;
     }
 
@@ -274,6 +333,7 @@ int SrctrldbBackend::ensureSymbolNode(const kg::model::SymbolFact& fact)
                 serialized.c_str(),
                 id);
         }
+        m_touchedSinceFlush.insert(id);
         return id;
     }
 
@@ -282,6 +342,7 @@ int SrctrldbBackend::ensureSymbolNode(const kg::model::SymbolFact& fact)
     m_byName.emplace(serialized, fact.key);
     bufferKindDef(id, fact.kind, fact.definition);
     m_summary.symbols++;
+    m_touchedSinceFlush.insert(id);
     return id;
 }
 
@@ -472,13 +533,253 @@ bool SrctrldbBackend::consume(const kg::model::TuFactBatch& batch, std::string* 
     return true;
 }
 
-bool SrctrldbBackend::finish(kg::model::IndexSummary& summary, std::string* err)
+void SrctrldbBackend::flushPending(kg::db::WritableDb& db, const std::vector<PendingTuRow>& tuRows)
+{
+    // Non-indexed files touched since the last flush: the vendored writer
+    // always creates a `file` row as indexed=1/complete=1 (recordFile()
+    // has no concept of "non-indexed"), so every file this pass recorded
+    // but marked non-indexed (FileFact::indexed == false) needs this
+    // correction. Applied on EVERY flush (not just finish()'s final one):
+    // if this file was only ever touched by a TU in an already-checkpointed
+    // (or interrupted-and-resumed) chunk, its correction must land THEN,
+    // not stay pending until a finish() that might not run in this process
+    // at all (see finishInterrupted()).
+    if (!m_nonIndexedFileIds.empty())
+    {
+        const std::string idList = joinIds(m_nonIndexedFileIds);
+        db.exec("UPDATE file SET indexed = 0, complete = 0 WHERE id IN (" + idList + ");");
+        db.exec("DELETE FROM filecontent WHERE id IN (" + idList + ");");
+        m_nonIndexedFileIds.clear();
+    }
+
+    // --- kg-private side tables (Phase 1: incremental-update groundwork) ---
+    // IF NOT EXISTS: cheap and idempotent, so safe to redo on every
+    // checkpoint (in case this is the very first flush of the session).
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS kg_symbol_def("
+        "node_id INTEGER NOT NULL, "
+        "file_node_id INTEGER NOT NULL, "
+        "PRIMARY KEY(node_id, file_node_id)"
+        ") WITHOUT ROWID;");
+    db.exec(kKgTuDdl);
+
+    // kg_touched: every node id THIS indexing pass created or looked up
+    // (symbols via m_byKey, files via m_fileNodeIdByPath). Describes the
+    // most recent pass -- for a full `kg index` that is simply "every node
+    // in the database", for a partial re-index (`kg update`, or resuming an
+    // interrupted `kg index` via `kg update`) it is exactly the set of
+    // nodes the re-indexed TUs still produce. Invalidator's post-index
+    // sweep needs that distinction: a node with no occurrence and no
+    // non-MEMBER edge is indistinguishable from a legitimate implicit-
+    // instantiation node a fresh index keeps, UNLESS you know whether the
+    // pass that just ran still produces it. invalidate() empties this
+    // table before the re-index, so a stale entry can never protect a dead
+    // node.
+    //
+    // DROP+recreate happens exactly ONCE per session (the first flush --
+    // checkpoint() or finish(), whichever runs first), not on every
+    // checkpoint: kg_touched must describe the WHOLE session's output (every
+    // checkpoint's nodes), not just the latest chunk's -- dropping it on
+    // every checkpoint would un-protect nodes from earlier, already-
+    // committed chunks of the SAME run.
+    if (!m_kgTouchedInitialized)
+    {
+        db.exec("DROP TABLE IF EXISTS kg_touched;");
+        db.exec("CREATE TABLE kg_touched(node_id INTEGER PRIMARY KEY) WITHOUT ROWID;");
+        m_kgTouchedInitialized = true;
+    }
+    {
+        static const char* kInsertTouchedSql = "INSERT OR IGNORE INTO kg_touched(node_id) VALUES(?1)";
+        for (int nodeId : m_touchedSinceFlush)
+        {
+            if (nodeId == 0)
+            {
+                continue;
+            }
+            db.execBound(kInsertTouchedSql, [&](sqlite3_stmt* stmt) { sqlite3_bind_int(stmt, 1, nodeId); });
+        }
+        m_touchedSinceFlush.clear();
+
+        // Ancestor closure over MEMBER edges: the vendored writer's
+        // addNodeHierarchy() materializes every INTERMEDIATE name element of
+        // a NameHierarchy as its own node but only ever hands back the
+        // LEAF's id, so a purely structural scope node (e.g. the anonymous
+        // scopes around a libc `timespec`) can be created by this pass
+        // without ever passing through m_byKey. A node whose child this
+        // pass produced was produced by this pass too, by definition. Rerun
+        // on every flush (idempotent, INSERT OR IGNORE) since a later chunk
+        // can add new leaves under an already-touched ancestor.
+        for (;;)
+        {
+            db.exec(
+                "INSERT OR IGNORE INTO kg_touched(node_id) SELECT e.source_node_id FROM edge e "
+                "JOIN kg_touched t ON t.node_id = e.target_node_id WHERE e.type = 1;");
+            if (db.changes() <= 0)
+            {
+                break;
+            }
+        }
+
+        if (m_sawUnsolvedReference)
+        {
+            // The writer's shared "unsolved symbol" node (see
+            // SourcetrailDBWriter::recordReferenceToUnsolvedSymhol) is
+            // created inside the vendored writer and never passes through
+            // m_byKey. Matched on its exact serialized name -- char(9) is
+            // the '\t' separator NameHierarchy serializes with. Only when
+            // this pass actually produced an unsolved reference: if it did
+            // not, the node is NOT this pass's output and must stay
+            // collectable like any other.
+            db.exec(
+                "INSERT OR IGNORE INTO kg_touched(node_id) SELECT id FROM node "
+                "WHERE serialized_name = char(9) || 'munsolved symbol' || char(9) || 's' || char(9) || 'p';");
+        }
+    }
+
+    // --- node.type / symbol.definition_kind: upgrade-only writes -------
+    //
+    // Rank the STORED node-kind ints (not translateSymbolKind()'s output --
+    // that maps BOTH Unknown and Type to sourcetrail::SymbolKind::TYPE, so
+    // ranking against it made the ladder degenerate: every freshly-created
+    // node, which the vendored writer always creates as NodeKind::UNKNOWN
+    // (see addNodeHierarchy()), fell into the CASE's ELSE arm and was never
+    // upgraded). rank(UNKNOWN) = 0 matches kindRank(SymbolKind::Unknown) =
+    // 0, and rank(TYPE) = 1 matches kindRank(SymbolKind::Type) = 1, so a
+    // pending kind's kindRank() lines up exactly with the stored node.type's
+    // rank.
+    const int unknownNodeKindInt = sourcetrail::nodeKindToInt(sourcetrail::NodeKind::UNKNOWN);
+    const int typeNodeKindInt = sourcetrail::nodeKindToInt(sourcetrail::NodeKind::TYPE);
+
+    // Strictly-upgrading, and now fully order-INDEPENDENT (including
+    // between equal-ranked kinds): a stored kind is only replaced by one
+    // that's STRICTLY greater under kindOrder(kind) = (rank(kind),
+    // nodeKindInt(kind)) -- rank compared first, and on a RANK TIE, the
+    // stored node-kind int itself (`type`) is compared against the new
+    // kind's int, with the new kind winning only if it's numerically
+    // greater. This subsumes the old "OR type = UNKNOWN" special case for
+    // a virgin node (UNKNOWN's int is strictly less than every other
+    // NodeKind int, including TYPE's, so a rank-0-vs-rank-0 tie against a
+    // virgin UNKNOWN node still upgrades it) without needing it spelled out
+    // separately.
+    //
+    // This used to be a plain `<` (never re-decide a rank tie at all, i.e.
+    // "first real kind wins"): libstdc++'s `std::pair` is reached both as a
+    // ClassTemplate (-> CLASS, rank 2) and as a StructDecl (-> STRUCT, rank
+    // 2), so which TU happened to observe it FIRST decided node.type -- and
+    // "first" differs between a single full `kg index` session and a
+    // multi-session resume/`kg update` that re-observes the same node in a
+    // different TU order (caught by `kg dbdiff` between a fresh 200-TU
+    // index and a 26+174-TU `kg update` resume on the cucs corpus).
+    // Comparing `type < ?1` (the numeric NodeKind int) on a rank tie
+    // instead makes the final answer a pure function of the SET of
+    // observed kinds across the whole run, independent of which session or
+    // TU order produced them -- because this same guard is applied
+    // identically whether it runs ONCE (commitEvery=0) or once per
+    // checkpoint/session against progressively-updated stored state, the
+    // node.type this converges to after ALL observations have been applied
+    // (in any order, across any number of sessions) is always the same
+    // value: the observed kind with the numerically greatest NodeKind int
+    // among those with the highest rank.
+    static const char* kUpdateNodeTypeSql =
+        "UPDATE node SET type = ?1 "
+        "WHERE id = ?2 AND ("
+        "  (CASE type WHEN ?3 THEN 0 WHEN ?4 THEN 1 ELSE 2 END) < ?5 "
+        "  OR ((CASE type WHEN ?3 THEN 0 WHEN ?4 THEN 1 ELSE 2 END) = ?5 AND type < ?1)"
+        ")";
+    static const char* kUpsertSymbolSql =
+        "INSERT INTO symbol(id, definition_kind) VALUES(?1, ?2) "
+        "ON CONFLICT(id) DO UPDATE SET definition_kind = max(definition_kind, excluded.definition_kind)";
+
+    for (const auto& [nodeId, kd] : m_pendingKindDef)
+    {
+        // No "newRank > 0" skip here: even a pending Unknown kind (rank 0)
+        // must still be allowed to upgrade a virgin UNKNOWN node (rank 0) to
+        // TYPE, matching the old unconditional recordSymbolKind() behavior
+        // -- the WHERE clause's own rank(stored) <= newRank guard is what
+        // keeps a real kind from ever being downgraded back to TYPE/UNKNOWN.
+        {
+            const int newNodeKindInt = sourcetrail::nodeKindToInt(sourcetrail::symbolKindToNodeKind(translateSymbolKind(kd.kind)));
+            const int newRank = kg::model::kindRank(kd.kind);
+            db.execBound(
+                kUpdateNodeTypeSql,
+                [&](sqlite3_stmt* stmt) {
+                    sqlite3_bind_int(stmt, 1, newNodeKindInt);
+                    sqlite3_bind_int(stmt, 2, nodeId);
+                    sqlite3_bind_int(stmt, 3, unknownNodeKindInt);
+                    sqlite3_bind_int(stmt, 4, typeNodeKindInt);
+                    sqlite3_bind_int(stmt, 5, newRank);
+                });
+        }
+
+        if (kd.definition != kg::model::DefinitionKind::None)
+        {
+            const int dkInt = sourcetrail::definitionKindToInt(translateDefinitionKind(kd.definition));
+            db.execBound(
+                kUpsertSymbolSql,
+                [&](sqlite3_stmt* stmt) {
+                    sqlite3_bind_int(stmt, 1, nodeId);
+                    sqlite3_bind_int(stmt, 2, dkInt);
+                });
+        }
+    }
+    m_pendingKindDef.clear();
+
+    static const char* kInsertSymbolDefSql = "INSERT OR IGNORE INTO kg_symbol_def(node_id, file_node_id) VALUES(?1, ?2)";
+    for (const auto& [nodeId, fileId] : m_pendingSymbolDef)
+    {
+        db.execBound(
+            kInsertSymbolDefSql,
+            [&](sqlite3_stmt* stmt) {
+                sqlite3_bind_int(stmt, 1, nodeId);
+                sqlite3_bind_int(stmt, 2, fileId);
+            });
+    }
+    m_pendingSymbolDef.clear();
+
+    // --- kg_tu: one upsert per PATH whose LAST entry was consumed since
+    // the last flush ----------------------------------------------------
+    // `tuRows` only ever contains one row per path that actually completed
+    // (IndexDriver only pushes a PendingTuRow once a path's last CDB entry,
+    // in CDB order, has been consumed -- see remainingEntriesByPath there),
+    // so an interrupted run that stopped mid-path never reaches this UPSERT
+    // for that path at all -- see PendingTuRow's doc comment and
+    // docs/KNOWN_LIMITATIONS.md's "Phase 9" section. Still idempotent
+    // (ON CONFLICT DO UPDATE) since a `kg update` re-index of an
+    // already-indexed path legitimately reaches this UPSERT again.
+    static const char* kUpsertTuSql =
+        "INSERT INTO kg_tu(path, args_hash, file_node_id, status, entry_count) VALUES(?1, ?2, ?3, ?4, ?5) "
+        "ON CONFLICT(path) DO UPDATE SET args_hash = excluded.args_hash, file_node_id = excluded.file_node_id, "
+        "status = excluded.status, entry_count = excluded.entry_count";
+    for (const PendingTuRow& row : tuRows)
+    {
+        const std::string normalizedPath = kg::common::paths::normalize(row.path);
+        const auto it = m_normalizedFileNodeId.find(normalizedPath);
+        db.execBound(
+            kUpsertTuSql,
+            [&](sqlite3_stmt* stmt) {
+                sqlite3_bind_text(stmt, 1, row.path.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 2, row.argsHash.c_str(), -1, SQLITE_TRANSIENT);
+                if (it != m_normalizedFileNodeId.end())
+                {
+                    sqlite3_bind_int(stmt, 3, it->second);
+                }
+                else
+                {
+                    sqlite3_bind_null(stmt, 3);
+                }
+                sqlite3_bind_text(stmt, 4, row.status.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int(stmt, 5, static_cast<int>(row.entryCount));
+            });
+    }
+}
+
+bool SrctrldbBackend::commitAndFlush(const std::vector<PendingTuRow>& tuRows, std::string* err)
 {
     if (!m_writer)
     {
         if (err != nullptr)
         {
-            *err = "finish() called before begin()";
+            *err = "checkpoint()/finish() called before begin()";
         }
         return false;
     }
@@ -487,10 +788,86 @@ bool SrctrldbBackend::finish(kg::model::IndexSummary& summary, std::string* err)
     // writer here (recordSymbolKind unconditionally overwrites node.type;
     // recordSymbolDefinitionKind is first-write-wins via INSERT OR IGNORE --
     // neither behavior is safe for a future incremental `kg update` that
-    // re-consumes a symbol observed differently across runs). Instead they're
-    // applied below, via our own WritableDb, with an explicit
-    // never-downgrade guard on node.type and a max()-upgrade on
+    // re-consumes a symbol observed differently across runs). Instead
+    // they're applied via flushPending()/our own WritableDb, with an
+    // explicit never-downgrade guard on node.type and a max()-upgrade on
     // definition_kind.
+    if (!m_writer->commitTransaction())
+    {
+        if (err != nullptr)
+        {
+            *err = m_writer->getLastError();
+        }
+        return false;
+    }
+
+    try
+    {
+        m_sideDb->begin();
+        flushPending(*m_sideDb, tuRows);
+        m_sideDb->commit();
+    }
+    catch (const std::exception& e)
+    {
+        if (err != nullptr)
+        {
+            *err = e.what();
+        }
+        return false;
+    }
+
+    return true;
+}
+
+bool SrctrldbBackend::checkpoint(const std::vector<PendingTuRow>& tuRows, std::string* err)
+{
+    if (!commitAndFlush(tuRows, err))
+    {
+        return false;
+    }
+    return startTransaction(err);
+}
+
+bool SrctrldbBackend::finishInterrupted(const std::vector<PendingTuRow>& tuRows, std::string* err)
+{
+    if (!commitAndFlush(tuRows, err))
+    {
+        return false;
+    }
+    if (!m_writer->close())
+    {
+        if (err != nullptr)
+        {
+            *err = m_writer->getLastError();
+        }
+        return false;
+    }
+    m_writer.reset();
+    m_sideDb.reset();
+    // Deliberately: no reader indices, no ANALYZE/VACUUM, and
+    // kg_index_in_progress is left set -- finish() (via a later `kg update`)
+    // does all of that.
+    return true;
+}
+
+bool SrctrldbBackend::finish(kg::model::IndexSummary& summary, std::string* err)
+{
+    // By the time finish() runs, the caller has already checkpoint()ed
+    // everything (the LAST checkpoint() call, covering whatever wasn't
+    // flushed yet, is the caller's job -- for commitEvery=0 that's the
+    // ONLY checkpoint() call, covering the entire run): every buffer here
+    // is empty and every kg_tu row already written. finish() just needs to
+    // close out the writer's (now-empty) transaction and do the one-time,
+    // end-of-run-only work: reader indices, non-indexed-file cleanup,
+    // ANALYZE/VACUUM, and clearing kg_index_in_progress.
+    if (!m_writer)
+    {
+        if (err != nullptr)
+        {
+            *err = "finish() called before begin()";
+        }
+        return false;
+    }
 
     if (!m_writer->commitTransaction())
     {
@@ -512,171 +889,29 @@ bool SrctrldbBackend::finish(kg::model::IndexSummary& summary, std::string* err)
 
     // Post-write correction + reader indices, via our own raw sqlite3
     // handle (kg::db::WritableDb) -- never patch the vendored writer to do
-    // this instead.
+    // this instead. Reuses m_sideDb (already open) rather than a fresh
+    // connection.
     try
     {
-        kg::db::WritableDb db(m_dbPath, /*foreignKeys=*/false);
+        kg::db::WritableDb& db = *m_sideDb;
         db.begin();
 
+        // Any non-indexed files from THIS (final) checkpoint's own
+        // delta -- flushPending() already handled every prior checkpoint's,
+        // but the caller's mandatory last checkpoint() call (see finish()'s
+        // class comment) already drained m_nonIndexedFileIds too, so this
+        // is normally a no-op; kept for defensiveness (a caller that skips
+        // the pre-finish() checkpoint() entirely, e.g. a future direct
+        // caller, still gets correct behavior).
         if (!m_nonIndexedFileIds.empty())
         {
             const std::string idList = joinIds(m_nonIndexedFileIds);
             db.exec("UPDATE file SET indexed = 0, complete = 0 WHERE id IN (" + idList + ");");
             db.exec("DELETE FROM filecontent WHERE id IN (" + idList + ");");
+            m_nonIndexedFileIds.clear();
         }
 
-        // --- kg-private side tables (Phase 1: incremental-update groundwork) ---
-        db.exec(
-            "CREATE TABLE IF NOT EXISTS kg_symbol_def("
-            "node_id INTEGER NOT NULL, "
-            "file_node_id INTEGER NOT NULL, "
-            "PRIMARY KEY(node_id, file_node_id)"
-            ") WITHOUT ROWID;");
-        db.exec(kKgTuDdl);
-
-        // kg_touched: every node id THIS indexing pass created or looked
-        // up (symbols via m_byKey, files via m_fileNodeIdByPath). Written
-        // unconditionally, so it always describes the most recent pass --
-        // for a full `kg index` that is simply "every node in the
-        // database", for the partial re-index `kg update` runs it is
-        // exactly the set of nodes the re-indexed TUs still produce.
-        // Invalidator's post-index sweep needs that distinction: a node
-        // with no occurrence and no non-MEMBER edge is indistinguishable
-        // from a legitimate implicit-instantiation node a fresh index
-        // keeps, UNLESS you know whether the pass that just ran still
-        // produces it. invalidate() empties this table before the
-        // re-index, so a stale entry can never protect a dead node.
-        db.exec("DROP TABLE IF EXISTS kg_touched;");
-        db.exec("CREATE TABLE kg_touched(node_id INTEGER PRIMARY KEY) WITHOUT ROWID;");
-        {
-            static const char* kInsertTouchedSql = "INSERT OR IGNORE INTO kg_touched(node_id) VALUES(?1)";
-            const auto insertTouched = [&](int nodeId) {
-                if (nodeId == 0)
-                {
-                    return;
-                }
-                db.execBound(kInsertTouchedSql, [&](sqlite3_stmt* stmt) { sqlite3_bind_int(stmt, 1, nodeId); });
-            };
-            for (const auto& [key, nodeId] : m_byKey)
-            {
-                insertTouched(nodeId);
-            }
-            for (const auto& [path, nodeId] : m_fileNodeIdByPath)
-            {
-                insertTouched(nodeId);
-            }
-            // Ancestor closure over MEMBER edges: the vendored writer's
-            // addNodeHierarchy() materializes every INTERMEDIATE name
-            // element of a NameHierarchy as its own node but only ever
-            // hands back the LEAF's id, so a purely structural scope node
-            // (e.g. the anonymous scopes around a libc `timespec`) can be
-            // created by this pass without ever passing through m_byKey.
-            // A node whose child this pass produced was produced by this
-            // pass too, by definition.
-            for (;;)
-            {
-                db.exec(
-                    "INSERT OR IGNORE INTO kg_touched(node_id) SELECT e.source_node_id FROM edge e "
-                    "JOIN kg_touched t ON t.node_id = e.target_node_id WHERE e.type = 1;");
-                if (db.changes() <= 0)
-                {
-                    break;
-                }
-            }
-
-            if (m_sawUnsolvedReference)
-            {
-                // The writer's shared "unsolved symbol" node (see
-                // SourcetrailDBWriter::recordReferenceToUnsolvedSymhol) is
-                // created inside the vendored writer and never passes
-                // through m_byKey. Matched on its exact serialized name --
-                // char(9) is the '\t' separator NameHierarchy serializes
-                // with. Only when this pass actually produced an unsolved
-                // reference: if it did not, the node is NOT this pass's
-                // output and must stay collectable like any other.
-                db.exec(
-                    "INSERT OR IGNORE INTO kg_touched(node_id) SELECT id FROM node "
-                    "WHERE serialized_name = char(9) || 'munsolved symbol' || char(9) || 's' || char(9) || 'p';");
-            }
-        }
-
-        // --- node.type / symbol.definition_kind: upgrade-only writes -------
-        //
-        // Rank the STORED node-kind ints (not translateSymbolKind()'s
-        // output -- that maps BOTH Unknown and Type to sourcetrail::
-        // SymbolKind::TYPE, so ranking against it made the ladder
-        // degenerate: every freshly-created node, which the vendored writer
-        // always creates as NodeKind::UNKNOWN (see addNodeHierarchy()), fell
-        // into the CASE's ELSE arm and was never upgraded). rank(UNKNOWN) =
-        // 0 matches kindRank(SymbolKind::Unknown) = 0, and rank(TYPE) = 1
-        // matches kindRank(SymbolKind::Type) = 1, so a pending kind's
-        // kindRank() lines up exactly with the stored node.type's rank.
-        const int unknownNodeKindInt = sourcetrail::nodeKindToInt(sourcetrail::NodeKind::UNKNOWN);
-        const int typeNodeKindInt = sourcetrail::nodeKindToInt(sourcetrail::NodeKind::TYPE);
-
-        // Strictly-upgrading, order-INDEPENDENT: a stored kind is only
-        // replaced by a STRICTLY higher-ranked one (plus the one special
-        // case of a virgin UNKNOWN node, which must still be allowed to
-        // become TYPE even though both rank 0). `<=` here instead of `<`
-        // made EQUAL-ranked kinds last-writer-wins, i.e. dependent on TU
-        // processing order: libstdc++'s `std::pair` is reached both as a
-        // ClassTemplate (-> CLASS, rank 2) and as a StructDecl (-> STRUCT,
-        // rank 2), so a full 200-TU `kg index` and the 1-TU re-index
-        // `kg update` runs on top of it disagreed about node.type for it --
-        // caught by `kg dbdiff` on the cucs corpus. First real kind wins is
-        // stable across both.
-        static const char* kUpdateNodeTypeSql =
-            "UPDATE node SET type = ?1 "
-            "WHERE id = ?2 AND "
-            "((CASE type WHEN ?3 THEN 0 WHEN ?4 THEN 1 ELSE 2 END) < ?5 OR type = ?3)";
-        static const char* kUpsertSymbolSql =
-            "INSERT INTO symbol(id, definition_kind) VALUES(?1, ?2) "
-            "ON CONFLICT(id) DO UPDATE SET definition_kind = max(definition_kind, excluded.definition_kind)";
-
-        for (const auto& [nodeId, kd] : m_pendingKindDef)
-        {
-            // No "newRank > 0" skip here: even a pending Unknown kind
-            // (rank 0) must still be allowed to upgrade a virgin UNKNOWN
-            // node (rank 0) to TYPE, matching the old unconditional
-            // recordSymbolKind() behavior -- the WHERE clause's own
-            // rank(stored) <= newRank guard is what keeps a real kind from
-            // ever being downgraded back to TYPE/UNKNOWN.
-            {
-                const int newNodeKindInt = sourcetrail::nodeKindToInt(sourcetrail::symbolKindToNodeKind(translateSymbolKind(kd.kind)));
-                const int newRank = kg::model::kindRank(kd.kind);
-                db.execBound(
-                    kUpdateNodeTypeSql,
-                    [&](sqlite3_stmt* stmt) {
-                        sqlite3_bind_int(stmt, 1, newNodeKindInt);
-                        sqlite3_bind_int(stmt, 2, nodeId);
-                        sqlite3_bind_int(stmt, 3, unknownNodeKindInt);
-                        sqlite3_bind_int(stmt, 4, typeNodeKindInt);
-                        sqlite3_bind_int(stmt, 5, newRank);
-                    });
-            }
-
-            if (kd.definition != kg::model::DefinitionKind::None)
-            {
-                const int dkInt = sourcetrail::definitionKindToInt(translateDefinitionKind(kd.definition));
-                db.execBound(
-                    kUpsertSymbolSql,
-                    [&](sqlite3_stmt* stmt) {
-                        sqlite3_bind_int(stmt, 1, nodeId);
-                        sqlite3_bind_int(stmt, 2, dkInt);
-                    });
-            }
-        }
-
-        static const char* kInsertSymbolDefSql = "INSERT OR IGNORE INTO kg_symbol_def(node_id, file_node_id) VALUES(?1, ?2)";
-        for (const auto& [nodeId, fileId] : m_pendingSymbolDef)
-        {
-            db.execBound(
-                kInsertSymbolDefSql,
-                [&](sqlite3_stmt* stmt) {
-                    sqlite3_bind_int(stmt, 1, nodeId);
-                    sqlite3_bind_int(stmt, 2, fileId);
-                });
-        }
+        kg::db::deleteMeta(db, "kg_index_in_progress");
 
         static const char* kIndexStatements[] = {
             "CREATE INDEX IF NOT EXISTS kg_edge_source_idx ON edge(source_node_id);",
@@ -710,7 +945,7 @@ bool SrctrldbBackend::finish(kg::model::IndexSummary& summary, std::string* err)
         {
             std::fprintf(stderr, "kg index: warning: ANALYZE failed: %s\n", e.what());
         }
-        if (!m_noVacuum && !m_nonIndexedFileIds.empty())
+        if (!m_noVacuum && m_anyNonIndexedFiles)
         {
             try
             {
@@ -730,6 +965,8 @@ bool SrctrldbBackend::finish(kg::model::IndexSummary& summary, std::string* err)
         }
         return false;
     }
+
+    m_sideDb.reset();
 
     summary.symbols = m_summary.symbols;
     summary.references = m_summary.references;

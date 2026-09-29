@@ -2,6 +2,8 @@
 
 #include <sqlite3.h>
 
+#include "NodeKind.h"
+
 #include "kg/db/WritableDb.h"
 
 // See include/kg/update/Invalidator.h and docs/KNOWN_LIMITATIONS.md's
@@ -334,6 +336,35 @@ GcStats invalidate(kg::db::WritableDb& db, const ClearPlan& plan)
         db.exec("DELETE FROM kg_symbol_def WHERE file_node_id IN (SELECT id FROM kg_clear);");
         db.exec("DELETE FROM symbol WHERE id IN (SELECT node_id FROM kg_lost) AND id NOT IN (SELECT node_id FROM kg_symbol_def);");
         stats.symbolsReset = db.changes();
+
+        // step 4b: reset node.type to UNKNOWN for every node in kg_lost
+        // (i.e. every node that lost >= 1 declaring file to this clear --
+        // not just the ones that lost ALL of them and got their `symbol`
+        // row deleted above). node.type is written upgrade-only (see
+        // SrctrldbBackend::flushPending()'s kUpdateNodeTypeSql): once a
+        // node is CLASS, a later re-observation of the SAME still-cleared
+        // declaration as STRUCT can never turn it back, which would make a
+        // genuine source edit (`class Square` -> `struct Square`) silently
+        // NOT take effect on `kg update`, unlike a fresh `kg index` of the
+        // same edited source. Resetting to UNKNOWN here lets the re-index
+        // that's about to run re-derive the kind from scratch via the same
+        // upgrade-only ladder, so the post-update kind is once again a pure
+        // function of the (now-current) set of observations -- exactly
+        // like a fresh index -- rather than a fossil of whatever kind a
+        // now-cleared declaration used to have.
+        //
+        // Caveat (documented in docs/KNOWN_LIMITATIONS.md's Phase 8
+        // section): if this node's ONLY remaining declaring file is one
+        // that is NOT being reindexed (e.g. the class was deleted outright
+        // and the node survives solely as a reference target from an
+        // untouched TU), nothing re-derives its kind this run, and it can
+        // be left at UNKNOWN where a from-scratch `kg index` would show
+        // whatever kind that untouched TU's reference implies. This is the
+        // same TU-provenance limitation class as the residual-collision
+        // `m_byName` caveat above, not a new gap.
+        db.exec(
+            "UPDATE node SET type = " + std::to_string(sourcetrail::nodeKindToInt(sourcetrail::NodeKind::UNKNOWN)) +
+            " WHERE id IN (SELECT node_id FROM kg_lost);");
         db.exec("DELETE FROM kg_tu WHERE file_node_id IN (SELECT id FROM kg_clear) OR path IN (SELECT path FROM kg_paths);");
 
         // step 5: cleared file nodes -- cascades: file, filecontent, their
