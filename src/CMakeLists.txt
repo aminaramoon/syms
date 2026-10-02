@@ -101,6 +101,26 @@ add_library(kg_update STATIC
 target_link_libraries(kg_update PUBLIC kg_index kg_query kg_db kg_common nlohmann_json::nlohmann_json)
 target_link_libraries(kg_update PRIVATE kg_options)
 
+# --- kg_notes ----------------------------------------------------------------
+# Phase 1 of docs/NOTES_DESIGN.md: the markdown model/parser/renderer for
+# `kg notes` files and `kg notes lint`. No DB dependency in this phase (that
+# arrives in Phase 2's NotesStore, added to this same target).
+add_library(kg_notes STATIC
+    notes/Markdown.cpp
+    notes/BodyHash.cpp
+    notes/Sync.cpp
+    notes/NotesStore.cpp
+    notes/Scaffold.cpp
+)
+target_link_libraries(kg_notes PUBLIC kg_common kg_db kg_query nlohmann_json::nlohmann_json)
+target_link_libraries(kg_notes PRIVATE kg_options)
+
+# Phase 3: `kg update`'s post-index notes sync (UpdateDriver.cpp) needs
+# kg::notes::syncNotes() -- linked here, after kg_notes is declared, rather
+# than alongside kg_update's other PUBLIC deps above (kg_notes didn't exist
+# as a target yet at that point in this file).
+target_link_libraries(kg_update PUBLIC kg_notes)
+
 # --- kg_out ------------------------------------------------------------------
 add_library(kg_out STATIC
     out/Out.cpp
@@ -120,6 +140,7 @@ target_link_libraries(kg PRIVATE
     kg_update
     kg_index
     kg_query
+    kg_notes
     kg_db
     kg_model
     kg_common

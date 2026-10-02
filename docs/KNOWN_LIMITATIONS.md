@@ -1541,3 +1541,81 @@ final `kg_tu` row's `entry_count` is 2.
 **Docs**: this section; `docs/JSON_SCHEMA.md`'s `tus.to_index` note
 (entries, not distinct files, per the `[k/N]` progress-counter confusion
 above).
+
+## Notes (`kg notes`, docs/NOTES_DESIGN.md)
+
+- **Matching is by qualified name + signature, not a stable symbol id.** A
+  `##` heading resolves through the exact same `resolveSymbol()` path `kg
+  query` uses; when more than one candidate shares a heading, narrowing is
+  purely textual (`### signature` normalized and compared, first the full
+  signature then just the parameter-list suffix -- see `Sync.h`'s
+  `matchBlock()`). A note can therefore silently attach to the WRONG
+  overload if two overloads' signatures happen to normalize identically
+  (extremely rare in practice, since normalization only collapses
+  whitespace and a trailing `;`) -- `notes status --problems` surfaces the
+  matching decision (`ambiguous`/`signature-mismatch`) but does not attempt
+  semantic disambiguation beyond that.
+- **The staleness hash covers only the symbol's OWN definition span** (the
+  SCOPE occurrence with the largest line span, or the TOKEN line if the
+  symbol has no SCOPE location -- see `BodyHash.h`). This is deliberate: a
+  note is a claim about what the noted function does, and only an edit to
+  that function's own body invalidates the claim. A caller of a noted
+  function that itself changes (its callee's signature, its own logic) is
+  NOT detected -- e.g. if `foo()`'s note says "always returns a non-null
+  pointer" and a callee `foo()` depends on changes to sometimes return
+  `nullptr`, `foo()`'s own note does NOT go stale, because `foo()`'s body
+  text is unchanged. `kg query context` surfaces the callee's OWN
+  `stale`/`filled` state on that callee's node, which is the closest
+  built-in mitigation (an agent re-reading a note for `foo` sees at a
+  glance whether ITS callees have their own fresh/stale notes), but there
+  is no propagated/transitive staleness.
+- **Declaration-only symbols hash the TOKEN line, not a body.** A pure
+  virtual method (`virtual T f() const = 0;`) or any other symbol with no
+  SCOPE (definition) location falls back to hashing its single declaration
+  line. Any whitespace-insignificant edit to that exact line (e.g.
+  reformatting, adding a trailing comment) changes the hash and marks the
+  note stale even though nothing about the symbol's contract changed --
+  this is the same "definition span" rule applied to the only span such a
+  symbol has.
+- **The overlay (`openNotes()`) is read-only and per-process.** A notes
+  markdown file edited on disk after the last `kg notes sync` is detected
+  (via `kg_note_file`'s stored mtime/content-hash vs disk) and re-parsed
+  in memory for that one call, with a "notes cache out of date -- run `kg
+  notes sync`" hint on stderr -- but the overlay is recomputed from scratch
+  on every invocation (no cross-process cache), and nothing is ever written
+  back to the `.srctrldb` outside of `kg notes sync`/`accept`/`kg update`'s
+  own post-update sync. Two concurrent `kg query`/`kg notes show` processes
+  against the same out-of-date file each redundantly re-parse it; this is
+  intentionally simple (notes files are small, sync is fast -- see the
+  cucs-corpus timing assertion in `cucs_update_scenario.cmake`, well under
+  2s even on a ~20k-symbol database) rather than adding any kind of daemon
+  or file-watch cache.
+- **A TU-local (`static`, anonymous-namespace, or file-scope `main`)
+  symbol's identity is NOT stable across two independently-`kg index`d
+  worktrees at different filesystem paths.** `serialized_name` for such a
+  symbol embeds a hidden disambiguator (`NameBuilder.cpp`'s
+  `disambiguatorFor()`) derived from `weakly_canonical()`-normalized,
+  ABSOLUTE declaration file path -- by design, so the same TU-local entity
+  reached via two different `#include` spellings within one index run still
+  gets one consistent identity. But that absolute path differs between two
+  worktrees checked out at different locations (e.g. two `git worktree`s,
+  or a CI runner vs a developer's machine), so a note on a `static`
+  function or one declared inside an anonymous namespace will NOT reliably
+  carry over via `serialized_name` alone the way a normal (externally
+  linked) function's note does -- `kg dbdiff --only note` between two such
+  worktrees will show these as one-sided differences even though the
+  underlying markdown is byte-identical. `test/update/
+  notes_cross_worktree.cmake` documents and works around this by only
+  exercising the cross-worktree identity guarantee on `chain.cpp`'s
+  externally-linked functions, which is the overwhelmingly common case for
+  anything worth writing a note about.
+- **`kg query context`'s union of callers/callees/overrides/bases/derived
+  is not itself deduplicated against a node-kind filter** the way a single
+  BFS verb is -- `--kind` still narrows which nodes are RETURNED (each
+  sub-traversal applies it independently), but a node reachable by more
+  than one leg (e.g. a function that is both a caller and an override
+  target) is deduplicated by id with the FIRST leg's `BfsNode` (and hence
+  its `depth`) winning; the other legs' `depth` for that same node is
+  silently discarded. This only affects the reported `depth`/tree
+  indentation in text mode, never which nodes/edges are present -- every
+  edge from every leg survives the merge.

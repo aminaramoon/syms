@@ -134,6 +134,14 @@ void writeProvenance(kg::db::WritableDb& db, const Provenance& prov)
     kg::db::setMeta(db, "kg_dirty_paths", nlohmann::json(prov.dirtyPaths).dump());
     kg::db::setMeta(db, "kg_indexed_at", prov.indexedAtUtc);
     kg::db::setMeta(db, "kg_last_update_at", prov.lastUpdateAtUtc);
+    // Own meta key, NOT part of kg_options_json -- see Provenance::notesDir's
+    // doc comment. Only written when non-empty, so a `kg index` run without
+    // --notes-dir never clobbers a notes dir set by a later `kg notes sync
+    // --notes-dir` / `kg update`.
+    if (!prov.notesDir.empty())
+    {
+        kg::db::setMeta(db, "kg_notes_dir", prov.notesDir);
+    }
 }
 
 std::optional<Provenance> readProvenance(sqlite3* handle)
@@ -187,6 +195,7 @@ std::optional<Provenance> readProvenance(sqlite3* handle)
 
     prov.indexedAtUtc = kg::db::getMeta(handle, "kg_indexed_at").value_or("");
     prov.lastUpdateAtUtc = kg::db::getMeta(handle, "kg_last_update_at").value_or("");
+    prov.notesDir = kg::db::getMeta(handle, "kg_notes_dir").value_or("");
 
     return prov;
 }

@@ -360,6 +360,19 @@ else()
         message(STATUS "cucs_update_scenario: [correctness] NOTE: ${V_TU_RETRIED} retried TU(s) -- exercises the "
                         "failed/partial-status retry path (Phase 4)")
     endif()
+
+    # Phase 4 of docs/NOTES_DESIGN.md: `kg.update-summary/1` always carries a
+    # `notes` key (report-only -- a notes-dir problem or sync exception
+    # never fails `kg update` itself). No `notes/` dir exists in this clone
+    # yet at this point in the scenario, so it's `{}` (no known notes dir to
+    # sync against) rather than the populated {noted,stale,newly_stale,
+    # problems} shape -- that's exercised for real, below, against the
+    # resulting inc.srctrldb, once a notes dir exists.
+    string(JSON V_NOTES_TYPE ERROR_VARIABLE jerr TYPE "${KG_OUT}" notes)
+    if(jerr OR NOT V_NOTES_TYPE STREQUAL "OBJECT")
+        message(FATAL_ERROR "cucs_update_scenario: [correctness] kg.update-summary/1 is missing a `notes` object:\n${KG_OUT}")
+    endif()
+    message(STATUS "cucs_update_scenario: [correctness] kg.update-summary/1 carries a notes object")
 endif()
 
 message(STATUS "cucs_update_scenario: [correctness] full index @ HEAD (${HEAD_SHA}), for dbdiff comparison")
@@ -446,6 +459,7 @@ kg_dbdiff_ignoring("${WORK}/inc.srctrldb" "${WORK}/full_head.srctrldb" shared-he
 message(STATUS "cucs_update_scenario: [correctness] EQUIVALENT -- kg update reproduced a fresh kg index of HEAD "
                 "(modulo the documented shared-header occurrence-location limitation)")
 
+
 # ------------------------------------------------------------------------
 # Step 4: speed run -- a single-.cpp update vs a full re-index
 # ------------------------------------------------------------------------
@@ -465,6 +479,116 @@ message(STATUS "cucs_update_scenario: [speed] kg update --files took ${T_small}s
 message(STATUS "cucs_update_scenario: [speed] kg dbdiff speed.srctrldb full_head.srctrldb (MUST be equivalent)")
 kg_dbdiff("${WORK}/speed.srctrldb" "${WORK}/full_head.srctrldb")
 message(STATUS "cucs_update_scenario: [speed] EQUIVALENT")
+
+# ------------------------------------------------------------------------
+# Step (notes): Phase 4 of docs/NOTES_DESIGN.md -- real-corpus `kg notes`
+# coverage on the ~20k-symbol HEAD database (WORK/inc.srctrldb, currently
+# checked out at HEAD_SHA in WORK/repo). Scaffolds notes for
+# cucascade::memory::reservation_limit_policy and its three derived
+# policies (ignore_/fail_/increase_), fills them, syncs, and asserts
+# `status`/`context` see the result. Kept robust: if the corpus's real
+# class names ever drift, scaffold selecting 0 symbols is reported (not a
+# hard failure of the whole test) -- everything after that point that
+# depends on there being at least one noted symbol is skipped.
+# ------------------------------------------------------------------------
+
+set(NOTES_DIR "${WORK}/repo/notes")
+set(POLICY_CLASSES
+    "cucascade::memory::reservation_limit_policy"
+    "cucascade::memory::ignore_reservation_limit_policy"
+    "cucascade::memory::fail_reservation_limit_policy"
+    "cucascade::memory::increase_reservation_limit_policy")
+
+set(TOTAL_SELECTED 0)
+foreach(cls ${POLICY_CLASSES})
+    execute_process(
+        COMMAND "${KG}" notes scaffold -d "${WORK}/inc.srctrldb" --notes-dir "${NOTES_DIR}" --class "${cls}" --json
+        WORKING_DIRECTORY "${WORK}"
+        RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
+    if(NOT rc EQUAL 0)
+        message(WARNING "cucs_update_scenario: [notes] kg notes scaffold --class ${cls} failed (rc=${rc}) -- "
+                         "corpus class names may have drifted; skipping notes assertions.\n${out}\n${err}")
+    else()
+        json_field(sel "${out}" symbols_selected)
+        message(STATUS "cucs_update_scenario: [notes] --class ${cls}: ${sel} symbol(s) selected")
+        math(EXPR TOTAL_SELECTED "${TOTAL_SELECTED} + ${sel}")
+    endif()
+endforeach()
+
+if(TOTAL_SELECTED LESS 1)
+    message(WARNING "cucs_update_scenario: [notes] scaffold selected 0 symbols across all ${POLICY_CLASSES} -- "
+                     "skipping the rest of the notes step (corpus layout likely changed; see "
+                     "test/update/cucs_update_scenario.cmake's POLICY_CLASSES)")
+else()
+    message(STATUS "cucs_update_scenario: [notes] ${TOTAL_SELECTED} symbol(s) scaffolded total")
+
+    if(DEFINED SCRIPTS AND NOT SCRIPTS STREQUAL "")
+        kg_run("kg-notes-fake --fill-existing" "${WORK}" 0
+            python3 "${SCRIPTS}/kg-notes-fake.py" --fill-existing "${NOTES_DIR}" --seed 5 --fill-ratio 1.0)
+    endif()
+
+    string(TIMESTAMP T_SYNC0 "%s")
+    kg_run("kg notes sync" "${WORK}" 0
+        "${KG}" notes sync -d "${WORK}/inc.srctrldb" --notes-dir "${NOTES_DIR}" --json)
+    string(TIMESTAMP T_SYNC1 "%s")
+    math(EXPR T_SYNC "${T_SYNC1} - ${T_SYNC0}")
+    set(SYNC_JSON "${KG_OUT}")
+    json_field(SYNC_MATCHED "${SYNC_JSON}" counts matched)
+    message(STATUS "cucs_update_scenario: [notes] kg notes sync: ${SYNC_MATCHED} matched, took ${T_SYNC}s "
+                    "(on the ~20k-symbol HEAD database, must be well under 2s)")
+    if(T_SYNC GREATER 2)
+        message(FATAL_ERROR "cucs_update_scenario: [notes] kg notes sync took ${T_SYNC}s (> 2s) on a database "
+                             "with only ${TOTAL_SELECTED} noted symbol(s) -- should be fast regardless of the "
+                             "surrounding DB's total symbol count")
+    endif()
+
+    kg_run("kg notes status" "${WORK}" 0
+        "${KG}" notes status -d "${WORK}/inc.srctrldb" --json)
+    json_field(STATUS_NOTED "${KG_OUT}" counts noted)
+    if(STATUS_NOTED LESS 1)
+        message(FATAL_ERROR "cucs_update_scenario: [notes] kg notes status reports 0 noted symbols after scaffold+sync "
+                             "of ${TOTAL_SELECTED} policy method(s):\n${KG_OUT}")
+    endif()
+    message(STATUS "cucs_update_scenario: [notes] kg notes status: ${STATUS_NOTED} noted symbol(s)")
+
+    message(STATUS "cucs_update_scenario: [notes] kg query context increase_reservation_limit_policy::get_policy_name --json")
+    execute_process(
+        COMMAND "${KG}" query context "cucascade::memory::increase_reservation_limit_policy::get_policy_name" -d "${WORK}/inc.srctrldb" --json
+        WORKING_DIRECTORY "${WORK}"
+        RESULT_VARIABLE rc OUTPUT_VARIABLE CTX_JSON ERROR_VARIABLE err)
+    if(NOT rc EQUAL 0)
+        message(FATAL_ERROR "kg query context increase_reservation_limit_policy::get_policy_name failed (rc=${rc}):\n${CTX_JSON}\n${err}")
+    endif()
+
+    string(JSON CTX_NODES_LEN LENGTH "${CTX_JSON}" nodes)
+    math(EXPR CTX_LAST "${CTX_NODES_LEN} - 1")
+    set(SAW_SEED_NOTE FALSE)
+    set(SAW_OVERRIDE_NOTE FALSE)
+    foreach(i RANGE ${CTX_LAST})
+        json_field(qname "${CTX_JSON}" nodes ${i} qualified_name)
+        json_field(notesObj "${CTX_JSON}" nodes ${i} notes)
+        if(NOT notesObj STREQUAL "null")
+            if(qname MATCHES "increase_reservation_limit_policy::get_policy_name$")
+                set(SAW_SEED_NOTE TRUE)
+            endif()
+            if(qname MATCHES "reservation_limit_policy::get_policy_name$" AND NOT qname MATCHES "increase_")
+                set(SAW_OVERRIDE_NOTE TRUE)
+            endif()
+        endif()
+    endforeach()
+    if(NOT SAW_SEED_NOTE)
+        message(FATAL_ERROR "cucs_update_scenario: [notes] the seed "
+                             "(increase_reservation_limit_policy::get_policy_name) carries no notes object in "
+                             "`kg query context`'s output:\n${CTX_JSON}")
+    endif()
+    if(NOT SAW_OVERRIDE_NOTE)
+        message(FATAL_ERROR "cucs_update_scenario: [notes] no --overrides-target sibling of "
+                             "get_policy_name carries a notes object (expected the base class's own "
+                             "reservation_limit_policy::get_policy_name -- pure virtual, so it may itself be "
+                             "unnoted, but at least one of the base/derived siblings should be):\n${CTX_JSON}")
+    endif()
+    message(STATUS "cucs_update_scenario: [notes] context carries notes for both the seed and its override chain")
+endif()
 
 message(STATUS "cucs_update_scenario: [speed] T_full_head=${T_full_head}s  T_small=${T_small}s")
 if(T_small GREATER T_full_head)

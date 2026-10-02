@@ -201,14 +201,105 @@ The full verb list: `callers callees bases derived overrides overridden-by
 members neighbors references definition search file stats`. Run
 `kg query --help` (or `kg --help`) for the complete flag reference.
 
+### Notes
+
+`kg notes` attaches durable, reviewable function-level knowledge (brief /
+what / how / signature / pre-conditions / post-conditions / bugs /
+suggestions) to symbols, stored as markdown in git so it's versioned,
+diffable, and shared across worktrees/sessions. See `docs/NOTES_DESIGN.md`
+for the full design and markdown format.
+
+Phase 1 shipped the parser/renderer (`kg_notes` library, `include/kg/notes/`)
+and a DB-free lint:
+
+```sh
+flox activate -- ./build/kg notes lint --notes-dir notes/ --strict --json
+```
+
+Phase 2 (this codebase) adds the DB-backed cache and read paths: a
+`kg_note*` cache schema in the `.srctrldb` (rebuilt from the markdown, never
+the source of truth itself), matched to symbols by qualified name +
+signature, with automatic staleness tracking (a hash of each symbol's
+current definition body) and an overlay so querying never has to write the
+DB even when a note file changed on disk since the last sync:
+
+```sh
+flox activate -- ./build/kg notes sync -d kg.srctrldb --notes-dir notes/ --json
+flox activate -- ./build/kg notes show -d kg.srctrldb some::qualified::name --section what
+flox activate -- ./build/kg notes status -d kg.srctrldb --stale --json
+flox activate -- ./build/kg notes symbols -d kg.srctrldb --json   # feeds scripts/kg-notes-fake.py --symbols-json
+```
+
+`scripts/kg-notes-fake.py` generates deterministic fake notes trees, either
+from a bare JSON symbol list or directly from `kg notes symbols --json`'s
+own output; `--stale-ratio`/`--drop-hash-ratio` inject deterministic
+staleness/unanchored-note scenarios for testing.
+
+Phase 3 (this codebase) adds writing: `kg notes scaffold` creates
+placeholder blocks (idempotent and non-destructive -- existing blocks are
+never rewritten), `kg notes accept` re-anchors a note's `kg-hash`/
+`kg-commit` after reviewing a change, `kg notes fmt` is a plain canonical
+re-render (`--check` for CI), and `kg update` re-syncs notes automatically
+at the end of every run so staleness tracks the code without a separate
+step:
+
+```sh
+flox activate -- ./build/kg notes scaffold -d kg.srctrldb --notes-dir notes/ --all --json
+flox activate -- ./build/kg notes scaffold -d kg.srctrldb --notes-dir notes/ --class my::Widget
+flox activate -- ./build/kg notes scaffold -d kg.srctrldb --notes-dir notes/ some::qualified::function
+flox activate -- ./build/kg notes accept -d kg.srctrldb some::qualified::function --json
+flox activate -- ./build/kg notes fmt --notes-dir notes/ --check
+flox activate -- ./build/kg index -c compile_commands.json -o kg.srctrldb --notes-dir notes/ --force
+flox activate -- ./build/kg update -d kg.srctrldb --json   # re-indexes, then re-syncs notes and reports newly-stale
+```
+
+The realistic demo/test path for a fresh notes tree is `scaffold --all` (real
+symbols, real hashes) → `python3 scripts/kg-notes-fake.py --fill-existing
+notes/ --seed N` (fills `_TODO_` placeholders in place, preserving
+headings/signatures/hashes byte-for-byte) → `sync`.
+
+Phase 4 (final, this codebase) embeds notes directly into the call graph and
+proves they travel with git, independent of any one `.srctrldb`:
+
+```sh
+flox activate -- ./build/kg query context 'my::qualified::function' -d kg.srctrldb --json
+flox activate -- ./build/kg query context 'my::qualified::function' -d kg.srctrldb --notes-full   # text mode, full note body under each node
+flox activate -- ./build/kg query context 'my::qualified::function' -d kg.srctrldb --no-notes      # omit the "notes" field entirely
+flox activate -- ./build/kg dbdiff a.srctrldb b.srctrldb --only note                                # compare ONLY the notes cache
+```
+
+`kg query context SYMBOL` returns the seed plus its callers/callees (to
+`--depth`), one-hop overrides/overridden-by, and (for a CLASS/STRUCT seed)
+one-hop bases/derived -- the exact same `kg.graph/1` envelope every other
+graph verb uses, with one addition: every node object gets a `"notes"` field
+(the full note object, or `null`), sourced from the same overlay-aware read
+path `kg notes show`/`status` use (a notes file changed on disk since the
+last `sync` prints the usual "notes cache out of date" hint to stderr;
+`context` never writes the DB). This is the intended entry point for an
+agent picking up a function cold: one call gets the code's shape AND
+whatever knowledge was already written down about it and its neighbors --
+see `.claude/skills/kg/SKILL.md`'s "Function notes" section for the
+read-a-note / write-a-note / accept-a-stale-note workflow.
+
+`kg dbdiff` also grew a `note`/`note_problem` category (from `kg_note`/
+`kg_note_problem`, keyed by `serialized_name` -- never by `node.id` or a
+file path) and a `--only CATEGORY` flag to restrict a diff to just one
+category -- used by the `notes_cross_worktree` test (`ctest -R
+notes_cross_worktree`) to prove that two independently-`kg index`d clones of
+the same git history end up with an identical notes cache even though their
+node/edge/location rows (which embed each worktree's own absolute paths)
+legitimately do not.
+
 ## Layout
 
 - `cmake/` — CMake helper modules (`FindLibClang.cmake`, `KgWarnings.cmake`, `KgFixtures.cmake`).
 - `third_party/sourcetraildb/` — vendored (Apache-2.0) SourcetrailDB core writer library. See `PROVENANCE.md` there.
-- `include/kg/`, `src/` — kg's own first-party code, organized by module: `common`, `model`, `index`, `db`, `query`, `out`, `cli`.
+- `include/kg/`, `src/` — kg's own first-party code, organized by module: `common`, `model`, `index`, `db`, `query`, `out`, `cli`, `notes`.
+- `scripts/kg-notes-fake.py` — deterministic fake `kg notes` markdown generator (see `docs/NOTES_DESIGN.md`).
 - `test/unit/`, `test/integration/`, `test/fixtures/` — Catch2-based tests (see "Testing" below).
-- `docs/JSON_SCHEMA.md` — the `--json` output contract for every `kg index`/`kg query` invocation.
+- `docs/JSON_SCHEMA.md` — the `--json` output contract for every `kg index`/`kg query`/`kg notes` invocation.
 - `docs/KNOWN_LIMITATIONS.md` — known gaps, edge cases, and implementation notes, organized by phase.
+- `docs/NOTES_DESIGN.md` — the `kg notes` design (markdown format, cache schema, CLI, phases).
 
 ## Testing
 

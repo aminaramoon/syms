@@ -22,6 +22,7 @@
 #include <functional>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -180,6 +181,108 @@ TEST_CASE("json_shape kg.graph/1 is valid, has required keys, and every kind fie
         CHECK(n.contains("location"));  // present, possibly null
     }
     checkKindFieldsAreStrings(parsed);
+}
+
+// Phase 4 of docs/NOTES_DESIGN.md: `kg query context` reuses kg.graph/1
+// verbatim, plus a "notes" field on every node when JsonWriter::graph() is
+// given a non-null notesBySerializedName map (the CLI builds this map from
+// kg::notes::openNotes(); this test builds a small map directly so it stays
+// a pure JsonWriter unit test, independent of the notes markdown/DB cache
+// plumbing exercised elsewhere).
+TEST_CASE("json_shape kg.graph/1 gains a notes field per node when JsonWriter::graph() is given a notes map", "[fixture][json_shape]")
+{
+    kg::db::Database db(fixtureDbPath());
+    QueryEngine engine(db);
+    JsonWriter writer(db, engine, "test-version");
+
+    const int64_t level2 = resolveOne(db, "level2");
+    const kg::query::BfsResult callers = engine.callers({level2}, /*depth=*/1, /*maxNodes=*/0, 0);
+    const kg::query::BfsResult callees = engine.callees({level2}, /*depth=*/1, /*maxNodes=*/0, 0);
+    kg::query::BfsResult merged = callers;
+    for (const kg::query::BfsNode& n : callees.nodes)
+    {
+        bool present = false;
+        for (const kg::query::BfsNode& m : merged.nodes)
+        {
+            if (m.id == n.id)
+            {
+                present = true;
+                break;
+            }
+        }
+        if (!present)
+        {
+            merged.nodes.push_back(n);
+        }
+    }
+    REQUIRE(merged.nodes.size() >= 2);
+
+    // Fake a note for exactly the seed's serializedName.
+    std::string seedSerializedName;
+    for (const kg::query::BfsNode& n : merged.nodes)
+    {
+        if (n.id == level2)
+        {
+            seedSerializedName = n.serializedName;
+        }
+    }
+    REQUIRE_FALSE(seedSerializedName.empty());
+
+    std::unordered_map<std::string, nlohmann::json> notes;
+    nlohmann::json note;
+    note["brief"] = "test brief";
+    note["what"] = "";
+    note["how"] = "";
+    note["signature"] = "";
+    note["pre"] = nlohmann::json::array();
+    note["post"] = nlohmann::json::array();
+    note["bugs"] = nlohmann::json::array();
+    note["suggestions"] = nlohmann::json::array();
+    note["path"] = "src/chain.cpp.md";
+    note["line"] = 1;
+    note["filled"] = true;
+    note["stale"] = false;
+    note["note_hash"] = "deadbeef";
+    note["current_body_hash"] = "deadbeef";
+    note["commit"] = "abc123";
+    notes[seedSerializedName] = note;
+
+    QueryContext ctx;
+    ctx.verb = "context";
+    ctx.db = fixtureDbPath();
+    ctx.symbolOrTextOrPath = "level2";
+    ctx.symbolIds = {level2};
+    ctx.depth = 1;
+    ctx.maxNodes = 0;
+    ctx.edgeKinds = {kg::db::EdgeKind::CALL};
+
+    const nlohmann::json j1 = writer.graph(ctx, merged, 3, &notes);
+    const nlohmann::json j2 = writer.graph(ctx, merged, 3, &notes);
+    CHECK(j1.dump() == j2.dump());  // deterministic across two runs
+
+    const nlohmann::json parsed = nlohmann::json::parse(j1.dump());
+    CHECK(parsed["schema"] == "kg.graph/1");
+    CHECK(parsed["query"]["verb"] == "context");
+    bool sawFilledNote = false;
+    for (const nlohmann::json& n : parsed["nodes"])
+    {
+        REQUIRE(n.contains("notes"));  // present (object or null) on every node
+        if (!n["notes"].is_null())
+        {
+            CHECK(n["notes"]["brief"] == "test brief");
+            sawFilledNote = true;
+        }
+    }
+    CHECK(sawFilledNote);
+    checkKindFieldsAreStrings(parsed);
+
+    // Without the notes map (as --no-notes uses), the field is absent
+    // entirely rather than null.
+    const nlohmann::json j3 = writer.graph(ctx, merged, 3, nullptr);
+    for (const nlohmann::json& n : j3["nodes"])
+    {
+        CHECK_FALSE(n.contains("notes"));
+    }
 }
 
 TEST_CASE("json_shape kg.references/1 is valid and has the DECLARATION synthetic edge_kind", "[fixture][json_shape]")

@@ -16,6 +16,7 @@
 
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 
 #include "kg/common/Process.h"
 #include "kg/db/Database.h"
@@ -28,6 +29,13 @@
 #include "kg/index/FileRegistry.h"
 #include "kg/index/IndexDriver.h"
 #include "kg/index/Provenance.h"
+#include "kg/common/Glob.h"
+#include "kg/notes/BodyHash.h"
+#include "kg/notes/Markdown.h"
+#include "kg/notes/NoteModel.h"
+#include "kg/notes/NotesStore.h"
+#include "kg/notes/Scaffold.h"
+#include "kg/notes/Sync.h"
 #include "kg/out/JsonWriter.h"
 #include "kg/out/TextWriter.h"
 #include "kg/query/FuzzyMatcher.h"
@@ -73,6 +81,7 @@ void printHelp(const char* programName)
         "       %s index -c/--compile-commands PATH [OPTIONS]\n"
         "       %s query VERB SYMBOL-or-TEXT-or-PATH [OPTIONS]\n"
         "       %s update -d DB [OPTIONS]\n"
+        "       %s notes lint --notes-dir DIR [OPTIONS]\n"
         "\n"
         "kg indexes C++/CUDA code via libclang into a Sourcetrail-schema-compatible\n"
         "SQLite database, and queries it.\n"
@@ -87,6 +96,8 @@ void printHelp(const char* programName)
         "      --force                   overwrite --output if it already exists\n"
         "      --repo DIR                git repo root for provenance metadata (default: discovered\n"
         "                                 via `git -C <dirname of -c PATH> rev-parse --show-toplevel`)\n"
+        "      --notes-dir DIR           record meta.kg_notes_dir (absolute) for `kg notes`/`kg update`\n"
+        "                                 (default when omitted: <repo root>/notes, resolved lazily)\n"
         "      --remap OLD=NEW           literal substring path remap (repeatable)\n"
         "      --include GLOB            only process files matching GLOB (repeatable)\n"
         "      --exclude GLOB            never process files matching GLOB (repeatable)\n"
@@ -129,7 +140,7 @@ void printHelp(const char* programName)
         "query subcommand:\n"
         "  VERB                          one of: callers callees bases derived overrides\n"
         "                                 overridden-by members neighbors references\n"
-        "                                 definition search file stats\n"
+        "                                 definition search file stats context\n"
         "  -d, --db PATH                 database to query (default: $KG_DB or ./kg.srctrldb)\n"
         "      --depth N                 BFS depth limit, 0 = unlimited (default: 1)\n"
         "      --max-nodes N             BFS node cap, 0 = unlimited (default: 500)\n"
@@ -144,6 +155,8 @@ void printHelp(const char* programName)
         "      --occurrences             (file verb) include per-location occurrences\n"
         "      --lines A:B               (file verb) restrict occurrences to a line range\n"
         "      --errors N                (stats verb) how many error rows to show (default: 100)\n"
+        "      --no-notes                (context verb) omit the \"notes\" field entirely\n"
+        "      --notes-full              (context verb, text mode) print the full note block, not just the brief\n"
         "      --json                    print machine-readable JSON instead of text\n"
         "                                 (see docs/JSON_SCHEMA.md)\n"
         "  -v, --verbose                 increase verbosity (repeatable)\n"
@@ -167,8 +180,22 @@ void printHelp(const char* programName)
         "                                   CPUs, default: 1); deterministic regardless of N\n"
         "      --no-vacuum, --json, -q, -v\n"
         "\n"
+        "notes subcommand (function-level knowledge attached to the symbol graph --\n"
+        "see docs/NOTES_DESIGN.md):\n"
+        "  lint     --notes-dir DIR [--strict] [--json]   parse a notes tree & report problems (no DB)\n"
+        "  sync     -d DB [--notes-dir DIR] [--strict] [--json]   rebuild the kg_note* cache\n"
+        "  show     -d DB SYMBOL [--section SEC] [--json]         print one symbol's note\n"
+        "  status   -d DB [--stale] [--unfilled] [--unanchored] [--problems] [--json]\n"
+        "  symbols  -d DB [--kind K]... [--file GLOB] [--json]    list indexed symbols\n"
+        "  scaffold -d DB [--notes-dir DIR] (--all|--file GLOB|--class QNAME|SYMBOL)\n"
+        "                 [--kind K]... [--dry-run] [--json]      write placeholder note blocks\n"
+        "  accept   -d DB (SYMBOL|--all|--file GLOB) [--json]     re-anchor kg-hash/kg-commit\n"
+        "  fmt      --notes-dir DIR [--check] [--json]            canonical re-render (no DB)\n"
+        "\n"
         "Exit codes: 0 ok, 1 usage error, 2 ambiguous symbol / refused (legacy db / update in progress),\n"
-        "            3 not found, 4 database missing/unreadable/wrong version, 5 nothing to do (update).\n",
+        "            3 not found / lint problems found, 4 database missing/unreadable/wrong version,\n"
+        "            5 nothing to do (update).\n",
+        programName,
         programName,
         programName,
         programName,
@@ -300,6 +327,7 @@ int runIndex(int argc, char** argv, int startIdx)
     bool gccToolchainGiven = false;
     bool excludeSubmodules = false;
     std::string repoDir;
+    std::string notesDirFlag;
 
     auto requireValue = [&](int i, const std::string& flagName) -> std::string {
         if (i + 1 >= argc)
@@ -381,6 +409,11 @@ int runIndex(int argc, char** argv, int startIdx)
         else if (arg == "--repo")
         {
             repoDir = requireValue(i, arg);
+            ++i;
+        }
+        else if (arg == "--notes-dir")
+        {
+            notesDirFlag = requireValue(i, arg);
             ++i;
         }
         else if (arg == "--system-file-rows")
@@ -650,6 +683,10 @@ int runIndex(int argc, char** argv, int startIdx)
     // future `kg update`) -- an unresolvable git repo just leaves the repo
     // fields empty, it's never a hard error.
     runOptions.provenance = buildProvenance(compileCommandsPath, repoDir, runOptions, verbosity);
+    if (!notesDirFlag.empty())
+    {
+        runOptions.provenance->notesDir = std::filesystem::absolute(notesDirFlag).lexically_normal().string();
+    }
 
     return kg::index::runIndex(runOptions);
 }
@@ -700,6 +737,8 @@ struct QueryFlags
     int verbosity = 0;
     bool json = false;
     bool quiet = false;
+    bool noNotes = false;    // `kg query context`: omit the "notes" field entirely
+    bool notesFull = false;  // `kg query context` text mode: print the full note block, not just brief
 };
 
 // Parses everything after the verb into `flags` and (if present) the single
@@ -824,6 +863,14 @@ bool parseQueryFlags(int argc, char** argv, int startIdx, QueryFlags& flags, std
         else if (arg == "--json")
         {
             flags.json = true;
+        }
+        else if (arg == "--no-notes")
+        {
+            flags.noNotes = true;
+        }
+        else if (arg == "--notes-full")
+        {
+            flags.notesFull = true;
         }
         else if (arg == "-v" || arg == "--verbose")
         {
@@ -979,6 +1026,38 @@ int resolveSeedsOrReport(
     return 3;
 }
 
+// Unions BFS results discovered by separate QueryEngine calls into one
+// BfsResult, for `kg query context` (seed + callers + callees + one-hop
+// overrides/overridden-by [+ one-hop bases/derived for CLASS/STRUCT seeds]).
+// Nodes are deduped by id (first BfsNode seen for an id wins, since depth
+// only matters for text-tree indentation and the seed -- always added
+// first, at depth 0 -- should win any tie); edges are deduped by id.
+kg::query::BfsResult mergeBfsResults(const std::vector<kg::query::BfsResult>& parts)
+{
+    kg::query::BfsResult out;
+    std::unordered_set<int64_t> seenNodes;
+    std::unordered_set<int64_t> seenEdges;
+    for (const kg::query::BfsResult& part : parts)
+    {
+        for (const kg::query::BfsNode& n : part.nodes)
+        {
+            if (seenNodes.insert(n.id).second)
+            {
+                out.nodes.push_back(n);
+            }
+        }
+        for (const kg::query::BfsEdge& e : part.edges)
+        {
+            if (seenEdges.insert(e.id).second)
+            {
+                out.edges.push_back(e);
+            }
+        }
+        out.truncated = out.truncated || part.truncated;
+    }
+    return out;
+}
+
 int edgeKindMaskOr(const std::vector<int>& kinds, int fallback)
 {
     if (kinds.empty())
@@ -992,6 +1071,10 @@ int edgeKindMaskOr(const std::vector<int>& kinds, int fallback)
     }
     return mask;
 }
+
+// Forward declaration: defined further down alongside the other `kg notes`
+// verbs, but `kg query context` (in runQuery(), below) also needs it.
+void printCacheOutdatedHint(const std::vector<std::string>& overlayFiles);
 
 // Parses `kg query` subcommand arguments (argv[startIdx..argc)) and
 // dispatches to kg::query::QueryEngine, rendering results via
@@ -1012,12 +1095,13 @@ int runQuery(int argc, char** argv, int startIdx)
         "search",
         "file",
         "stats",
+        "context",
     };
 
     if (startIdx >= argc)
     {
         printQueryUsageError("missing VERB (expected one of: callers callees bases derived overrides overridden-by "
-                              "members neighbors references definition search file stats)");
+                              "members neighbors references definition search file stats context)");
         return 1;
     }
 
@@ -1359,6 +1443,131 @@ int runQuery(int argc, char** argv, int startIdx)
                 kg::out::writeDefinition(std::cout, r);
             }
         }
+        else if (verb == "context")
+        {
+            const auto t0 = std::chrono::steady_clock::now();
+
+            std::vector<kg::query::BfsResult> parts;
+            parts.push_back(engine.callers(seeds, flags.depth, flags.maxNodes, nodeKindMask));
+            parts.push_back(engine.callees(seeds, flags.depth, flags.maxNodes, nodeKindMask));
+            std::vector<int> edgeKinds = {kg::db::EdgeKind::CALL};
+
+            parts.push_back(engine.overrides(seeds, nodeKindMask));
+            parts.push_back(engine.overriddenBy(seeds, nodeKindMask));
+            edgeKinds.push_back(kg::db::EdgeKind::OVERRIDE);
+
+            // CLASS/STRUCT seeds also get one-hop bases/derived.
+            bool anySeedIsClassLike = false;
+            if (!seeds.empty())
+            {
+                db.runChunkedIn(
+                    "SELECT type FROM node WHERE id IN ({IN})",
+                    seeds,
+                    [&](sqlite3_stmt* stmt) {
+                        const int kind = sqlite3_column_int(stmt, 0);
+                        if ((kind & (kg::db::NodeKind::CLASS | kg::db::NodeKind::STRUCT)) != 0)
+                        {
+                            anySeedIsClassLike = true;
+                        }
+                    });
+            }
+            if (anySeedIsClassLike)
+            {
+                parts.push_back(engine.bases(seeds, 1, 0, nodeKindMask));
+                parts.push_back(engine.derived(seeds, 1, 0, nodeKindMask));
+                edgeKinds.push_back(kg::db::EdgeKind::INHERITANCE);
+            }
+
+            const kg::query::BfsResult merged = mergeBfsResults(parts);
+            const int64_t elapsedMs = millisSince(t0);
+
+            std::unordered_map<std::string, nlohmann::json> notesJsonBySerializedName;
+            std::unordered_map<int64_t, kg::out::NodeNoteText> notesTextByNodeId;
+            std::vector<std::string> overlayFiles;
+            if (!flags.noNotes)
+            {
+                const kg::notes::NoteLookup lookup = kg::notes::openNotes(db);
+                overlayFiles = lookup.overlayFiles;
+
+                // Build id -> serializedName for merged nodes, then look up
+                // notes for those serialized names.
+                for (const kg::query::BfsNode& n : merged.nodes)
+                {
+                    const auto it = lookup.bySerializedName.find(n.serializedName);
+                    if (it == lookup.bySerializedName.end())
+                    {
+                        continue;
+                    }
+                    const kg::notes::StoredNote& note = it->second;
+
+                    nlohmann::json noteJson;
+                    noteJson["brief"] = note.brief;
+                    noteJson["what"] = note.what;
+                    noteJson["how"] = note.how;
+                    noteJson["signature"] = note.signatureText;
+                    noteJson["pre"] = note.pre;
+                    noteJson["post"] = note.post;
+                    noteJson["bugs"] = note.bugs;
+                    noteJson["suggestions"] = note.suggestions;
+                    noteJson["path"] = note.notesPath;
+                    noteJson["line"] = note.headingLine;
+                    noteJson["filled"] = note.filled;
+                    noteJson["stale"] = note.stale;
+                    noteJson["note_hash"] = note.noteHash;
+                    noteJson["current_body_hash"] = note.currentBodyHash;
+                    noteJson["commit"] = note.noteCommit;
+                    notesJsonBySerializedName[n.serializedName] = noteJson;
+
+                    kg::out::NodeNoteText text;
+                    text.brief = note.brief;
+                    text.filled = note.filled;
+                    text.stale = note.stale;
+                    if (flags.notesFull)
+                    {
+                        kg::notes::NoteBlock block;
+                        block.heading = note.qualifiedName;
+                        block.bodyHash = note.noteHash;
+                        block.commit = note.noteCommit;
+                        block.brief = note.brief;
+                        block.what = {true, 0, note.what};
+                        block.how = {true, 0, note.how};
+                        block.signature = {true, 0, note.signatureText};
+                        block.pre = {true, 0, note.pre};
+                        block.post = {true, 0, note.post};
+                        block.bugs = {true, 0, note.bugs};
+                        block.suggestions = {true, 0, note.suggestions};
+                        text.fullMarkdown = kg::notes::renderBlock(block);
+                    }
+                    notesTextByNodeId[n.id] = std::move(text);
+                }
+
+                if (!flags.json)
+                {
+                    printCacheOutdatedHint(overlayFiles);
+                }
+            }
+
+            if (flags.json)
+            {
+                jsonCtx.depth = flags.depth;
+                jsonCtx.maxNodes = flags.maxNodes;
+                jsonCtx.edgeKinds = edgeKinds;
+                const std::unordered_map<std::string, nlohmann::json>* notesPtr = flags.noNotes ? nullptr : &notesJsonBySerializedName;
+                std::cout << jsonWriter->graph(jsonCtx, merged, elapsedMs, notesPtr).dump() << "\n";
+            }
+            else
+            {
+                std::vector<int64_t> ids;
+                ids.reserve(merged.nodes.size());
+                for (const kg::query::BfsNode& n : merged.nodes)
+                {
+                    ids.push_back(n.id);
+                }
+                const auto locs = engine.primaryLocations(ids);
+                const std::unordered_map<int64_t, kg::out::NodeNoteText>* notesPtr = flags.noNotes ? nullptr : &notesTextByNodeId;
+                kg::out::writeBfsResult(std::cout, merged, locs, flags.verbosity > 0, notesPtr, flags.notesFull);
+            }
+        }
         else
         {
             printQueryUsageError("unhandled verb '" + verb + "'");
@@ -1611,6 +1820,1461 @@ int runUpdateCmd(int argc, char** argv, int startIdx)
     return kg::update::runUpdate(opts);
 }
 
+// `kg notes lint --notes-dir DIR [--strict] [--json]` -- Phase 1 of
+// docs/NOTES_DESIGN.md. Walks DIR recursively for `*.md`, parses each with
+// kg::notes::parseNotesFile (no DB involved), and reports every Problem.
+// Exit codes: 0 no problems, 1 usage error, 3 problems found.
+int runNotesLint(int argc, char** argv, int startIdx)
+{
+    std::string notesDir;
+    bool strict = false;
+    bool wantJson = false;
+
+    for (int i = startIdx; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "--notes-dir")
+        {
+            if (i + 1 >= argc)
+            {
+                std::fprintf(stderr, "kg notes lint: --notes-dir requires a value\n");
+                return 1;
+            }
+            notesDir = argv[++i];
+        }
+        else if (arg == "--strict")
+        {
+            strict = true;
+        }
+        else if (arg == "--json")
+        {
+            wantJson = true;
+        }
+        else if (arg == "-h" || arg == "--help")
+        {
+            std::printf("Usage: kg notes lint --notes-dir DIR [--strict] [--json]\n");
+            return 0;
+        }
+        else
+        {
+            std::fprintf(stderr, "kg notes lint: unknown option '%s'\n", arg.c_str());
+            return 1;
+        }
+    }
+
+    if (notesDir.empty())
+    {
+        std::fprintf(stderr, "kg notes lint: missing required option --notes-dir DIR\n");
+        return 1;
+    }
+    if (!std::filesystem::is_directory(notesDir))
+    {
+        std::fprintf(stderr, "kg notes lint: '%s' is not a directory\n", notesDir.c_str());
+        return 1;
+    }
+
+    struct Finding
+    {
+        std::string path;
+        int line;
+        std::string kind;
+        std::string message;
+    };
+
+    std::vector<std::string> mdFiles;
+    for (const std::filesystem::directory_entry& e : std::filesystem::recursive_directory_iterator(notesDir))
+    {
+        if (e.is_regular_file() && e.path().extension() == ".md")
+        {
+            mdFiles.push_back(e.path().string());
+        }
+    }
+    std::sort(mdFiles.begin(), mdFiles.end());
+
+    std::size_t totalBlocks = 0;
+    std::size_t totalFilled = 0;
+    std::vector<Finding> findings;
+
+    for (const std::string& fullPath : mdFiles)
+    {
+        std::ifstream in(fullPath, std::ios::binary);
+        std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+        const std::string relPath = std::filesystem::relative(fullPath, notesDir).generic_string();
+        const kg::notes::NotesFile parsed = kg::notes::parseNotesFile(content, relPath, strict);
+
+        totalBlocks += parsed.blocks.size();
+        for (const kg::notes::NoteBlock& b : parsed.blocks)
+        {
+            if (b.filled())
+            {
+                ++totalFilled;
+            }
+        }
+        for (const kg::notes::Problem& p : parsed.problems)
+        {
+            findings.push_back(Finding{relPath, p.line, p.kind, p.message});
+        }
+    }
+
+    std::stable_sort(findings.begin(), findings.end(), [](const Finding& a, const Finding& b) {
+        if (a.path != b.path) return a.path < b.path;
+        return a.line < b.line;
+    });
+
+    if (wantJson)
+    {
+        nlohmann::json j;
+        j["kg_version"] = KG_VERSION_STRING;
+        j["schema"] = "kg.notes-lint/1";
+        j["notes_dir"] = notesDir;
+        j["files"] = mdFiles.size();
+        j["blocks"] = totalBlocks;
+        j["filled"] = totalFilled;
+        nlohmann::json problems = nlohmann::json::array();
+        for (const Finding& f : findings)
+        {
+            nlohmann::json p;
+            p["path"] = f.path;
+            p["line"] = f.line;
+            p["kind"] = f.kind;
+            p["message"] = f.message;
+            problems.push_back(std::move(p));
+        }
+        j["problems"] = std::move(problems);
+        std::cout << j.dump() << "\n";
+    }
+    else
+    {
+        for (const Finding& f : findings)
+        {
+            std::printf("%s:%d: %s: %s\n", f.path.c_str(), f.line, f.kind.c_str(), f.message.c_str());
+        }
+        std::printf("%zu files, %zu blocks (%zu filled), %zu problems\n", mdFiles.size(), totalBlocks, totalFilled, findings.size());
+    }
+
+    return findings.empty() ? 0 : 3;
+}
+
+// Resolves the notes directory a DB-backed notes verb should use, absent an
+// explicit --notes-dir: `meta.kg_notes_dir` (set by a previous `kg notes
+// sync`), else `<meta.kg_repo_root>/notes`. Returns "" if neither is
+// available (caller reports a usage error).
+std::string resolveNotesDirDefault(const std::string& dbPath)
+{
+    try
+    {
+        kg::db::Database db(dbPath);
+        const std::optional<std::string> stored = kg::db::getMeta(db.handle(), "kg_notes_dir");
+        if (stored.has_value() && !stored->empty())
+        {
+            return *stored;
+        }
+        const std::optional<std::string> repoRoot = kg::db::getMeta(db.handle(), "kg_repo_root");
+        if (repoRoot.has_value() && !repoRoot->empty())
+        {
+            return (std::filesystem::path(*repoRoot) / "notes").string();
+        }
+    }
+    catch (const std::exception&)
+    {
+        // Falls through to "" -- the caller's own Database(dbPath) open
+        // (right after) reports the real error message.
+    }
+    return "";
+}
+
+// `kg notes sync -d DB [--notes-dir DIR] [--strict] [--json]` -- Phase 2.
+// Rebuilds the `kg_note*` cache from the markdown tree; see
+// kg::notes::syncNotes()'s own doc comment for the exact algorithm.
+int runNotesSync(int argc, char** argv, int startIdx)
+{
+    std::string dbPath;
+    std::string notesDirFlag;
+    bool strict = false;
+    bool wantJson = false;
+
+    for (int i = startIdx; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "-d" || arg == "--db")
+        {
+            if (i + 1 >= argc) { std::fprintf(stderr, "kg notes sync: '%s' requires a value\n", arg.c_str()); return 1; }
+            dbPath = argv[++i];
+        }
+        else if (arg == "--notes-dir")
+        {
+            if (i + 1 >= argc) { std::fprintf(stderr, "kg notes sync: --notes-dir requires a value\n"); return 1; }
+            notesDirFlag = argv[++i];
+        }
+        else if (arg == "--strict") { strict = true; }
+        else if (arg == "--json") { wantJson = true; }
+        else if (arg == "-h" || arg == "--help")
+        {
+            std::printf("Usage: kg notes sync -d DB [--notes-dir DIR] [--strict] [--json]\n");
+            return 0;
+        }
+        else
+        {
+            std::fprintf(stderr, "kg notes sync: unknown option '%s'\n", arg.c_str());
+            return 1;
+        }
+    }
+
+    if (dbPath.empty())
+    {
+        if (const char* env = std::getenv("KG_DB")) { dbPath = env; }
+    }
+    if (dbPath.empty())
+    {
+        std::fprintf(stderr, "kg notes sync: missing required option -d/--db PATH\n");
+        return 1;
+    }
+
+    const std::string notesDir = !notesDirFlag.empty() ? notesDirFlag : resolveNotesDirDefault(dbPath);
+    if (notesDir.empty())
+    {
+        std::fprintf(
+            stderr,
+            "kg notes sync: no notes dir given and none stored (nor a repo root) in '%s' -- pass --notes-dir DIR\n",
+            dbPath.c_str());
+        return 1;
+    }
+
+    kg::notes::SyncResult result;
+    try
+    {
+        result = kg::notes::syncNotes(dbPath, notesDir, strict);
+    }
+    catch (const std::exception& e)
+    {
+        std::fprintf(stderr, "kg notes sync: %s\n", e.what());
+        return 4;
+    }
+
+    const std::string absNotesDir = std::filesystem::absolute(notesDir).string();
+
+    if (wantJson)
+    {
+        nlohmann::json j;
+        j["kg_version"] = KG_VERSION_STRING;
+        j["schema"] = "kg.notes-sync/1";
+        j["database"] = dbPath;
+        j["notes_dir"] = absNotesDir;
+        nlohmann::json counts;
+        counts["files"] = result.counts.files;
+        counts["blocks"] = result.counts.blocks;
+        counts["matched"] = result.counts.matched;
+        counts["unmatched"] = result.counts.unmatched;
+        counts["ambiguous"] = result.counts.ambiguous;
+        counts["duplicate_target"] = result.counts.duplicateTarget;
+        counts["filled"] = result.counts.filled;
+        counts["stale"] = result.counts.stale;
+        counts["unanchored"] = result.counts.unanchored;
+        counts["lint_problems"] = result.counts.lintProblems;
+        counts["signature_mismatch"] = result.counts.signatureMismatch;
+        counts["orphaned_files"] = result.counts.orphanedFiles;
+        j["counts"] = std::move(counts);
+        nlohmann::json problems = nlohmann::json::array();
+        for (const kg::notes::SyncProblem& p : result.problems)
+        {
+            nlohmann::json pj;
+            pj["path"] = p.path;
+            pj["line"] = p.line;
+            pj["heading"] = p.heading;
+            pj["kind"] = p.kind;
+            pj["message"] = p.message;
+            problems.push_back(std::move(pj));
+        }
+        j["problems"] = std::move(problems);
+        std::cout << j.dump() << "\n";
+    }
+    else
+    {
+        for (const kg::notes::SyncProblem& p : result.problems)
+        {
+            std::printf("%s:%d: %s: %s\n", p.path.c_str(), p.line, p.kind.c_str(), p.message.c_str());
+        }
+        std::printf(
+            "%zu files, %zu blocks: %zu matched (%zu filled, %zu stale, %zu unanchored, %zu signature-mismatch), "
+            "%zu unmatched, %zu ambiguous, %zu duplicate-target, %zu orphaned-file, %zu lint problems\n",
+            result.counts.files,
+            result.counts.blocks,
+            result.counts.matched,
+            result.counts.filled,
+            result.counts.stale,
+            result.counts.unanchored,
+            result.counts.signatureMismatch,
+            result.counts.unmatched,
+            result.counts.ambiguous,
+            result.counts.duplicateTarget,
+            result.counts.orphanedFiles,
+            result.counts.lintProblems);
+    }
+
+    return (strict && !result.problems.empty()) ? 3 : 0;
+}
+
+void printCacheOutdatedHint(const std::vector<std::string>& overlayFiles)
+{
+    if (!overlayFiles.empty())
+    {
+        std::fprintf(
+            stderr,
+            "kg notes: notes cache out of date (%zu file%s changed) -- run `kg notes sync`\n",
+            overlayFiles.size(),
+            overlayFiles.size() == 1 ? "" : "s");
+    }
+}
+
+// `kg notes show -d DB SYMBOL [--section SEC] [--json]` -- Phase 2. Resolves
+// SYMBOL exactly like `kg query`, then looks the note up via the overlay-
+// aware kg::notes::openNotes(). Exit codes: 0 ok, 1 usage, 2 ambiguous,
+// 3 not found / no note, 4 db error.
+int runNotesShow(int argc, char** argv, int startIdx)
+{
+    std::string dbPath;
+    std::string section;
+    bool wantJson = false;
+    std::string spec;
+    bool haveSpec = false;
+
+    for (int i = startIdx; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "-d" || arg == "--db")
+        {
+            if (i + 1 >= argc) { std::fprintf(stderr, "kg notes show: '%s' requires a value\n", arg.c_str()); return 1; }
+            dbPath = argv[++i];
+        }
+        else if (arg == "--section")
+        {
+            if (i + 1 >= argc) { std::fprintf(stderr, "kg notes show: --section requires a value\n"); return 1; }
+            section = argv[++i];
+        }
+        else if (arg == "--json") { wantJson = true; }
+        else if (arg == "-h" || arg == "--help")
+        {
+            std::printf("Usage: kg notes show -d DB SYMBOL [--section brief|what|how|signature|pre|post|bugs|suggestions] [--json]\n");
+            return 0;
+        }
+        else if (!arg.empty() && arg[0] == '-' && arg != "-")
+        {
+            std::fprintf(stderr, "kg notes show: unknown option '%s'\n", arg.c_str());
+            return 1;
+        }
+        else
+        {
+            if (haveSpec) { std::fprintf(stderr, "kg notes show: unexpected extra argument '%s'\n", arg.c_str()); return 1; }
+            spec = arg;
+            haveSpec = true;
+        }
+    }
+
+    if (dbPath.empty())
+    {
+        if (const char* env = std::getenv("KG_DB")) { dbPath = env; }
+        else { dbPath = "./kg.srctrldb"; }
+    }
+    if (!haveSpec)
+    {
+        std::fprintf(stderr, "kg notes show: missing required SYMBOL argument\n");
+        return 1;
+    }
+    static const std::unordered_set<std::string> kSections = {"brief", "what", "how", "signature", "pre", "post", "bugs", "suggestions"};
+    if (!section.empty() && kSections.find(section) == kSections.end())
+    {
+        std::fprintf(stderr, "kg notes show: unknown --section '%s'\n", section.c_str());
+        return 1;
+    }
+
+    std::unique_ptr<kg::db::Database> dbPtr;
+    try
+    {
+        dbPtr = std::make_unique<kg::db::Database>(dbPath);
+    }
+    catch (const std::exception& e)
+    {
+        std::fprintf(stderr, "kg notes show: %s\n", e.what());
+        return 4;
+    }
+    kg::db::Database& db = *dbPtr;
+    kg::query::QueryEngine engine(db);
+
+    std::unique_ptr<kg::out::json::JsonWriter> jsonWriter;
+    if (wantJson)
+    {
+        jsonWriter = std::make_unique<kg::out::json::JsonWriter>(db, engine, KG_VERSION_STRING);
+    }
+
+    kg::out::json::QueryContext jsonCtx;
+    jsonCtx.verb = "show";
+    jsonCtx.db = dbPath;
+    jsonCtx.symbolOrTextOrPath = spec;
+
+    const kg::query::ResolveResult rr = kg::query::resolveSymbol(db, spec, nullptr, nullptr);
+    if (rr.outcome == kg::query::ResolveOutcome::Ambiguous)
+    {
+        if (wantJson) { std::cout << jsonWriter->ambiguous(jsonCtx, rr.candidates).dump() << "\n"; }
+        else
+        {
+            std::printf("kg notes show: '%s' is ambiguous (%zu candidates):\n", spec.c_str(), rr.candidates.size());
+            kg::out::writeCandidateTable(std::cout, toCandidateRows(engine, rr.candidates));
+        }
+        return 2;
+    }
+    if (rr.outcome == kg::query::ResolveOutcome::NotFound)
+    {
+        const std::vector<kg::query::SearchHit> hits = engine.search(spec, nullptr, 5);
+        if (wantJson) { std::cout << jsonWriter->notFound(jsonCtx, hits).dump() << "\n"; }
+        else { std::fprintf(stderr, "kg notes show: symbol '%s' not found.\n", spec.c_str()); }
+        return 3;
+    }
+
+    const kg::query::ResolvedSymbol& sym = rr.candidates.front();
+    jsonCtx.symbolIds = {sym.id};
+
+    const kg::notes::NoteLookup lookup = kg::notes::openNotes(db);
+    printCacheOutdatedHint(lookup.overlayFiles);
+
+    const auto it = lookup.bySerializedName.find(sym.serializedName);
+    const bool hasNote = it != lookup.bySerializedName.end();
+
+    if (wantJson)
+    {
+        const kg::query::DefinitionResult defResult = engine.definition({sym.id});
+        nlohmann::json defJson = jsonWriter->definition(jsonCtx, defResult, 0);
+
+        nlohmann::json j;
+        j["kg_version"] = KG_VERSION_STRING;
+        j["schema"] = "kg.note/1";
+        nlohmann::json q;
+        q["verb"] = "show";
+        q["db"] = dbPath;
+        q["symbol"] = spec;
+        q["symbol_ids"] = jsonCtx.symbolIds;
+        j["query"] = std::move(q);
+        j["symbol"] = defJson["symbol"];
+
+        if (hasNote)
+        {
+            const kg::notes::StoredNote& n = it->second;
+            nlohmann::json note;
+            note["brief"] = n.brief;
+            note["what"] = n.what;
+            note["how"] = n.how;
+            note["signature"] = n.signatureText;
+            note["pre"] = n.pre;
+            note["post"] = n.post;
+            note["bugs"] = n.bugs;
+            note["suggestions"] = n.suggestions;
+            note["path"] = n.notesPath;
+            note["line"] = n.headingLine;
+            note["filled"] = n.filled;
+            note["stale"] = n.stale;
+            note["note_hash"] = n.noteHash;
+            note["current_body_hash"] = n.currentBodyHash;
+            note["commit"] = n.noteCommit;
+            j["note"] = std::move(note);
+        }
+        else
+        {
+            j["note"] = nullptr;
+        }
+        j["cache_outdated_files"] = lookup.overlayFiles;
+        std::cout << j.dump() << "\n";
+        return hasNote ? 0 : 3;
+    }
+
+    if (!hasNote)
+    {
+        std::fprintf(stderr, "kg notes show: symbol '%s' has no note.\n", spec.c_str());
+        return 3;
+    }
+
+    const kg::notes::StoredNote& n = it->second;
+    if (!section.empty())
+    {
+        if (section == "brief") { std::printf("%s\n", n.brief.c_str()); }
+        else if (section == "what") { std::printf("%s\n", n.what.c_str()); }
+        else if (section == "how") { std::printf("%s\n", n.how.c_str()); }
+        else if (section == "signature") { std::printf("%s\n", n.signatureText.c_str()); }
+        else
+        {
+            const std::vector<std::string>* items = section == "pre" ? &n.pre : section == "post" ? &n.post : section == "bugs" ? &n.bugs : &n.suggestions;
+            for (std::size_t i = 0; i < items->size(); ++i)
+            {
+                std::printf("%zu. %s\n", i + 1, (*items)[i].c_str());
+            }
+        }
+        return 0;
+    }
+
+    kg::notes::NoteBlock block;
+    block.heading = n.qualifiedName;
+    block.bodyHash = n.noteHash;
+    block.commit = n.noteCommit;
+    block.brief = n.brief;
+    block.what = {true, 0, n.what};
+    block.how = {true, 0, n.how};
+    block.signature = {true, 0, n.signatureText};
+    block.pre = {true, 0, n.pre};
+    block.post = {true, 0, n.post};
+    block.bugs = {true, 0, n.bugs};
+    block.suggestions = {true, 0, n.suggestions};
+    std::cout << kg::notes::renderBlock(block) << "\n";
+    return 0;
+}
+
+// `kg notes status -d DB [--stale] [--unfilled] [--unanchored] [--problems]
+// [--json]` -- Phase 2 coverage report over FUNCTION+METHOD nodes.
+int runNotesStatus(int argc, char** argv, int startIdx)
+{
+    std::string dbPath;
+    bool wantStale = false, wantUnfilled = false, wantUnanchored = false, wantProblems = false, wantJson = false;
+
+    for (int i = startIdx; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "-d" || arg == "--db")
+        {
+            if (i + 1 >= argc) { std::fprintf(stderr, "kg notes status: '%s' requires a value\n", arg.c_str()); return 1; }
+            dbPath = argv[++i];
+        }
+        else if (arg == "--stale") { wantStale = true; }
+        else if (arg == "--unfilled") { wantUnfilled = true; }
+        else if (arg == "--unanchored") { wantUnanchored = true; }
+        else if (arg == "--problems") { wantProblems = true; }
+        else if (arg == "--json") { wantJson = true; }
+        else if (arg == "-h" || arg == "--help")
+        {
+            std::printf("Usage: kg notes status -d DB [--stale] [--unfilled] [--unanchored] [--problems] [--json]\n");
+            return 0;
+        }
+        else
+        {
+            std::fprintf(stderr, "kg notes status: unknown option '%s'\n", arg.c_str());
+            return 1;
+        }
+    }
+    if (dbPath.empty())
+    {
+        if (const char* env = std::getenv("KG_DB")) { dbPath = env; }
+        else { dbPath = "./kg.srctrldb"; }
+    }
+
+    std::unique_ptr<kg::db::Database> dbPtr;
+    try
+    {
+        dbPtr = std::make_unique<kg::db::Database>(dbPath);
+    }
+    catch (const std::exception& e)
+    {
+        std::fprintf(stderr, "kg notes status: %s\n", e.what());
+        return 4;
+    }
+    kg::db::Database& db = *dbPtr;
+
+    // "coverage universe": every FUNCTION|METHOD node with a `symbol` row.
+    std::unordered_map<std::string, int64_t> coverageNodeBySerializedName;
+    db.run(
+        "SELECT n.id, n.serialized_name FROM node n JOIN symbol s ON s.id = n.id WHERE (n.type & ?) != 0",
+        [&](sqlite3_stmt* stmt) { sqlite3_bind_int(stmt, 1, kg::db::NodeKind::FUNCTION | kg::db::NodeKind::METHOD); },
+        [&](sqlite3_stmt* stmt) {
+            const int64_t id = sqlite3_column_int64(stmt, 0);
+            const unsigned char* text = sqlite3_column_text(stmt, 1);
+            coverageNodeBySerializedName[text != nullptr ? reinterpret_cast<const char*>(text) : std::string()] = id;
+        });
+
+    const kg::notes::NoteLookup lookup = kg::notes::openNotes(db);
+    printCacheOutdatedHint(lookup.overlayFiles);
+
+    std::size_t noted = 0, filled = 0, stale = 0, unanchored = 0, signatureMismatch = 0;
+    std::vector<std::string> staleList, unfilledList, unanchoredList;
+    for (const auto& [serializedName, note] : lookup.bySerializedName)
+    {
+        if (coverageNodeBySerializedName.find(serializedName) == coverageNodeBySerializedName.end())
+        {
+            continue;  // not a FUNCTION/METHOD -- outside the coverage universe
+        }
+        ++noted;
+        const std::string entry = note.qualifiedName + " (" + note.notesPath + ":" + std::to_string(note.headingLine) + ")";
+        if (note.filled) { ++filled; } else { unfilledList.push_back(entry); }
+        if (note.stale) { ++stale; staleList.push_back(entry); }
+        if (note.noteHash.empty()) { ++unanchored; unanchoredList.push_back(entry); }
+    }
+    std::sort(staleList.begin(), staleList.end());
+    std::sort(unfilledList.begin(), unfilledList.end());
+    std::sort(unanchoredList.begin(), unanchoredList.end());
+
+    std::vector<kg::notes::SyncProblem> problemsList;
+    if (kg::db::getMeta(db.handle(), "kg_notes_dir").has_value())
+    {
+        try
+        {
+            db.run(
+                "SELECT notes_path, line, heading, kind, message FROM kg_note_problem ORDER BY notes_path, line",
+                [&](sqlite3_stmt* stmt) {
+                    auto text = [&](int col) {
+                        const unsigned char* t = sqlite3_column_text(stmt, col);
+                        return t != nullptr ? std::string(reinterpret_cast<const char*>(t)) : std::string();
+                    };
+                    problemsList.push_back(kg::notes::SyncProblem{text(0), sqlite3_column_int(stmt, 1), text(2), text(3), text(4)});
+                });
+        }
+        catch (const std::exception&)
+        {
+            // kg_note_problem doesn't exist yet (sync never ran) -- leave empty.
+        }
+    }
+    for (const kg::notes::SyncProblem& p : problemsList)
+    {
+        if (p.kind == "signature-mismatch")
+        {
+            ++signatureMismatch;
+        }
+    }
+
+    if (wantJson)
+    {
+        nlohmann::json j;
+        j["kg_version"] = KG_VERSION_STRING;
+        j["schema"] = "kg.notes-status/1";
+        j["database"] = dbPath;
+        nlohmann::json counts;
+        counts["total"] = coverageNodeBySerializedName.size();
+        counts["noted"] = noted;
+        counts["filled"] = filled;
+        counts["stale"] = stale;
+        counts["unanchored"] = unanchored;
+        counts["signature_mismatch"] = signatureMismatch;
+        counts["problems"] = problemsList.size();
+        j["counts"] = std::move(counts);
+        if (wantStale) { j["stale"] = staleList; }
+        if (wantUnfilled) { j["unfilled"] = unfilledList; }
+        if (wantUnanchored) { j["unanchored"] = unanchoredList; }
+        if (wantProblems)
+        {
+            nlohmann::json pj = nlohmann::json::array();
+            for (const kg::notes::SyncProblem& p : problemsList)
+            {
+                nlohmann::json e;
+                e["path"] = p.path;
+                e["line"] = p.line;
+                e["heading"] = p.heading;
+                e["kind"] = p.kind;
+                e["message"] = p.message;
+                pj.push_back(std::move(e));
+            }
+            j["problems"] = std::move(pj);
+        }
+        j["cache_outdated_files"] = lookup.overlayFiles;
+        std::cout << j.dump() << "\n";
+        return 0;
+    }
+
+    std::printf(
+        "%zu indexed FUNCTION/METHOD symbols, %zu noted (%zu filled, %zu stale, %zu unanchored, %zu "
+        "signature-mismatch), %zu problems\n",
+        coverageNodeBySerializedName.size(),
+        noted,
+        filled,
+        stale,
+        unanchored,
+        signatureMismatch,
+        problemsList.size());
+    if (wantStale) { std::printf("-- stale --\n"); for (const std::string& s : staleList) std::printf("%s\n", s.c_str()); }
+    if (wantUnfilled) { std::printf("-- unfilled --\n"); for (const std::string& s : unfilledList) std::printf("%s\n", s.c_str()); }
+    if (wantUnanchored) { std::printf("-- unanchored --\n"); for (const std::string& s : unanchoredList) std::printf("%s\n", s.c_str()); }
+    if (wantProblems)
+    {
+        std::printf("-- problems --\n");
+        for (const kg::notes::SyncProblem& p : problemsList)
+        {
+            std::printf("%s:%d: %s: %s\n", p.path.c_str(), p.line, p.kind.c_str(), p.message.c_str());
+        }
+    }
+    return 0;
+}
+
+// `kg notes symbols -d DB [--kind K]... [--file GLOB]... [--json]` --
+// Phase 2. Lists indexed symbols in the exact shape scripts/kg-notes-
+// fake.py --symbols-json consumes; Phase 3's `scaffold` shares this code
+// path.
+int runNotesSymbols(int argc, char** argv, int startIdx)
+{
+    std::string dbPath;
+    std::vector<std::string> kindNames;
+    std::vector<std::string> fileGlobs;
+    bool wantJson = false;
+
+    for (int i = startIdx; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "-d" || arg == "--db")
+        {
+            if (i + 1 >= argc) { std::fprintf(stderr, "kg notes symbols: '%s' requires a value\n", arg.c_str()); return 1; }
+            dbPath = argv[++i];
+        }
+        else if (arg == "--kind")
+        {
+            if (i + 1 >= argc) { std::fprintf(stderr, "kg notes symbols: --kind requires a value\n"); return 1; }
+            kindNames.push_back(argv[++i]);
+        }
+        else if (arg == "--file")
+        {
+            if (i + 1 >= argc) { std::fprintf(stderr, "kg notes symbols: --file requires a value\n"); return 1; }
+            fileGlobs.push_back(argv[++i]);
+        }
+        else if (arg == "--json") { wantJson = true; }
+        else if (arg == "-h" || arg == "--help")
+        {
+            std::printf("Usage: kg notes symbols -d DB [--kind FUNCTION|METHOD|CLASS|STRUCT]... [--file GLOB] [--json]\n");
+            return 0;
+        }
+        else
+        {
+            std::fprintf(stderr, "kg notes symbols: unknown option '%s'\n", arg.c_str());
+            return 1;
+        }
+    }
+    if (dbPath.empty())
+    {
+        if (const char* env = std::getenv("KG_DB")) { dbPath = env; }
+        else { dbPath = "./kg.srctrldb"; }
+    }
+
+    int mask = 0;
+    for (const std::string& name : kindNames)
+    {
+        const std::optional<int> k = kg::db::nodeKindFromString(name);
+        if (!k.has_value())
+        {
+            std::fprintf(stderr, "kg notes symbols: unknown --kind value '%s'\n", name.c_str());
+            return 1;
+        }
+        mask |= *k;
+    }
+    if (mask == 0)
+    {
+        mask = kg::db::NodeKind::FUNCTION | kg::db::NodeKind::METHOD;
+    }
+
+    std::unique_ptr<kg::db::Database> dbPtr;
+    try
+    {
+        dbPtr = std::make_unique<kg::db::Database>(dbPath);
+    }
+    catch (const std::exception& e)
+    {
+        std::fprintf(stderr, "kg notes symbols: %s\n", e.what());
+        return 4;
+    }
+    kg::db::Database& db = *dbPtr;
+
+    const std::string commit = kg::notes::currentCommit(db);
+    const std::vector<kg::notes::SymbolRow> rows = kg::notes::listSymbols(db, mask, fileGlobs);
+
+    if (wantJson)
+    {
+        nlohmann::json j;
+        j["kg_version"] = KG_VERSION_STRING;
+        j["schema"] = "kg.notes-symbols/1";
+        j["database"] = dbPath;
+        nlohmann::json symbols = nlohmann::json::array();
+        for (const kg::notes::SymbolRow& r : rows)
+        {
+            nlohmann::json s;
+            s["source_path"] = r.sourcePath;
+            s["qualified_name"] = r.qualifiedName;
+            s["signature"] = r.signature;
+            s["body_hash"] = r.bodyHash;
+            s["commit"] = commit;
+            s["node_id"] = r.nodeId;
+            symbols.push_back(std::move(s));
+        }
+        j["symbols"] = std::move(symbols);
+        std::cout << j.dump() << "\n";
+    }
+    else
+    {
+        for (const kg::notes::SymbolRow& r : rows)
+        {
+            std::printf("%s\t%s\t%s\t#%lld\n", r.sourcePath.c_str(), r.qualifiedName.c_str(), r.signature.c_str(), static_cast<long long>(r.nodeId));
+        }
+        std::printf("%zu symbols\n", rows.size());
+    }
+    return 0;
+}
+
+// `kg notes scaffold -d DB [--notes-dir DIR] (--all | --file GLOB | --class
+// QNAME | SYMBOL) [--kind K]... [--dry-run] [--json]` -- Phase 3. Symbol
+// selection funnels into kg::notes::SymbolRow via listSymbols() (--all/
+// --file), QueryEngine::members() (--class, resolved like `kg query`'s own
+// --class-shaped specs), or resolveSymbol() (SYMBOL); the actual markdown
+// writing is kg::notes::scaffoldNotes(). Exit codes: 0 ok, 1 usage, 2
+// ambiguous SYMBOL/--class, 3 not found / no definition location, 4 db error.
+int runNotesScaffold(int argc, char** argv, int startIdx)
+{
+    std::string dbPath;
+    std::string notesDirFlag;
+    bool all = false;
+    std::string fileGlob;
+    std::string classQName;
+    std::string symbolSpec;
+    bool haveSymbol = false;
+    std::vector<std::string> kindNames;
+    bool dryRun = false;
+    bool wantJson = false;
+
+    for (int i = startIdx; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "-d" || arg == "--db")
+        {
+            if (i + 1 >= argc) { std::fprintf(stderr, "kg notes scaffold: '%s' requires a value\n", arg.c_str()); return 1; }
+            dbPath = argv[++i];
+        }
+        else if (arg == "--notes-dir")
+        {
+            if (i + 1 >= argc) { std::fprintf(stderr, "kg notes scaffold: --notes-dir requires a value\n"); return 1; }
+            notesDirFlag = argv[++i];
+        }
+        else if (arg == "--all") { all = true; }
+        else if (arg == "--file")
+        {
+            if (i + 1 >= argc) { std::fprintf(stderr, "kg notes scaffold: --file requires a value\n"); return 1; }
+            fileGlob = argv[++i];
+        }
+        else if (arg == "--class")
+        {
+            if (i + 1 >= argc) { std::fprintf(stderr, "kg notes scaffold: --class requires a value\n"); return 1; }
+            classQName = argv[++i];
+        }
+        else if (arg == "--kind")
+        {
+            if (i + 1 >= argc) { std::fprintf(stderr, "kg notes scaffold: --kind requires a value\n"); return 1; }
+            kindNames.push_back(argv[++i]);
+        }
+        else if (arg == "--dry-run") { dryRun = true; }
+        else if (arg == "--json") { wantJson = true; }
+        else if (arg == "-h" || arg == "--help")
+        {
+            std::printf(
+                "Usage: kg notes scaffold -d DB [--notes-dir DIR] (--all | --file SRC-GLOB | --class QNAME | SYMBOL)\n"
+                "                          [--kind FUNCTION|METHOD]... [--dry-run] [--json]\n");
+            return 0;
+        }
+        else if (!arg.empty() && arg[0] == '-' && arg != "-")
+        {
+            std::fprintf(stderr, "kg notes scaffold: unknown option '%s'\n", arg.c_str());
+            return 1;
+        }
+        else
+        {
+            if (haveSymbol) { std::fprintf(stderr, "kg notes scaffold: unexpected extra argument '%s'\n", arg.c_str()); return 1; }
+            symbolSpec = arg;
+            haveSymbol = true;
+        }
+    }
+
+    if (dbPath.empty())
+    {
+        if (const char* env = std::getenv("KG_DB")) { dbPath = env; }
+        else { dbPath = "./kg.srctrldb"; }
+    }
+
+    const int selectorCount = (all ? 1 : 0) + (!fileGlob.empty() ? 1 : 0) + (!classQName.empty() ? 1 : 0) + (haveSymbol ? 1 : 0);
+    if (selectorCount != 1)
+    {
+        std::fprintf(stderr, "kg notes scaffold: exactly one of --all / --file GLOB / --class QNAME / SYMBOL is required\n");
+        return 1;
+    }
+
+    int mask = 0;
+    for (const std::string& name : kindNames)
+    {
+        const std::optional<int> k = kg::db::nodeKindFromString(name);
+        if (!k.has_value())
+        {
+            std::fprintf(stderr, "kg notes scaffold: unknown --kind value '%s'\n", name.c_str());
+            return 1;
+        }
+        mask |= *k;
+    }
+
+    std::unique_ptr<kg::db::Database> dbPtr;
+    try
+    {
+        dbPtr = std::make_unique<kg::db::Database>(dbPath);
+    }
+    catch (const std::exception& e)
+    {
+        std::fprintf(stderr, "kg notes scaffold: %s\n", e.what());
+        return 4;
+    }
+    kg::db::Database& db = *dbPtr;
+    kg::query::QueryEngine engine(db);
+
+    const std::string repoRoot = kg::db::getMeta(db.handle(), "kg_repo_root").value_or("");
+    const std::string commit = kg::notes::currentCommit(db);
+
+    std::vector<kg::notes::SymbolRow> rows;
+
+    if (all)
+    {
+        rows = kg::notes::listSymbols(db, mask, {});
+    }
+    else if (!fileGlob.empty())
+    {
+        rows = kg::notes::listSymbols(db, mask, {fileGlob});
+    }
+    else if (!classQName.empty())
+    {
+        static const std::vector<int> kClassKinds = {kg::db::NodeKind::CLASS, kg::db::NodeKind::STRUCT};
+        const kg::query::ResolveResult rr = kg::query::resolveSymbol(db, classQName, &kClassKinds, nullptr);
+        if (rr.outcome == kg::query::ResolveOutcome::Ambiguous)
+        {
+            std::printf("kg notes scaffold: --class '%s' is ambiguous (%zu candidates):\n", classQName.c_str(), rr.candidates.size());
+            kg::out::writeCandidateTable(std::cout, toCandidateRows(engine, rr.candidates));
+            return 2;
+        }
+        if (rr.outcome == kg::query::ResolveOutcome::NotFound)
+        {
+            std::fprintf(stderr, "kg notes scaffold: --class '%s' not found.\n", classQName.c_str());
+            return 3;
+        }
+        const int memberMask = mask != 0 ? mask : (kg::db::NodeKind::FUNCTION | kg::db::NodeKind::METHOD);
+        const kg::query::BfsResult members = engine.members({rr.candidates.front().id}, memberMask);
+        for (const kg::query::BfsNode& n : members.nodes)
+        {
+            kg::notes::SymbolRow row = kg::notes::rowForNode(db, engine, n.id, repoRoot, commit);
+            if (row.nodeId != 0)
+            {
+                rows.push_back(std::move(row));
+            }
+        }
+    }
+    else
+    {
+        std::vector<int> kindFilter;
+        for (const std::string& name : kindNames)
+        {
+            kindFilter.push_back(*kg::db::nodeKindFromString(name));
+        }
+        const kg::query::ResolveResult rr = kg::query::resolveSymbol(db, symbolSpec, kindFilter.empty() ? nullptr : &kindFilter, nullptr);
+        if (rr.outcome == kg::query::ResolveOutcome::Ambiguous)
+        {
+            std::printf("kg notes scaffold: '%s' is ambiguous (%zu candidates):\n", symbolSpec.c_str(), rr.candidates.size());
+            kg::out::writeCandidateTable(std::cout, toCandidateRows(engine, rr.candidates));
+            return 2;
+        }
+        if (rr.outcome == kg::query::ResolveOutcome::NotFound)
+        {
+            std::fprintf(stderr, "kg notes scaffold: symbol '%s' not found.\n", symbolSpec.c_str());
+            return 3;
+        }
+        kg::notes::SymbolRow row = kg::notes::rowForNode(db, engine, rr.candidates.front().id, repoRoot, commit);
+        if (row.nodeId == 0)
+        {
+            std::fprintf(stderr, "kg notes scaffold: symbol '%s' has no definition location.\n", symbolSpec.c_str());
+            return 3;
+        }
+        rows.push_back(std::move(row));
+    }
+
+    const std::string notesDir = !notesDirFlag.empty() ? notesDirFlag : resolveNotesDirDefault(dbPath);
+    if (notesDir.empty())
+    {
+        std::fprintf(
+            stderr,
+            "kg notes scaffold: no notes dir given and none stored (nor a repo root) in '%s' -- pass --notes-dir DIR\n",
+            dbPath.c_str());
+        return 1;
+    }
+
+    kg::notes::ScaffoldOptions opts;
+    opts.notesDir = notesDir;
+    opts.dryRun = dryRun;
+    const kg::notes::ScaffoldResult result = kg::notes::scaffoldNotes(db, rows, opts);
+
+    if (wantJson)
+    {
+        nlohmann::json j;
+        j["kg_version"] = KG_VERSION_STRING;
+        j["schema"] = "kg.notes-scaffold/1";
+        j["database"] = dbPath;
+        j["notes_dir"] = std::filesystem::absolute(notesDir).string();
+        j["dry_run"] = dryRun;
+        j["symbols_selected"] = rows.size();
+        nlohmann::json files = nlohmann::json::array();
+        for (const kg::notes::ScaffoldFileResult& f : result.files)
+        {
+            nlohmann::json fj;
+            fj["path"] = f.path;
+            fj["file_created"] = f.fileCreated;
+            fj["appended"] = f.appended;
+            fj["skipped_existing"] = f.skippedExisting;
+            files.push_back(std::move(fj));
+        }
+        j["files"] = std::move(files);
+        nlohmann::json totals;
+        totals["files_created"] = result.filesCreated;
+        totals["files_touched"] = result.filesTouched;
+        totals["appended"] = result.totalAppended;
+        totals["skipped_existing"] = result.totalSkipped;
+        j["totals"] = std::move(totals);
+        std::cout << j.dump() << "\n";
+    }
+    else
+    {
+        for (const kg::notes::ScaffoldFileResult& f : result.files)
+        {
+            std::printf(
+                "%s: %s%zu appended, %zu skipped-existing\n",
+                f.path.c_str(),
+                f.fileCreated ? "(new) " : "",
+                f.appended,
+                f.skippedExisting);
+        }
+        std::printf(
+            "%zu symbols selected: %zu files created, %zu files touched, %zu blocks appended, %zu skipped-existing\n",
+            rows.size(),
+            result.filesCreated,
+            result.filesTouched,
+            result.totalAppended,
+            result.totalSkipped);
+    }
+    return 0;
+}
+
+// Returns the raw (still on-disk) content of `notesDir`/`relPath`, or
+// std::nullopt if it doesn't exist. Shared by `kg notes fmt` and `kg notes
+// accept`'s canonical-form guard.
+std::optional<std::string> readNotesFile(const std::string& notesDir, const std::string& relPath)
+{
+    const std::filesystem::path full = std::filesystem::path(notesDir) / relPath;
+    if (!std::filesystem::is_regular_file(full))
+    {
+        return std::nullopt;
+    }
+    std::ifstream in(full, std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return content;
+}
+
+void writeNotesFile(const std::string& notesDir, const std::string& relPath, const std::string& content)
+{
+    const std::filesystem::path full = std::filesystem::path(notesDir) / relPath;
+    std::filesystem::create_directories(full.parent_path());
+    std::ofstream out(full, std::ios::binary | std::ios::trunc);
+    out << content;
+}
+
+// `kg notes fmt --notes-dir DIR [--check] [--json]` -- Phase 3. Canonical
+// re-render of every `*.md` under DIR (parseNotesFile -> renderFile);
+// `--check` reports what would change without writing, exit 3 if anything
+// would. No DB involved (same as `lint`).
+int runNotesFmt(int argc, char** argv, int startIdx)
+{
+    std::string notesDir;
+    bool checkOnly = false;
+    bool wantJson = false;
+
+    for (int i = startIdx; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "--notes-dir")
+        {
+            if (i + 1 >= argc) { std::fprintf(stderr, "kg notes fmt: --notes-dir requires a value\n"); return 1; }
+            notesDir = argv[++i];
+        }
+        else if (arg == "--check") { checkOnly = true; }
+        else if (arg == "--json") { wantJson = true; }
+        else if (arg == "-h" || arg == "--help")
+        {
+            std::printf("Usage: kg notes fmt --notes-dir DIR [--check] [--json]\n");
+            return 0;
+        }
+        else
+        {
+            std::fprintf(stderr, "kg notes fmt: unknown option '%s'\n", arg.c_str());
+            return 1;
+        }
+    }
+    if (notesDir.empty())
+    {
+        std::fprintf(stderr, "kg notes fmt: missing required option --notes-dir DIR\n");
+        return 1;
+    }
+    if (!std::filesystem::is_directory(notesDir))
+    {
+        std::fprintf(stderr, "kg notes fmt: '%s' is not a directory\n", notesDir.c_str());
+        return 1;
+    }
+
+    std::vector<std::string> mdFiles;
+    for (const std::filesystem::directory_entry& e : std::filesystem::recursive_directory_iterator(notesDir))
+    {
+        if (e.is_regular_file() && e.path().extension() == ".md")
+        {
+            mdFiles.push_back(e.path().string());
+        }
+    }
+    std::sort(mdFiles.begin(), mdFiles.end());
+
+    std::vector<std::string> changed;
+    for (const std::string& full : mdFiles)
+    {
+        const std::string relPath = std::filesystem::relative(full, notesDir).generic_string();
+        std::ifstream in(full, std::ios::binary);
+        std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        const kg::notes::NotesFile parsed = kg::notes::parseNotesFile(content, relPath, false);
+        const std::string rendered = kg::notes::renderFile(parsed);
+        if (rendered != content)
+        {
+            changed.push_back(relPath);
+            if (!checkOnly)
+            {
+                writeNotesFile(notesDir, relPath, rendered);
+            }
+        }
+    }
+
+    if (wantJson)
+    {
+        nlohmann::json j;
+        j["kg_version"] = KG_VERSION_STRING;
+        j["schema"] = "kg.notes-fmt/1";
+        j["notes_dir"] = notesDir;
+        j["check"] = checkOnly;
+        j["files"] = mdFiles.size();
+        j["changed"] = changed;
+        std::cout << j.dump() << "\n";
+    }
+    else
+    {
+        for (const std::string& p : changed)
+        {
+            std::printf("%s%s\n", checkOnly ? "would reformat: " : "reformatted: ", p.c_str());
+        }
+        std::printf("%zu files, %zu %s\n", mdFiles.size(), changed.size(), checkOnly ? "would change" : "reformatted");
+    }
+    return (checkOnly && !changed.empty()) ? 3 : 0;
+}
+
+// `kg notes accept -d DB (SYMBOL | --all | --file SRC-GLOB) [--json]` --
+// Phase 3. Rewrites ONLY the `kg-hash`/`kg-commit` metadata comment of the
+// matching stale block(s) (every stale note for --all/--file; the resolved
+// SYMBOL's note unconditionally) to the current body hash/commit, refusing
+// (per file) any notes file that isn't already in its renderFile() fixed
+// point ("run `kg notes fmt`" -- see docs/NOTES_DESIGN.md). Re-runs
+// syncNotes() afterward so the cache's `stale` flags reflect the rewrite.
+// Exit codes: 0 ok, 1 usage, 3 nothing to accept (SYMBOL has no note), 4 db
+// error / a file needed reformatting first (reported, not fatal to the
+// others).
+int runNotesAccept(int argc, char** argv, int startIdx)
+{
+    std::string dbPath;
+    std::string notesDirFlag;
+    bool all = false;
+    std::string fileGlob;
+    std::string symbolSpec;
+    bool haveSymbol = false;
+    bool wantJson = false;
+
+    for (int i = startIdx; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "-d" || arg == "--db")
+        {
+            if (i + 1 >= argc) { std::fprintf(stderr, "kg notes accept: '%s' requires a value\n", arg.c_str()); return 1; }
+            dbPath = argv[++i];
+        }
+        else if (arg == "--notes-dir")
+        {
+            if (i + 1 >= argc) { std::fprintf(stderr, "kg notes accept: --notes-dir requires a value\n"); return 1; }
+            notesDirFlag = argv[++i];
+        }
+        else if (arg == "--all") { all = true; }
+        else if (arg == "--file")
+        {
+            if (i + 1 >= argc) { std::fprintf(stderr, "kg notes accept: --file requires a value\n"); return 1; }
+            fileGlob = argv[++i];
+        }
+        else if (arg == "--json") { wantJson = true; }
+        else if (arg == "-h" || arg == "--help")
+        {
+            std::printf("Usage: kg notes accept -d DB (SYMBOL | --all | --file SRC-GLOB) [--json]\n");
+            return 0;
+        }
+        else if (!arg.empty() && arg[0] == '-' && arg != "-")
+        {
+            std::fprintf(stderr, "kg notes accept: unknown option '%s'\n", arg.c_str());
+            return 1;
+        }
+        else
+        {
+            if (haveSymbol) { std::fprintf(stderr, "kg notes accept: unexpected extra argument '%s'\n", arg.c_str()); return 1; }
+            symbolSpec = arg;
+            haveSymbol = true;
+        }
+    }
+
+    if (dbPath.empty())
+    {
+        if (const char* env = std::getenv("KG_DB")) { dbPath = env; }
+        else { dbPath = "./kg.srctrldb"; }
+    }
+    const int selectorCount = (all ? 1 : 0) + (!fileGlob.empty() ? 1 : 0) + (haveSymbol ? 1 : 0);
+    if (selectorCount != 1)
+    {
+        std::fprintf(stderr, "kg notes accept: exactly one of SYMBOL / --all / --file GLOB is required\n");
+        return 1;
+    }
+
+    std::unique_ptr<kg::db::Database> dbPtr;
+    try
+    {
+        dbPtr = std::make_unique<kg::db::Database>(dbPath);
+    }
+    catch (const std::exception& e)
+    {
+        std::fprintf(stderr, "kg notes accept: %s\n", e.what());
+        return 4;
+    }
+    kg::db::Database& db = *dbPtr;
+
+    const std::string notesDir = !notesDirFlag.empty() ? notesDirFlag : resolveNotesDirDefault(dbPath);
+    if (notesDir.empty())
+    {
+        std::fprintf(stderr, "kg notes accept: no notes dir given and none stored (nor a repo root) -- pass --notes-dir DIR\n");
+        return 1;
+    }
+
+    const kg::notes::NoteLookup lookup = kg::notes::openNotes(db);
+
+    // Determine which serialized_names to accept.
+    std::unordered_set<std::string> targets;
+    if (all)
+    {
+        for (const auto& [sn, note] : lookup.bySerializedName)
+        {
+            if (note.stale) { targets.insert(sn); }
+        }
+    }
+    else if (!fileGlob.empty())
+    {
+        for (const auto& [sn, note] : lookup.bySerializedName)
+        {
+            if (!note.stale) { continue; }
+            std::string sourcePath = note.notesPath;
+            if (sourcePath.size() > 3 && sourcePath.compare(sourcePath.size() - 3, 3, ".md") == 0)
+            {
+                sourcePath = sourcePath.substr(0, sourcePath.size() - 3);
+            }
+            if (kg::common::glob::match(fileGlob, sourcePath))
+            {
+                targets.insert(sn);
+            }
+        }
+    }
+    else
+    {
+        const kg::query::ResolveResult rr = kg::query::resolveSymbol(db, symbolSpec, nullptr, nullptr);
+        if (rr.outcome == kg::query::ResolveOutcome::Ambiguous)
+        {
+            kg::query::QueryEngine engine(db);
+            std::printf("kg notes accept: '%s' is ambiguous (%zu candidates):\n", symbolSpec.c_str(), rr.candidates.size());
+            kg::out::writeCandidateTable(std::cout, toCandidateRows(engine, rr.candidates));
+            return 2;
+        }
+        if (rr.outcome == kg::query::ResolveOutcome::NotFound)
+        {
+            std::fprintf(stderr, "kg notes accept: symbol '%s' not found.\n", symbolSpec.c_str());
+            return 3;
+        }
+        const auto it = lookup.bySerializedName.find(rr.candidates.front().serializedName);
+        if (it == lookup.bySerializedName.end())
+        {
+            std::fprintf(stderr, "kg notes accept: symbol '%s' has no note.\n", symbolSpec.c_str());
+            return 3;
+        }
+        targets.insert(it->first);
+    }
+
+    if (targets.empty())
+    {
+        if (wantJson)
+        {
+            nlohmann::json j;
+            j["kg_version"] = KG_VERSION_STRING;
+            j["schema"] = "kg.notes-accept/1";
+            j["database"] = dbPath;
+            j["accepted"] = nlohmann::json::array();
+            j["refused_files"] = nlohmann::json::array();
+            std::cout << j.dump() << "\n";
+        }
+        else
+        {
+            std::printf("kg notes accept: nothing to accept (0 stale/matching notes)\n");
+        }
+        return 0;
+    }
+
+    // Group targets by notes file.
+    std::unordered_map<std::string, std::vector<std::string>> byFile;  // notesPath -> [serialized_name...]
+    for (const std::string& sn : targets)
+    {
+        byFile[lookup.bySerializedName.at(sn).notesPath].push_back(sn);
+    }
+
+    const std::string commit = kg::notes::currentCommit(db);
+    std::vector<std::string> accepted;            // serialized_name (stable identity, used in --json)
+    std::vector<std::string> acceptedDisplay;      // qualified_name (used in the text-mode listing)
+    std::vector<std::string> refusedFiles;
+
+    for (const auto& [notesPath, sns] : byFile)
+    {
+        const std::optional<std::string> contentOpt = readNotesFile(notesDir, notesPath);
+        if (!contentOpt.has_value())
+        {
+            refusedFiles.push_back(notesPath);
+            continue;
+        }
+        kg::notes::NotesFile parsed = kg::notes::parseNotesFile(*contentOpt, notesPath, false);
+        const std::string canonical = kg::notes::renderFile(parsed);
+        if (canonical != *contentOpt)
+        {
+            std::fprintf(
+                stderr,
+                "kg notes accept: '%s' is not in canonical form; run `kg notes fmt` first -- skipped\n",
+                notesPath.c_str());
+            refusedFiles.push_back(notesPath);
+            continue;
+        }
+
+        const std::unordered_set<std::string> wanted(sns.begin(), sns.end());
+        bool anyChanged = false;
+        for (kg::notes::NoteBlock& b : parsed.blocks)
+        {
+            const kg::notes::MatchOutcome mo = kg::notes::matchBlock(db, b);
+            if (mo.kind != kg::notes::MatchKind::Matched || wanted.find(mo.serializedName) == wanted.end())
+            {
+                continue;
+            }
+            b.bodyHash = kg::notes::bodyHashForNode(db, mo.nodeId);
+            b.commit = commit;
+            accepted.push_back(mo.serializedName);
+            acceptedDisplay.push_back(mo.qualifiedName);
+            anyChanged = true;
+        }
+        if (anyChanged)
+        {
+            writeNotesFile(notesDir, notesPath, kg::notes::renderFile(parsed));
+        }
+    }
+
+    // Refresh the cache so `stale` clears for what was just accepted.
+    try
+    {
+        kg::notes::syncNotes(dbPath, notesDir, false);
+    }
+    catch (const std::exception& e)
+    {
+        std::fprintf(stderr, "kg notes accept: warning: post-accept sync failed: %s\n", e.what());
+    }
+
+    std::sort(accepted.begin(), accepted.end());
+    std::sort(acceptedDisplay.begin(), acceptedDisplay.end());
+    std::sort(refusedFiles.begin(), refusedFiles.end());
+
+    if (wantJson)
+    {
+        nlohmann::json j;
+        j["kg_version"] = KG_VERSION_STRING;
+        j["schema"] = "kg.notes-accept/1";
+        j["database"] = dbPath;
+        j["accepted"] = accepted;
+        j["refused_files"] = refusedFiles;
+        std::cout << j.dump() << "\n";
+    }
+    else
+    {
+        for (const std::string& qn : acceptedDisplay)
+        {
+            std::printf("accepted: %s\n", qn.c_str());
+        }
+        std::printf("%zu accepted, %zu file(s) refused (not canonical / unreadable)\n", accepted.size(), refusedFiles.size());
+    }
+    return refusedFiles.empty() ? 0 : 4;
+}
+
+// `kg notes VERB ...` dispatch. Only `lint` is implemented in Phase 1 (see
+// docs/NOTES_DESIGN.md's "Phases" section) -- scaffold/sync/show/status/
+// accept are listed but print "not implemented in this build" (exit 1)
+// until their phases land.
+int runNotes(int argc, char** argv, int startIdx)
+{
+    static const char* kUsage =
+        "Usage: kg notes VERB ...\n"
+        "  lint     --notes-dir DIR [--strict] [--json]\n"
+        "  sync     -d DB [--notes-dir DIR] [--strict] [--json]\n"
+        "  show     -d DB SYMBOL [--section brief|what|how|signature|pre|post|bugs|suggestions] [--json]\n"
+        "  status   -d DB [--stale] [--unfilled] [--unanchored] [--problems] [--json]\n"
+        "  symbols  -d DB [--kind K]... [--file GLOB] [--json]\n"
+        "  scaffold -d DB [--notes-dir DIR] (--all | --file GLOB | --class QNAME | SYMBOL)\n"
+        "                 [--kind K]... [--dry-run] [--json]\n"
+        "  accept   -d DB (SYMBOL | --all | --file GLOB) [--json]\n"
+        "  fmt      --notes-dir DIR [--check] [--json]\n";
+
+    if (startIdx >= argc)
+    {
+        std::fprintf(stderr, "%s", kUsage);
+        return 1;
+    }
+    const std::string verb = argv[startIdx];
+    if (verb == "lint")
+    {
+        return runNotesLint(argc, argv, startIdx + 1);
+    }
+    if (verb == "sync")
+    {
+        return runNotesSync(argc, argv, startIdx + 1);
+    }
+    if (verb == "show")
+    {
+        return runNotesShow(argc, argv, startIdx + 1);
+    }
+    if (verb == "status")
+    {
+        return runNotesStatus(argc, argv, startIdx + 1);
+    }
+    if (verb == "symbols")
+    {
+        return runNotesSymbols(argc, argv, startIdx + 1);
+    }
+    if (verb == "scaffold")
+    {
+        return runNotesScaffold(argc, argv, startIdx + 1);
+    }
+    if (verb == "accept")
+    {
+        return runNotesAccept(argc, argv, startIdx + 1);
+    }
+    if (verb == "fmt")
+    {
+        return runNotesFmt(argc, argv, startIdx + 1);
+    }
+    if (verb == "-h" || verb == "--help")
+    {
+        std::printf("%s", kUsage);
+        return 0;
+    }
+    std::fprintf(stderr, "kg notes: unknown verb '%s'\n", verb.c_str());
+    return 1;
+}
+
 // `kg dbdiff A B [--json] [--limit N] [--ignore CATEGORY]` -- a HIDDEN
 // maintenance/equivalence-
 // testing command (deliberately not listed in printHelp()) built on top of
@@ -1627,6 +3291,7 @@ int runDbDiff(int argc, char** argv, int startIdx)
     bool wantJson = false;
     int limit = 50;
     kg::update::SnapshotOptions snapOptions;
+    std::vector<std::string> onlyCategories;
 
     for (int i = startIdx; i < argc; ++i)
     {
@@ -1634,6 +3299,15 @@ int runDbDiff(int argc, char** argv, int startIdx)
         if (arg == "--json")
         {
             wantJson = true;
+        }
+        else if (arg == "--only")
+        {
+            if (i + 1 >= argc)
+            {
+                std::fprintf(stderr, "kg dbdiff: error: --only requires a value\n");
+                return 4;
+            }
+            onlyCategories.push_back(argv[++i]);
         }
         else if (arg == "--ignore")
         {
@@ -1678,7 +3352,7 @@ int runDbDiff(int argc, char** argv, int startIdx)
 
     if (positional.size() != 2)
     {
-        std::fprintf(stderr, "usage: kg dbdiff A B [--json] [--limit N] [--ignore shared-header-locations]\n");
+        std::fprintf(stderr, "usage: kg dbdiff A B [--json] [--limit N] [--ignore shared-header-locations] [--only CATEGORY]\n");
         return 4;
     }
 
@@ -1695,7 +3369,7 @@ int runDbDiff(int argc, char** argv, int startIdx)
         return 4;
     }
 
-    const kg::update::SnapshotDiff diff = kg::update::diffSnapshots(*a, *b);
+    const kg::update::SnapshotDiff diff = kg::update::diffSnapshots(*a, *b, onlyCategories);
     const bool equal = diff.onlyInA.empty() && diff.onlyInB.empty();
 
     if (wantJson)
@@ -1775,6 +3449,10 @@ int run(int argc, char** argv)
     if (first == "update")
     {
         return runUpdateCmd(argc, argv, 2);
+    }
+    if (first == "notes")
+    {
+        return runNotes(argc, argv, 2);
     }
     if (first == "dbdiff")
     {

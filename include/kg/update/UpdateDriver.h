@@ -102,6 +102,21 @@ struct UpdateSummary
     uint64_t indexElapsedMs = 0;
 
     bool nothingToDo = false;
+
+    // Phase 3 of docs/NOTES_DESIGN.md: post-update `kg::notes::syncNotes()`
+    // results, populated (notesRan = true) only when a notes dir was known
+    // (meta.kg_notes_dir, or <repo root>/notes if it exists) AND actually
+    // exists on disk. Never fails the update: a notes-sync exception is
+    // caught and reported (notesRan stays false), never surfaced as a
+    // non-zero exit code. `notesNewlyStale` counts serialized_names that
+    // were NOT stale in `kg_note` before this update's re-sync but ARE
+    // after it (comparing against whatever the previous `kg notes sync`
+    // left behind -- the kg_note* cache is untouched by re-indexing itself).
+    bool notesRan = false;
+    uint32_t notesNoted = 0;
+    uint32_t notesStale = 0;
+    uint32_t notesNewlyStale = 0;
+    uint32_t notesProblems = 0;
 };
 
 // Exit codes: 0 ok (including --dry-run / nothing-to-do), 1 hard error,

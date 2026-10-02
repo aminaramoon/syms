@@ -1,6 +1,6 @@
 ---
 name: kg
-description: Use when you need to explore or query the structure of a C++/CUDA codebase through the `kg` CLI tool — call graphs (callers/callees with depth), class inheritance hierarchies (bases/derived), method overrides, symbol references, definition locations, fuzzy symbol search, file contents/occurrences, or database stats. Also covers indexing a `compile_commands.json` into a `.srctrldb` database in the first place. Trigger on tasks like "find callers of X", "who calls this function", "build/show a call graph", "class hierarchy", "who inherits from / overrides X", "find references to X", "search for a symbol", working with a `.srctrldb` file, or being asked to run `kg index` / `kg query`.
+description: Use when you need to explore or query the structure of a C++/CUDA codebase through the `kg` CLI tool — call graphs (callers/callees with depth), class inheritance hierarchies (bases/derived), method overrides, symbol references, definition locations, fuzzy symbol search, file contents/occurrences, or database stats — or to read/write the per-function knowledge notes attached to it (`kg query context`, `kg notes`). Also covers indexing a `compile_commands.json` into a `.srctrldb` database (`kg index`, parallel/resumable) and keeping it current after code changes (`kg update`). Trigger on tasks like "find callers of X", "who calls this function", "build/show a call graph", "class hierarchy", "who inherits from / overrides X", "find references to X", "search for a symbol", "what does function X do / what do we know about X", "update the index after my changes", working with a `.srctrldb` file or a `notes/*.md` function-notes file, or being asked to run `kg index` / `kg update` / `kg query` / `kg notes`.
 ---
 
 # kg — index and query a C++/CUDA codebase
@@ -143,7 +143,7 @@ Every `--json` output is exactly one JSON object (never an array-wrapped list, n
 
 | Schema | Used by | Top-level array field |
 |---|---|---|
-| `kg.graph/1` | `callers callees bases derived members neighbors overrides overridden-by` | `nodes[]`, `edges[]` |
+| `kg.graph/1` | `callers callees bases derived members neighbors overrides overridden-by context` | `nodes[]`, `edges[]` |
 | `kg.references/1` | `references` | `references[]` (+ `nodes[]`) |
 | `kg.definition/1` | `definition` | `locations[]` (+ single `symbol`) |
 | `kg.search/1` | `search` | `hits[]` (each `{score, matched_indices, node}`) |
@@ -166,6 +166,21 @@ Every `--json` output is exactly one JSON object (never an array-wrapped list, n
 Use **`qualified_name`** as "the" canonical name field (bare ancestor path, no signature). `name` is just the leaf. `signature` includes params/return type — use it to tell overloads apart. `depth`/`seed` only appear on `kg.graph/1` nodes. `location` and `definition_kind` are JSON `null` (present key, null value) when the node has none / isn't indexed — not an absent key. `kind` is **always a string** (`"CLASS"`, `"FUNCTION"`, `"CALL"`, etc.), never a raw integer.
 
 Full field-by-field docs, every schema's complete shape, and every "invented, not from the DB" convention (see Gotchas below) are in `docs/JSON_SCHEMA.md` in this repo — read it directly if a field's meaning isn't obvious from context.
+
+## Function notes (knowledge that persists across sessions)
+
+`kg notes` lets you attach durable, git-versioned knowledge (`brief/what/how/pre/post/bugs/suggestions`) to a function/method so the NEXT session (or a different worktree) doesn't have to re-read the code from scratch. Workflow for an agent:
+
+1. **Look before you read.** `kg query context SYMBOL --json -d DB` returns the symbol plus its callers/callees/overrides in one call, with a `notes` field on every node (the full note object, or `null`). Check the seed's `notes` first.
+2. **`notes: null` or `"filled": false`** — no usable note yet. Read the code, then write the note:
+   - If `notes.path`/`notes.line` point at an existing block, edit that markdown file directly at that heading — fill in `### what ?`, `### how ?`, the `pre`/`post`/`bugs`/`suggestions` numbered lists, replacing `_TODO_` placeholders. Keep the existing section order and fence format (`### signature` stays a ` ```cpp ` fence); don't touch the `<!-- kg-hash: ... kg-commit: ... -->` comment by hand.
+   - If there's no block yet, `kg notes scaffold SYMBOL -d DB [--notes-dir DIR]` creates one (idempotent — safe to re-run), then edit it as above.
+   - Run `kg notes sync -d DB --notes-dir DIR` afterward so the DB cache picks up the edit (`kg query`/`show` auto-detect an out-of-date cache and warn on stderr, but never write — you still need to run `sync` yourself).
+3. **`"stale": true`** — the function's body changed since the note was last verified (hash mismatch). Re-read the current code, verify/update the note's text if the change invalidated it, then run `kg notes accept SYMBOL -d DB --notes-dir DIR` to re-anchor the `kg-hash` comment to the current body. `accept` refuses non-canonical markdown (run `kg notes fmt --notes-dir DIR` first if it does).
+4. **Finding review work:** `kg notes status -d DB --stale --json` lists everything whose body changed since it was last reviewed; `--unfilled` lists scaffolded-but-empty blocks; `--problems` lists matching errors (`unmatched`/`ambiguous`/`orphaned-file`/...).
+5. Exit codes worth knowing: `scaffold`/`sync`/`accept`/`status` are 0 on success; `show`/`sync --strict` exit 3 if the symbol/section has no note or there are lint problems; symbol resolution reuses `kg query`'s own 2 (ambiguous) / 3 (not found) contract.
+
+Never hand-edit the `kg-hash`/`kg-commit` comment — it is written only by `scaffold` (initial) and `accept` (re-anchor); editing it yourself desyncs staleness detection from reality.
 
 ## Gotchas an agent should know before trusting output blindly
 

@@ -1,6 +1,7 @@
 #include "kg/out/TextWriter.h"
 
 #include <iomanip>
+#include <sstream>
 
 #include "kg/db/Enums.h"
 #include "kg/db/NameDecode.h"
@@ -18,7 +19,13 @@ std::string displayNameOf(const std::string& serializedName)
 
 }  // namespace
 
-void writeBfsResult(std::ostream& out, const kg::query::BfsResult& result, const std::unordered_map<int64_t, std::string>& locations, bool showEdgeList)
+void writeBfsResult(
+    std::ostream& out,
+    const kg::query::BfsResult& result,
+    const std::unordered_map<int64_t, std::string>& locations,
+    bool showEdgeList,
+    const std::unordered_map<int64_t, NodeNoteText>* notes,
+    bool notesFull)
 {
     if (result.nodes.empty())
     {
@@ -26,14 +33,38 @@ void writeBfsResult(std::ostream& out, const kg::query::BfsResult& result, const
     }
     for (const kg::query::BfsNode& node : result.nodes)
     {
-        out << std::string(static_cast<std::size_t>(node.depth) * 2, ' ') << "[" << kg::db::nodeKindToString(node.kind) << "] "
-            << displayNameOf(node.serializedName) << " (#" << node.id << ")";
+        const std::string indent(static_cast<std::size_t>(node.depth) * 2, ' ');
+        out << indent << "[" << kg::db::nodeKindToString(node.kind) << "] " << displayNameOf(node.serializedName) << " (#" << node.id << ")";
         const auto it = locations.find(node.id);
         if (it != locations.end() && !it->second.empty())
         {
             out << "  (" << it->second << ")";
         }
         out << "\n";
+
+        if (notes != nullptr)
+        {
+            const auto nit = notes->find(node.id);
+            if (nit != notes->end())
+            {
+                const std::string noteIndent = indent + "    ";
+                const char* tag = nit->second.stale ? " [stale]" : (nit->second.filled ? "" : " [unfilled]");
+                if (notesFull && !nit->second.fullMarkdown.empty())
+                {
+                    out << noteIndent << "note" << tag << ":\n";
+                    std::istringstream iss(nit->second.fullMarkdown);
+                    std::string line;
+                    while (std::getline(iss, line))
+                    {
+                        out << noteIndent << "  " << line << "\n";
+                    }
+                }
+                else
+                {
+                    out << noteIndent << "brief: " << nit->second.brief << tag << "\n";
+                }
+            }
+        }
     }
 
     out << result.edges.size() << " edge(s)" << (result.truncated ? " [truncated: --max-nodes reached]" : "") << "\n";

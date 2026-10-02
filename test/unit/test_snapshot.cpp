@@ -6,6 +6,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+
+#include "kg/notes/Scaffold.h"
+#include "kg/notes/Sync.h"
+#include "kg/query/QueryEngine.h"
 #include "kg/update/Snapshot.h"
 
 #ifdef KG_BINARY
@@ -203,4 +210,140 @@ TEST_CASE("snapshot: --ignore shared-header-locations drops ONLY shared-header l
     // Self-diff under the same option is still empty (reflexivity holds).
     REQUIRE(diffSnapshots(filtered, filtered).onlyInA.empty());
     REQUIRE(diffSnapshots(filtered, filtered).onlyInB.empty());
+}
+
+namespace
+{
+std::string readFileText(const std::string& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+void writeFileText(const std::string& path, const std::string& content)
+{
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << content;
+}
+}  // namespace
+
+// Phase 4 of docs/NOTES_DESIGN.md: `kg dbdiff` learns a `note`/`note_problem`
+// category. Two DATABASE COPIES synced from the SAME notes dir must produce
+// an EMPTY note diff (notes are keyed by serialized_name, not by sqlite id
+// or filesystem path -- see Snapshot.h's Phase 4 comment) even though the
+// two DBs are otherwise independent sqlite files; a later edit that makes
+// one of them stale must show up ONLY in the note category.
+TEST_CASE("snapshot: dbdiff --only note is empty for two DB copies synced from the same notes dir, sees staleness", "[fixture][snapshot]")
+{
+    namespace fs = std::filesystem;
+    const fs::path tmpRoot = fs::temp_directory_path() / fs::path("kg_dbdiff_notes_test");
+    fs::remove_all(tmpRoot);
+    fs::create_directories(tmpRoot);
+
+    const std::string dbA = (tmpRoot / "a.srctrldb").string();
+    const std::string dbB = (tmpRoot / "b.srctrldb").string();
+    fs::copy_file(fixtureDbPath(), dbA);
+    fs::copy_file(fixtureDbPath(), dbB);
+    const std::string notesDir = (tmpRoot / "notes").string();
+    fs::create_directories(notesDir);
+
+    // Scaffold every FUNCTION/METHOD's placeholder block from dbA's own
+    // symbol table (both dbA/dbB were copied from the identical fixture, so
+    // their symbol tables -- and hence the scaffolded notes -- agree).
+    {
+        kg::db::Database db(dbA);
+        const std::vector<kg::notes::SymbolRow> rows = kg::notes::listSymbols(db, 0, {});
+        REQUIRE_FALSE(rows.empty());
+        kg::notes::ScaffoldOptions opts;
+        opts.notesDir = notesDir;
+        kg::notes::scaffoldNotes(db, rows, opts);
+    }
+
+    // Fill in one block's brief so `filled` differs meaningfully between an
+    // unfilled and a filled note.
+    bool filledOne = false;
+    for (const auto& entry : fs::recursive_directory_iterator(notesDir))
+    {
+        if (filledOne || entry.path().extension() != ".md")
+        {
+            continue;
+        }
+        std::string content = readFileText(entry.path().string());
+        const std::string::size_type pos = content.find("_TODO_");
+        if (pos != std::string::npos)
+        {
+            content.replace(pos, std::string("_TODO_").size(), "A deterministic brief.");
+            writeFileText(entry.path().string(), content);
+            filledOne = true;
+        }
+    }
+    REQUIRE(filledOne);
+
+    kg::notes::syncNotes(dbA, notesDir, false);
+    kg::notes::syncNotes(dbB, notesDir, false);
+
+    const kg::update::Snapshot snapA = takeSnapshot(dbA);
+    const kg::update::Snapshot snapB = takeSnapshot(dbB);
+    REQUIRE_FALSE(snapA.notes.empty());
+
+    const kg::update::SnapshotDiff onlyNoteDiff = diffSnapshots(snapA, snapB, {"note"});
+    REQUIRE(onlyNoteDiff.onlyInA.empty());
+    REQUIRE(onlyNoteDiff.onlyInB.empty());
+
+    // Now make dbA's cache disagree: hand-edit the `kg-hash` anchor on the
+    // filled block to something wrong, so re-syncing dbA (only) reports it
+    // stale while dbB's cache still says fresh.
+    bool rewroteHash = false;
+    for (const auto& entry : fs::recursive_directory_iterator(notesDir))
+    {
+        if (rewroteHash || entry.path().extension() != ".md")
+        {
+            continue;
+        }
+        std::string content = readFileText(entry.path().string());
+        const std::string::size_type pos = content.find("kg-hash: ");
+        if (pos != std::string::npos)
+        {
+            const std::string::size_type hashStart = pos + std::string("kg-hash: ").size();
+            content.replace(hashStart, 16, "0000000000000000");
+            writeFileText(entry.path().string(), content);
+            rewroteHash = true;
+        }
+    }
+    REQUIRE(rewroteHash);
+
+    kg::notes::syncNotes(dbA, notesDir, false);
+    // dbB is deliberately NOT re-synced -- it still reflects the old (fresh)
+    // markdown it last saw, exactly like a worktree that hasn't pulled the
+    // edit yet.
+
+    const kg::update::Snapshot snapA2 = takeSnapshot(dbA);
+    const kg::update::SnapshotDiff staleDiff = diffSnapshots(snapA2, snapB, {"note"});
+    REQUIRE_FALSE(staleDiff.onlyInA.empty());
+    REQUIRE_FALSE(staleDiff.onlyInB.empty());
+
+    // Every other category is completely untouched by this whole exercise
+    // (dbA/dbB's node/edge/etc rows never changed) -- proves --only note
+    // really does restrict the diff to just the note category.
+    const kg::update::SnapshotDiff fullDiff = diffSnapshots(snapA2, snapB);
+    std::size_t nonNoteEntries = 0;
+    for (const std::string& s : fullDiff.onlyInA)
+    {
+        if (s.rfind("note|", 0) != 0)
+        {
+            ++nonNoteEntries;
+        }
+    }
+    for (const std::string& s : fullDiff.onlyInB)
+    {
+        if (s.rfind("note|", 0) != 0)
+        {
+            ++nonNoteEntries;
+        }
+    }
+    REQUIRE(nonNoteEntries == 0);
+
+    fs::remove_all(tmpRoot);
 }

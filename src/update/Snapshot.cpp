@@ -203,6 +203,37 @@ Snapshot takeSnapshot(const std::string& dbPath, const SnapshotOptions& options)
             [&](sqlite3_stmt* stmt) { snap.symbolDefs[join({columnText(stmt, 0), columnText(stmt, 1)})]++; });
     }
 
+    // --- kg_note / kg_note_problem: skip if absent (Phase 4) ----------------
+    bool hasNote = false;
+    db.run("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kg_note'", [&](sqlite3_stmt*) { hasNote = true; });
+    if (hasNote)
+    {
+        db.run(
+            "SELECT serialized_name, notes_path, brief, what, how, filled, stale, note_hash FROM kg_note",
+            [&](sqlite3_stmt* stmt) {
+                const std::string serializedName = columnText(stmt, 0);
+                const std::string notesPath = columnText(stmt, 1);
+                const std::string brief = columnText(stmt, 2);
+                const std::string what = columnText(stmt, 3);
+                const std::string how = columnText(stmt, 4);
+                const std::string filled = std::to_string(sqlite3_column_int(stmt, 5));
+                const std::string stale = std::to_string(sqlite3_column_int(stmt, 6));
+                const std::string noteHash = columnText(stmt, 7);
+                snap.notes[join({serializedName, notesPath, brief, what, how, filled, stale, noteHash})]++;
+            });
+    }
+    bool hasNoteProblem = false;
+    db.run("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kg_note_problem'", [&](sqlite3_stmt*) { hasNoteProblem = true; });
+    if (hasNoteProblem)
+    {
+        db.run("SELECT notes_path, line, kind FROM kg_note_problem", [&](sqlite3_stmt* stmt) {
+            const std::string notesPath = columnText(stmt, 0);
+            const std::string line = std::to_string(sqlite3_column_int(stmt, 1));
+            const std::string kind = columnText(stmt, 2);
+            snap.noteProblems[join({notesPath, line, kind})]++;
+        });
+    }
+
     // --- kg_tu: (path, args_hash) -- skip if absent -------------------------
     bool hasTu = false;
     db.run("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kg_tu'", [&](sqlite3_stmt*) { hasTu = true; });
@@ -256,7 +287,7 @@ void diffCategory(
 
 }  // namespace
 
-SnapshotDiff diffSnapshots(const Snapshot& a, const Snapshot& b)
+SnapshotDiff diffSnapshots(const Snapshot& a, const Snapshot& b, const std::vector<std::string>& only)
 {
     SnapshotDiff diff;
     struct Category
@@ -274,9 +305,16 @@ SnapshotDiff diffSnapshots(const Snapshot& a, const Snapshot& b)
         {&Snapshot::localSymbols, "local_symbol"},
         {&Snapshot::symbolDefs, "symbol_def"},
         {&Snapshot::tus, "tu"},
+        {&Snapshot::notes, "note"},
+        {&Snapshot::noteProblems, "note_problem"},
     };
+    const std::unordered_set<std::string> onlySet(only.begin(), only.end());
     for (const Category& cat : kCategories)
     {
+        if (!onlySet.empty() && onlySet.count(cat.name) == 0)
+        {
+            continue;
+        }
         diffCategory(a.*cat.field, b.*cat.field, cat.name, diff.onlyInA, diff.onlyInB);
     }
     return diff;

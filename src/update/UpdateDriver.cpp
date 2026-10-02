@@ -19,6 +19,7 @@
 #include "kg/index/IndexDriver.h"
 #include "kg/index/Provenance.h"
 #include "kg/model/IndexBackend.h"
+#include "kg/notes/Sync.h"
 #include "kg/update/FileMatcher.h"
 #include "kg/update/Git.h"
 #include "kg/update/GitDiff.h"
@@ -148,6 +149,15 @@ nlohmann::json buildSummaryJson(const UpdateRunOptions& options, const UpdateSum
     else
     {
         j["index"] = nlohmann::json::object();
+    }
+    if (s.notesRan)
+    {
+        j["notes"] = {
+            {"noted", s.notesNoted}, {"stale", s.notesStale}, {"newly_stale", s.notesNewlyStale}, {"problems", s.notesProblems}};
+    }
+    else
+    {
+        j["notes"] = nlohmann::json::object();
     }
     j["elapsed_ms"] = s.elapsedMs;
     j["index_elapsed_ms"] = s.indexElapsedMs;
@@ -1123,6 +1133,103 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
         std::fprintf(stderr, "kg update: warning: post-index sweep failed: %s\n", e.what());
     }
     summary.gc = gc;
+
+    // --- 8.5. notes sync (Phase 3 of docs/NOTES_DESIGN.md) ---------------------
+    // Best-effort: resolve a notes dir exactly like Cli.cpp's
+    // resolveNotesDirDefault() (meta.kg_notes_dir, else <repo root>/notes if
+    // it exists), and if one exists on disk, re-run syncNotes() against the
+    // just-re-indexed working copy so `kg_note.stale` reflects the new code
+    // before this update is handed back to the caller. Runs BEFORE the
+    // kg_index_in_progress clear/rename below so it's part of the same
+    // working-copy state that becomes the final database. Never fails the
+    // update -- any exception here is reported and swallowed.
+    try
+    {
+        std::string notesDir;
+        {
+            kg::db::Database rdb(work);
+            const std::optional<std::string> stored = kg::db::getMeta(rdb.handle(), "kg_notes_dir");
+            if (stored.has_value() && !stored->empty())
+            {
+                notesDir = *stored;
+            }
+            else if (!repoRoot.empty())
+            {
+                const std::filesystem::path candidate = std::filesystem::path(repoRoot) / "notes";
+                if (std::filesystem::is_directory(candidate))
+                {
+                    notesDir = candidate.string();
+                }
+            }
+        }
+
+        if (!notesDir.empty() && std::filesystem::is_directory(notesDir))
+        {
+            // Pre-sync stale set, straight from whatever the previous `kg
+            // notes sync` left in `kg_note` -- re-indexing itself never
+            // touches this cache, so it's still exactly last sync's result.
+            std::unordered_set<std::string> preStale;
+            {
+                kg::db::Database rdb(work);
+                try
+                {
+                    rdb.run("SELECT serialized_name FROM kg_note WHERE stale = 1", [&](sqlite3_stmt* stmt) {
+                        const unsigned char* t = sqlite3_column_text(stmt, 0);
+                        if (t != nullptr)
+                        {
+                            preStale.insert(reinterpret_cast<const char*>(t));
+                        }
+                    });
+                }
+                catch (const std::exception&)
+                {
+                    // kg_note doesn't exist yet (never synced) -- preStale stays empty.
+                }
+            }
+
+            const kg::notes::SyncResult syncResult = kg::notes::syncNotes(work, notesDir, false);
+
+            std::unordered_set<std::string> postStale;
+            {
+                kg::db::Database rdb(work);
+                rdb.run("SELECT serialized_name FROM kg_note WHERE stale = 1", [&](sqlite3_stmt* stmt) {
+                    const unsigned char* t = sqlite3_column_text(stmt, 0);
+                    if (t != nullptr)
+                    {
+                        postStale.insert(reinterpret_cast<const char*>(t));
+                    }
+                });
+            }
+            uint32_t newlyStale = 0;
+            for (const std::string& sn : postStale)
+            {
+                if (preStale.find(sn) == preStale.end())
+                {
+                    ++newlyStale;
+                }
+            }
+
+            summary.notesRan = true;
+            summary.notesNoted = static_cast<uint32_t>(syncResult.counts.matched);
+            summary.notesStale = static_cast<uint32_t>(syncResult.counts.stale);
+            summary.notesNewlyStale = newlyStale;
+            summary.notesProblems = static_cast<uint32_t>(syncResult.problems.size());
+
+            if (!options.json)
+            {
+                std::fprintf(
+                    stderr,
+                    "notes: %u noted, %u stale (%u newly stale)\n",
+                    summary.notesNoted,
+                    summary.notesStale,
+                    summary.notesNewlyStale);
+            }
+        }
+    }
+    catch (const std::exception& e)
+    {
+        std::fprintf(stderr, "kg update: warning: post-update notes sync failed: %s\n", e.what());
+    }
 
     // Phase 8: clear kg_index_in_progress on `work` -- before the rename/
     // in-place-commit step below, so it's gone from whichever path

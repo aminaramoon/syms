@@ -30,6 +30,9 @@ add_executable(kg_unit_tests
     unit/test_parallel_fixture.cpp
     unit/test_resume_fixture.cpp
     unit/test_kind_determinism.cpp
+    unit/test_notes_markdown.cpp
+    unit/test_notes_sync.cpp
+    unit/test_notes_scaffold.cpp
 )
 target_link_libraries(kg_unit_tests PRIVATE
     Catch2::Catch2WithMain
@@ -41,6 +44,7 @@ target_link_libraries(kg_unit_tests PRIVATE
     kg_query
     kg_out
     kg_update
+    kg_notes
     SQLite::SQLite3
     kg_options
 )
@@ -251,10 +255,34 @@ add_test(NAME update_scenario COMMAND ${CMAKE_COMMAND}
          -DWORK=${CMAKE_BINARY_DIR}/update_scenario
          -DGIT=${KG_UPDATE_SCENARIO_GIT}
          -DSQLITE3=${KG_UPDATE_SCENARIO_SQLITE3}
+         -DSCRIPTS=${CMAKE_SOURCE_DIR}/scripts
          -P ${CMAKE_SOURCE_DIR}/test/update/update_scenario.cmake)
 set_tests_properties(update_scenario PROPERTIES
     LABELS "update"
     TIMEOUT 600
+    SKIP_RETURN_CODE 77)
+
+# --- Phase 4 (final): cross-worktree notes proof ----------------------------
+#
+# Companion to update_scenario above: proves docs/NOTES_DESIGN.md's central
+# claim ("Markdown in git is the source of truth... the .srctrldb only holds
+# a derived cache") by building TWO independently-`kg index`d databases (from
+# a real `git clone`, a genuinely different worktree path) and asserting the
+# notes cache -- unlike every other row category -- is identical between
+# them. Labeled "update" (like update_scenario), not "integration" (it only
+# needs the synthetic fixture, not the real cucs corpus), so it runs under
+# the default `ctest -LE integration`. Reuses the same git lookup as
+# update_scenario; doesn't need sqlite3.
+add_test(NAME notes_cross_worktree COMMAND ${CMAKE_COMMAND}
+         -DKG=$<TARGET_FILE:kg>
+         -DSRC=${CMAKE_SOURCE_DIR}/test/fixtures/synthetic
+         -DWORK=${CMAKE_BINARY_DIR}/notes_cross_worktree
+         -DGIT=${KG_UPDATE_SCENARIO_GIT}
+         -DSCRIPTS=${CMAKE_SOURCE_DIR}/scripts
+         -P ${CMAKE_SOURCE_DIR}/test/update/notes_cross_worktree.cmake)
+set_tests_properties(notes_cross_worktree PROPERTIES
+    LABELS "update"
+    TIMEOUT 300
     SKIP_RETURN_CODE 77)
 
 # --- Phase 5 (final): real cucs-corpus `kg update` acceptance test ----------

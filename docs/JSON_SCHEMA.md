@@ -154,7 +154,7 @@ entries, `kg.references/1`'s `references[].location`,
 ## `kg.graph/1`
 
 Every graph-producing verb: `callers callees bases derived members neighbors
-overrides overridden-by`.
+overrides overridden-by context`.
 
 ```json
 {
@@ -207,6 +207,47 @@ overrides overridden-by`.
   edge-location lookup). It is `[]`, not omitted, when the edge kind simply
   has no recorded occurrence (this is expected/normal for some
   `INHERITANCE`/`OVERRIDE` edges).
+
+### `context` (Phase 4 of `docs/NOTES_DESIGN.md`)
+
+`kg query context SYMBOL [--depth N=1] [--no-notes] [--max-nodes N]` is the
+one graph verb that is a UNION of several traversals rather than one: the
+seed, `callers()` and `callees()` (both to `--depth`), one-hop
+`overrides`/`overridden-by`, and -- only when the seed is a `CLASS`/`STRUCT`
+-- one-hop `bases`/`derived`. `query.edge_kinds` lists every kind actually
+in play (`CALL` and `OVERRIDE` always; `INHERITANCE` added only for a
+class-like seed). `query.depth`/`query.max_nodes` are the `callers`/
+`callees` values (the one-hop legs are always depth 1, unlimited, same as
+`overrides`/`members`/etc.  elsewhere in this doc).
+
+The one shape addition: **every node object gets a `"notes"` field** -- the
+same object `kg.note/1`'s own `"note"` field carries (see below), or JSON
+`null` if the symbol has no note. `--no-notes` omits the key entirely
+(rather than sending it as `null` for every node) -- this is the one case in
+`kg.graph/1` where a key can be flat-out absent depending on a flag, so
+check for the key's presence before assuming it's always there.
+
+```json
+{ "id": 4711, "kind": "METHOD", "name": "get_policy_name", "...": "...",
+  "notes": { "brief": "Returns this policy's human-readable name.",
+    "what": "...", "how": "...", "signature": "std::string get_policy_name() const",
+    "pre": [], "post": ["Result is one of \"ignore\"/\"fail\"/\"increase\"."],
+    "bugs": [], "suggestions": [],
+    "path": "src/memory/memory_reservation.cpp.md", "line": 42,
+    "filled": true, "stale": false,
+    "note_hash": "fdfd2c354521275a", "current_body_hash": "fdfd2c354521275a",
+    "commit": "80412d5c0ea094fa408558865152a5e9755116f" } }
+```
+
+Notes are read via the same overlay-aware `kg::notes::openNotes()` path
+`kg notes show`/`status` use -- `context` never writes the DB; if a notes
+file changed on disk since the last `kg notes sync`, the usual "notes cache
+out of date -- run `kg notes sync`" hint goes to stderr (suppressed by
+`--json`'s stdout purity the same way every other verb suppresses it, i.e.
+it's still printed to stderr, just never mixed into the JSON on stdout).
+Text mode additionally prints, under any node with a note, an indented
+`brief:` line tagged `[stale]`/`[unfilled]` as appropriate; `--notes-full`
+prints the whole rendered block instead of just the brief.
 
 ## `kg.references/1`
 
@@ -470,14 +511,34 @@ here -- two database paths, not one, are the input).
 
 Each entry in `only_in_a`/`only_in_b` is prefixed with its category
 (`node|`, `edge|`, `location|`, `symbol|`, `file|`, `error|`,
-`local_symbol|`, `symbol_def|`, `tu|`) followed by the "|"-joined key for
-that category -- see `include/kg/update/Snapshot.h` for the exact field
-list per category. Exit codes (not specific to `--json`): `0` the databases
-are logically equivalent, `3` they differ, `4` one of the two databases
-couldn't be opened at all (e.g. missing file, wrong `storage_version`) --
-in that last case nothing is printed to stdout, only a plain-text error to
-stderr (there's no well-formed `kg.dbdiff/1` object to emit, since one side
-never got a Snapshot).
+`local_symbol|`, `symbol_def|`, `tu|`, `note|`, `note_problem|`) followed by
+the "|"-joined key for that category -- see `include/kg/update/Snapshot.h`
+for the exact field list per category. `note` (Phase 4 of
+`docs/NOTES_DESIGN.md`) is keyed by `(serialized_name, notes_path, brief,
+what, how, filled, stale, note_hash)` from `kg_note` (empty on both sides if
+that table doesn't exist yet -- `kg notes sync` never ran); `note_problem`
+by `(notes_path, line, kind)` from `kg_note_problem`. Both are deliberately
+NOT keyed by `node.id` or an absolute file path -- see the notes cache's own
+"keyed by stable identity" principle -- so `--only note` between two
+independently-`kg index`d databases (different node ids, different absolute
+paths) can still come back equal (see `ctest -R notes_cross_worktree`).
+Exit codes (not specific to `--json`): `0` the databases are logically
+equivalent, `3` they differ, `4` one of the two databases couldn't be opened
+at all (e.g. missing file, wrong `storage_version`) -- in that last case
+nothing is printed to stdout, only a plain-text error to stderr (there's no
+well-formed `kg.dbdiff/1` object to emit, since one side never got a
+Snapshot).
+
+`--only CATEGORY` (repeatable) restricts BOTH the comparison and the
+reported counts to exactly the given category name(s) -- e.g. `kg dbdiff A B
+--only note` reports `equal: true` as soon as the `note` category matches,
+regardless of whether node/edge/location rows differ. Without `--only`,
+every category is compared (the default, pre-Phase-4 behavior).
+`--ignore CATEGORY` (a different, pre-existing flag -- currently only
+`shared-header-locations`) instead drops one class of *location* rows before
+snapshotting; the two flags compose (`--only` picks which top-level
+categories are compared at all, `--ignore` narrows what goes into the
+`locations` category specifically).
 
 ## `kg.update-summary/1`
 
@@ -524,10 +585,29 @@ tell success from failure without also capturing stderr.)
   "index": { "tus_total": 4, "tus_attempted": 4, "tus_with_content": 4, "tus_failed": 0,
              "symbols": 71002, "references": 214883, "files": 1183, "errors": 37,
              "name_collisions": 0 },
+  "notes": { "noted": 34, "stale": 8, "newly_stale": 1, "problems": 2 },
   "elapsed_ms": 1234, "index_elapsed_ms": 1100 }
 ```
 
 Notes:
+
+- `"notes"` (Phase 3 of `docs/NOTES_DESIGN.md`) is populated only when a
+  notes dir was known (`meta.kg_notes_dir`, or `<repo root>/notes` if it
+  exists) AND exists on disk at the end of this update -- an empty object
+  `{}` otherwise (no notes dir at all, same convention as `"index"`).
+  `kg::notes::syncNotes()` is re-run against the just-updated database
+  before this summary is built, so `"noted"`/`"stale"` are its
+  post-update `kg.notes-sync/1` `"counts"."matched"`/`"stale"`;
+  `"newly_stale"` counts serialized-name identities that were NOT stale in
+  `kg_note` before this update's re-sync but ARE after it (comparing
+  against whatever the PREVIOUS `kg notes sync` left behind -- re-indexing
+  itself never touches the `kg_note*` cache); `"problems"` is this sync's
+  total problem count (same vocabulary as `kg.notes-sync/1`'s
+  `"problems"[]`, including `signature-mismatch`/`orphaned-file`). A notes
+  dir with problems, or a notes-sync exception, NEVER fails the update --
+  it's report-only (text mode prints `notes: N noted, S stale (K newly
+  stale)` to stderr; a sync exception logs a `kg update: warning: ...` line
+  and leaves `"notes"` as `{}`).
 
 - `"gc"."non_indexed_files"` is always `0` since Phase 5: the sweep that
   deleted edge-less non-indexed `file` rows was removed (a fresh `kg index`
@@ -585,6 +665,295 @@ Notes:
   have crashed mid-write). The lock file is held (and removed, RAII-style) for
   the ENTIRE `runUpdate()` call, including the exit-`5` "nothing to do" path's
   best-effort provenance refresh.
+
+## `kg.notes-lint/1`
+
+Printed by `kg notes lint --notes-dir DIR --json` (Phase 1 of
+`docs/NOTES_DESIGN.md`'s `kg notes` feature -- see that doc for the
+markdown format). No DB involved at all: `lint` walks `DIR` recursively for
+`*.md` files and parses each with `kg::notes::parseNotesFile`
+(`include/kg/notes/Markdown.h`). No `"query"`/`"stats"` field (nothing was
+queried against a database).
+
+```json
+{ "kg_version": "0.1.0", "schema": "kg.notes-lint/1",
+  "notes_dir": "/repo/notes",
+  "files": 42, "blocks": 118, "filled": 71,
+  "problems": [
+    { "path": "src/planner/query.cpp.md", "line": 12,
+      "kind": "unknown-heading", "message": "unknown '### bogus'" }
+  ] }
+```
+
+- `"notes_dir"` echoes the `--notes-dir` argument verbatim (not
+  canonicalized).
+- `"files"`/`"blocks"`/`"filled"` are total counts across every `*.md` file
+  found: `"blocks"` is every `##` block parsed, `"filled"` is how many of
+  those have `NoteBlock::filled() == true` (see `include/kg/notes/NoteModel.h`
+  -- brief/what/how/pre/post/bugs/suggestions non-empty; `signature` doesn't
+  count).
+- `"problems"[]` is every `kg::notes::Problem` from every file, sorted by
+  `(path, line)`; `"path"` is relative to `--notes-dir` (POSIX-style
+  separators). `"kind"` is one of: `unknown-heading`, `duplicate-section`,
+  `duplicate-block`, `unclosed-fence`, `missing-signature-fence`,
+  `empty-heading`, `text-outside-block`, `missing-section` (only with
+  `--strict`), `stray-heading-level`, `misplaced-meta`.
+- Text mode prints the same findings as `path:line: kind: message` lines
+  (sorted the same way), followed by a
+  `"N files, M blocks (K filled), P problems"` summary line.
+- Exit codes: `0` no problems, `1` usage error (e.g. missing `--notes-dir`
+  or not a directory), `3` one or more problems found (including
+  `missing-section` findings, which only exist under `--strict`).
+
+Related to (but not documented by) this schema: the staleness anchor
+comment a `##` block may carry right after its heading --
+`<!-- kg-hash: <16-hex fnv1a64>  kg-commit: <sha> -->` -- parsed into
+`NoteBlock::bodyHash`/`NoteBlock::commit` but not currently surfaced by
+`lint` itself (Phase 2's `kg notes sync`/`kg.notes-sync/1` is what compares
+`bodyHash` against the DB-computed body hash and reports staleness).
+
+## `kg.notes-sync/1`
+
+Printed by `kg notes sync -d DB [--notes-dir DIR] [--strict] [--json]`
+(Phase 2 of `docs/NOTES_DESIGN.md`). Rebuilds the `kg_note`/`kg_note_file`/
+`kg_note_problem` cache tables from the markdown tree, matching every `##`
+block to exactly one symbol (see `include/kg/notes/Sync.h`'s `matchBlock()`
+doc for the matching algorithm) and recomputing each match's current body
+hash (`include/kg/notes/BodyHash.h`).
+
+```json
+{ "kg_version": "0.1.0", "schema": "kg.notes-sync/1",
+  "database": "/repo/kg.srctrldb", "notes_dir": "/repo/notes",
+  "counts": {
+    "files": 8, "blocks": 43,
+    "matched": 34, "unmatched": 0, "ambiguous": 4, "duplicate_target": 5,
+    "filled": 23, "stale": 7, "unanchored": 8, "lint_problems": 0,
+    "signature_mismatch": 1, "orphaned_files": 0
+  },
+  "problems": [
+    { "path": "src/overloads.cpp.md", "line": 67, "heading": "Accessor::value",
+      "kind": "ambiguous", "message": "heading 'Accessor::value' is ambiguous -- candidates: #118 int & value(); #122 const int & value() const" }
+  ] }
+```
+
+- `"notes_dir"` is the ABSOLUTE resolved notes directory (unlike
+  `kg.notes-lint/1`'s verbatim `--notes-dir` echo), since `sync` also
+  persists it into `meta.kg_notes_dir`.
+- `"counts"` is a full rebuild tally: every `"blocks"` is exactly one of
+  matched/unmatched/ambiguous/duplicate_target (`matched + unmatched +
+  ambiguous + duplicate_target == blocks`); `filled`/`stale`/`unanchored`/
+  `signature_mismatch` are subsets of `matched` (a block that didn't match
+  anything has nothing to persist a filled/stale/unanchored/mismatch
+  verdict for). `lint_problems` is every `kg::notes::Problem` from
+  `parseNotesFile` (parse-level issues, same `kind` vocabulary as
+  `kg.notes-lint/1`) rolled into `"problems"[]` alongside the sync-level
+  problem kinds:
+  - `unmatched` -- zero symbols resolve the block's heading.
+  - `ambiguous` -- more than one symbol resolves the heading and the
+    block's `### signature` didn't narrow it to exactly one; `"message"`
+    lists every remaining candidate's id + signature.
+  - `duplicate-target` -- a later block resolved to a symbol an earlier
+    block (in file-then-line order) already claimed; the later block is
+    parsed but never written to `kg_note` ("ignored").
+  - `signature-mismatch` (Phase 3) -- a block resolves to exactly one
+    candidate (no ambiguity), but its `### signature` fence's normalized
+    text matches neither the candidate's full signature nor its
+    parameter-list suffix; the block still matches (`"message"` is
+    `"expected '...', found '...'"`).
+  - `orphaned-file` (Phase 3) -- a notes file's own source path (its
+    `notes_path` with the trailing `.md` stripped, resolved against
+    `meta.kg_repo_root`) no longer exists as a `file` row (e.g. after
+    `git mv`ing the source without moving its notes). One problem per
+    file (`"line"` is always `1`, `"heading"` is empty), independent of
+    whether the file's individual blocks still match by name elsewhere.
+    `"orphaned_files"` counts these; only checked when `meta.kg_repo_root`
+    is known.
+- Exit codes: `0` (even with problems, unless `--strict`), `1` usage error,
+  `3` with `--strict` and `problems` non-empty, `4` database error.
+- Text mode prints each problem as `path:line: kind: message`, then a one-
+  line summary.
+
+## `kg.note/1`
+
+Printed by `kg notes show -d DB SYMBOL [--section SEC] --json`. `SYMBOL`
+resolves exactly like `kg query` (same `kg.ambiguous/1`/`kg.not-found/1`
+envelopes and exit codes 2/3 on ambiguous/not-found); once resolved, the
+note is looked up via the overlay-aware `kg::notes::openNotes()`, so a
+markdown file edited on disk since the last `sync` is reflected here even
+though nothing was written back to the DB.
+
+```json
+{ "kg_version": "0.1.0", "schema": "kg.note/1",
+  "query": { "verb": "show", "db": "/repo/kg.srctrldb", "symbol": "a::b::c::add", "symbol_ids": [40] },
+  "symbol": { "id": 40, "kind": "FUNCTION", "name": "add", "qualified_name": "a::b::c::add",
+              "signature": "int add(int, int)", "indexed": true, "definition_kind": "EXPLICIT",
+              "location": { "file": "src/ns.cpp", "start_line": 3, "start_column": 1, "end_line": 3, "end_column": 1, "kind": "SCOPE" } },
+  "note": { "brief": "...", "what": "...", "how": "...", "signature": "int add(int, int)",
+            "pre": ["..."], "post": [], "bugs": ["..."], "suggestions": ["..."],
+            "path": "src/ns.cpp.md", "line": 3, "filled": true, "stale": false,
+            "note_hash": "611a45463dfd2e2e", "current_body_hash": "611a45463dfd2e2e",
+            "commit": "80412d5c0ea094fa408558865152a5e9755116ff" },
+  "cache_outdated_files": [] }
+```
+
+- `"symbol"` is the exact same node-object shape `kg.graph/1`/
+  `kg.definition/1` use (built by reusing `JsonWriter::definition()`'s own
+  `"symbol"` field) -- no `depth`/`seed` keys (this isn't a graph verb).
+- `"note"` is `null` when the resolved symbol has no note (text mode: exit
+  `3`, stderr says so; JSON mode: still exits `3`, with `"note": null`
+  printed to stdout so scripts don't have to parse stderr).
+- `"cache_outdated_files"` lists every `*.md` path (relative to the notes
+  dir) `openNotes()` found changed-on-disk-since-last-sync or new; whenever
+  non-empty, `kg notes show`/`status` also print `notes cache out of date
+  (N files changed) -- run \`kg notes sync\`` to STDERR (both text and JSON
+  mode -- stdout stays pure JSON under `--json`).
+- `--section SEC` (text mode only) prints just that section's text (`brief`/
+  `what`/`how`/`signature`) or numbered list (`pre`/`post`/`bugs`/
+  `suggestions`) instead of the full canonical block.
+
+## `kg.notes-status/1`
+
+Printed by `kg notes status -d DB [--stale] [--unfilled] [--unanchored]
+[--problems] [--json]`. Coverage report over every indexed FUNCTION/METHOD
+symbol (a `node` row with a `symbol` row), using the same overlay-aware
+`openNotes()` `show` uses.
+
+```json
+{ "kg_version": "0.1.0", "schema": "kg.notes-status/1", "database": "/repo/kg.srctrldb",
+  "counts": { "total": 42, "noted": 34, "filled": 23, "stale": 7, "unanchored": 8,
+              "signature_mismatch": 1, "problems": 9 },
+  "stale": ["a::b::c::add (src/ns.cpp.md:3)"],
+  "cache_outdated_files": [] }
+```
+
+- `"total"` is every FUNCTION/METHOD node with a `symbol` row, regardless of
+  whether it has a note; `"noted"` is the subset with one (i.e. `sync`'s
+  `matched` count restricted to FUNCTION/METHOD -- a note whose heading
+  happens to resolve to some other node kind isn't in this coverage
+  universe at all). `"filled"`/`"stale"`/`"unanchored"` are subsets of
+  `"noted"`. `"signature_mismatch"` (Phase 3) is the count of
+  `kg_note_problem` rows of kind `signature-mismatch` from the last `sync`.
+  `"problems"` is the `kg_note_problem` row count from the last `sync`
+  (list form only under `--problems`; the JSON schema for each entry
+  matches `kg.notes-sync/1`'s `"problems"[]`).
+- `--stale`/`--unfilled`/`--unanchored`/`--problems` each add the
+  corresponding list key (`"stale"`, `"unfilled"`, `"unanchored"`,
+  `"problems"`) only when the flag is passed; entries are `"qualified_name
+  (notes_path:line)"` strings, sorted.
+
+## `kg.notes-symbols/1`
+
+Printed by `kg notes symbols -d DB [--kind K]... [--file GLOB] [--json]`.
+Lists indexed symbols in exactly the shape
+`scripts/kg-notes-fake.py --symbols-json` consumes (Phase 3's `scaffold`
+shares this same code path).
+
+```json
+{ "kg_version": "0.1.0", "schema": "kg.notes-symbols/1", "database": "/repo/kg.srctrldb",
+  "symbols": [
+    { "source_path": "src/ns.cpp", "qualified_name": "a::b::c::add",
+      "signature": "int add(int, int)", "body_hash": "611a45463dfd2e2e",
+      "commit": "80412d5c0ea094fa408558865152a5e9755116ff", "node_id": 40 }
+  ] }
+```
+
+- Default `--kind` is `FUNCTION`+`METHOD`; any `--kind` (repeatable) narrows
+  to exactly the kinds given.
+- `"source_path"` is the symbol's definition location's file path, relative
+  to `meta.kg_repo_root` when available (else the raw indexed path); symbols
+  with no definition location at all are omitted (nothing to write a notes
+  block against). `--file GLOB` filters on this field.
+- `"commit"` is `meta.kg_repo_commit` (same value for every row).
+- Sorted deterministically by `(source_path, definition_line, qualified_name)`
+  (`definition_line` itself isn't a JSON field -- purely a sort key).
+
+## `kg.notes-scaffold/1`
+
+Printed by `kg notes scaffold -d DB [--notes-dir DIR] (--all | --file
+SRC-GLOB | --class QNAME | SYMBOL) [--kind K]... [--dry-run] [--json]`
+(Phase 3). Symbol selection reuses `kg.notes-symbols/1`'s own
+`kg::notes::listSymbols()` for `--all`/`--file`; `--class QNAME` resolves the
+class/struct like `kg query` and walks its members (`QueryEngine::members()`,
+including out-of-line method definitions); `SYMBOL` resolves a single symbol
+like `kg query` (same exit codes: `2` ambiguous, `3` not found/no definition
+location). Writing itself (`kg::notes::scaffoldNotes()`) is idempotent and
+non-destructive -- see `include/kg/notes/Scaffold.h`'s doc comment.
+
+```json
+{ "kg_version": "0.1.0", "schema": "kg.notes-scaffold/1",
+  "database": "/repo/kg.srctrldb", "notes_dir": "/repo/notes", "dry_run": false,
+  "symbols_selected": 12,
+  "files": [
+    { "path": "src/ns.cpp.md", "file_created": false, "appended": 3, "skipped_existing": 9 }
+  ],
+  "totals": { "files_created": 0, "files_touched": 1, "appended": 3, "skipped_existing": 9 } }
+```
+
+- `"symbols_selected"` is how many `SymbolRow`s were selected before
+  scaffolding (matches `kg.notes-symbols/1`'s row count for `--all`/
+  `--file`; `1` for `SYMBOL`; the member count for `--class`).
+- `"files"[].path` is relative to `"notes_dir"`; `"file_created"` is true
+  only for a brand-new file (a `# <source path>` heading plus every
+  selected symbol's block); `"appended"` is placeholder blocks newly
+  written to an EXISTING file; `"skipped_existing"` is selected symbols
+  that already had a matching block (via `matchBlock()`) -- never
+  rewritten. A file with `"appended": 0` on an existing file is left
+  completely untouched on disk (not even re-written with identical bytes),
+  so re-running `scaffold` with the same selection is a byte-for-byte
+  no-op the second time.
+- `"dry_run": true` computes and returns the identical shape without
+  writing anything.
+- Exit codes: `0` ok, `1` usage error (e.g. more than one of
+  `--all`/`--file`/`--class`/`SYMBOL`), `2` ambiguous `SYMBOL`/`--class`,
+  `3` not found / no definition location, `4` database error.
+
+## `kg.notes-accept/1`
+
+Printed by `kg notes accept -d DB (SYMBOL | --all | --file SRC-GLOB)
+[--json]` (Phase 3). Rewrites ONLY the `kg-hash`/`kg-commit` metadata
+comment of matching block(s) to the current body hash/commit -- `--all`/
+`--file` accept every currently-stale note (from the overlay-aware
+`kg::notes::openNotes()`); a bare `SYMBOL` accepts its note unconditionally
+(even if it wasn't stale -- a safe no-op re-anchor). Refuses (per file) to
+rewrite any notes file that isn't already at its `renderFile()` fixed point
+(see `kg.notes-fmt/1`). Re-runs `kg::notes::syncNotes()` afterward so
+`kg_note.stale` reflects the rewrite.
+
+```json
+{ "kg_version": "0.1.0", "schema": "kg.notes-accept/1",
+  "database": "/repo/kg.srctrldb",
+  "accepted": ["a::b::c::add\tfoo.cpp#..."],
+  "refused_files": [] }
+```
+
+- `"accepted"` lists the `serialized_name` (stable identity) of every note
+  whose `kg-hash`/`kg-commit` comment was rewritten, sorted.
+- `"refused_files"` lists `notes_path`s that were skipped -- either
+  unreadable, or not in canonical form (a `kg notes accept: '<path>' is not
+  in canonical form; run \`kg notes fmt\` first -- skipped` line is also
+  printed to stderr for each).
+- Exit codes: `0` ok, `1` usage error, `2` ambiguous `SYMBOL`, `3` not
+  found / no note, `4` one or more files refused (accept still applied to
+  every OTHER file/note it could).
+
+## `kg.notes-fmt/1`
+
+Printed by `kg notes fmt --notes-dir DIR [--check] [--json]` (Phase 3). No
+DB involved (same as `lint`): a plain canonical re-render
+(`parseNotesFile` -> `renderFile`) of every `*.md` under DIR.
+
+```json
+{ "kg_version": "0.1.0", "schema": "kg.notes-fmt/1",
+  "notes_dir": "/repo/notes", "check": false, "files": 8,
+  "changed": ["src/overloads.cpp.md"] }
+```
+
+- `"changed"` lists every file whose canonical re-render differs from its
+  on-disk bytes, relative to `"notes_dir"`; with `"check": false`
+  (default) those files are rewritten in place, with `"check": true`
+  nothing is written.
+- Exit codes: `0` ok (nothing to change, or `--check` found nothing),
+  `1` usage error, `3` `--check` found >=1 file that would change.
 
 ## Text-mode truncation footer
 

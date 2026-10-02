@@ -326,7 +326,11 @@ std::vector<int64_t> JsonWriter::dedupSortedByKindName(const std::vector<int64_t
 
 // --- kg.graph/1 --------------------------------------------------------------
 
-nlohmann::json JsonWriter::graph(const QueryContext& ctx, const kg::query::BfsResult& result, int64_t elapsedMs) const
+nlohmann::json JsonWriter::graph(
+    const QueryContext& ctx,
+    const kg::query::BfsResult& result,
+    int64_t elapsedMs,
+    const std::unordered_map<std::string, nlohmann::json>* notesBySerializedName) const
 {
     nlohmann::json j;
     j["kg_version"] = m_kgVersion;
@@ -380,9 +384,12 @@ nlohmann::json JsonWriter::graph(const QueryContext& ctx, const kg::query::BfsRe
     for (const kg::query::BfsNode& n : result.nodes)
     {
         const auto it = hydrated.find(n.id);
+        nlohmann::json nodeJson;
+        std::string serializedNameForNotes = n.serializedName;
         if (it != hydrated.end())
         {
-            nodesJson.push_back(nodeObjectFromHydrated(n.id, it->second, n.depth, seedSet.count(n.id) != 0));
+            nodeJson = nodeObjectFromHydrated(n.id, it->second, n.depth, seedSet.count(n.id) != 0);
+            serializedNameForNotes = it->second.serializedName;
         }
         else
         {
@@ -393,8 +400,14 @@ nlohmann::json JsonWriter::graph(const QueryContext& ctx, const kg::query::BfsRe
             fallback.found = false;
             fallback.kind = n.kind;
             fallback.serializedName = n.serializedName;
-            nodesJson.push_back(nodeObjectFromHydrated(n.id, fallback, n.depth, seedSet.count(n.id) != 0));
+            nodeJson = nodeObjectFromHydrated(n.id, fallback, n.depth, seedSet.count(n.id) != 0);
         }
+        if (notesBySerializedName != nullptr)
+        {
+            const auto noteIt = notesBySerializedName->find(serializedNameForNotes);
+            nodeJson["notes"] = noteIt != notesBySerializedName->end() ? noteIt->second : nlohmann::json(nullptr);
+        }
+        nodesJson.push_back(std::move(nodeJson));
     }
     j["nodes"] = std::move(nodesJson);
 

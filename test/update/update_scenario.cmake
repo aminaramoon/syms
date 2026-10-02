@@ -166,6 +166,16 @@ function(kg_update_json jsonvar expected_rc)
     set(${jsonvar} "${KG_OUT}" PARENT_SCOPE)
 endfunction()
 
+# kg_notes_json(<jsonvar> <expected-rc> <verb> <extra-args...>) -- runs
+# `kg notes <verb> -d WORK/inc.srctrldb --json <extra-args...>`, checks the
+# exit code, stores the parsed JSON text in <jsonvar>.
+function(kg_notes_json jsonvar expected_rc verb)
+    set(extra ${ARGN})
+    kg_run("kg notes ${verb}" "${WORK}" "${expected_rc}"
+        "${KG}" notes "${verb}" -d "${WORK}/inc.srctrldb" --json ${extra})
+    set(${jsonvar} "${KG_OUT}" PARENT_SCOPE)
+endfunction()
+
 # ------------------------------------------------------------------------
 # Step 1: prepare a real git repo, rewritten to glob its sources
 # ------------------------------------------------------------------------
@@ -567,5 +577,175 @@ assert_eq("kg_update_in_progress absent after a successful --in-place update" "$
 
 kg_index("${WORK}/full_inplace.srctrldb")
 kg_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_inplace.srctrldb")
+
+# ------------------------------------------------------------------------
+# Step (notes): Phase 3 of docs/NOTES_DESIGN.md -- scaffold/fill/sync/commit
+# notes for chain.cpp only (--file, not --all, so editing an unrelated
+# function later provably can't touch any note), then drive `kg update`
+# through edit/edit-elsewhere/accept/rename/delete scenarios, asserting via
+# `kg update --json`'s `notes` object and `kg notes status/sync --json`.
+# ------------------------------------------------------------------------
+
+set(NOTES_DIR "${WORK}/repo/notes")
+
+message(STATUS "update_scenario: notes step 1 -- scaffold + fill + sync + commit")
+kg_run("kg notes scaffold" "${WORK}" 0
+    "${KG}" notes scaffold -d "${WORK}/inc.srctrldb" --notes-dir "${NOTES_DIR}" --file "src/chain.cpp")
+if(NOT EXISTS "${NOTES_DIR}/src/chain.cpp.md")
+    message(FATAL_ERROR "update_scenario: notes scaffold didn't create ${NOTES_DIR}/src/chain.cpp.md")
+endif()
+
+if(DEFINED SCRIPTS AND NOT SCRIPTS STREQUAL "")
+    kg_run("kg-notes-fake --fill-existing" "${WORK}" 0
+        python3 "${SCRIPTS}/kg-notes-fake.py" --fill-existing "${NOTES_DIR}" --seed 5 --fill-ratio 0.6)
+endif()
+
+kg_notes_json(J 0 sync --notes-dir "${NOTES_DIR}")
+json_field(v "${J}" counts stale)
+assert_eq("notes step 1: freshly-synced notes have 0 stale" "${v}" "0")
+
+git_commit_all("${WORK}/repo" "notes: scaffold + fill chain.cpp notes")
+
+# ------------------------------------------------------------------------
+# Step (notes-a): edit level1's BODY -> exactly level1 goes stale, and
+# `kg update`'s summary reports notes.newly_stale == 1.
+# ------------------------------------------------------------------------
+
+message(STATUS "update_scenario: notes step a -- edit level1's body")
+file(READ "${WORK}/repo/src/chain.cpp" CHAIN_TEXT_NA)
+string(REPLACE
+    "int level1()\n{\n    return level2() + 1;\n}"
+    "int level1()\n{\n    return level2() + 2;\n}"
+    CHAIN_TEXT_NA "${CHAIN_TEXT_NA}")
+file(WRITE "${WORK}/repo/src/chain.cpp" "${CHAIN_TEXT_NA}")
+git_commit_all("${WORK}/repo" "notes-a: edit level1 body")
+reconfigure()
+
+kg_update_json(J 0)
+json_field(v "${J}" notes newly_stale)
+assert_eq("notes step a: exactly 1 newly-stale note (level1)" "${v}" "1")
+
+kg_notes_json(J 0 status --stale)
+string(JSON STALE_LEN LENGTH "${J}" stale)
+assert_eq("notes step a: exactly 1 stale note listed" "${STALE_LEN}" "1")
+json_field(v "${J}" stale 0)
+string(FIND "${v}" "level1" LEVEL1_POS)
+if(LEVEL1_POS LESS 0)
+    message(FATAL_ERROR "notes step a: expected the stale note to be level1, got: ${v}")
+endif()
+
+# ------------------------------------------------------------------------
+# Step (notes-b): edit a DIFFERENT (unnoted -- shapes.hpp was never
+# scaffolded, only chain.cpp was) function's body -> level1 stays the only
+# stale note, notes.newly_stale == 0.
+# ------------------------------------------------------------------------
+
+message(STATUS "update_scenario: notes step b -- edit an unnoted function elsewhere")
+file(READ "${WORK}/repo/include/shapes.hpp" SHAPES_TEXT_NB)
+string(REPLACE
+    "virtual double perimeterHint() const { return 0.0; }"
+    "virtual double perimeterHint() const { return 1.0; }"
+    SHAPES_TEXT_NB "${SHAPES_TEXT_NB}")
+file(WRITE "${WORK}/repo/include/shapes.hpp" "${SHAPES_TEXT_NB}")
+git_commit_all("${WORK}/repo" "notes-b: edit an unnoted function (Shape::perimeterHint)")
+reconfigure()
+
+kg_update_json(J 0)
+json_field(v "${J}" notes newly_stale)
+assert_eq("notes step b: nothing newly stale (the edited function has no note)" "${v}" "0")
+
+kg_notes_json(J 0 status --stale)
+string(JSON STALE_LEN LENGTH "${J}" stale)
+assert_eq("notes step b: level1 is STILL the only stale note" "${STALE_LEN}" "1")
+
+# ------------------------------------------------------------------------
+# Step (notes-c): `kg notes accept level1` -> stale clears; the markdown's
+# kg-hash changes but everything else in the file is byte-identical.
+# ------------------------------------------------------------------------
+
+message(STATUS "update_scenario: notes step c -- accept level1")
+file(READ "${NOTES_DIR}/src/chain.cpp.md" CHAIN_MD_BEFORE)
+
+kg_notes_json(J 0 accept level1 --notes-dir "${NOTES_DIR}")
+json_field(v "${J}" accepted)
+string(JSON ACCEPTED_LEN LENGTH "${J}" accepted)
+assert_eq("notes step c: exactly 1 note accepted" "${ACCEPTED_LEN}" "1")
+string(JSON REFUSED_LEN LENGTH "${J}" refused_files)
+assert_eq("notes step c: no files refused (canonical form)" "${REFUSED_LEN}" "0")
+
+file(READ "${NOTES_DIR}/src/chain.cpp.md" CHAIN_MD_AFTER)
+if(CHAIN_MD_BEFORE STREQUAL CHAIN_MD_AFTER)
+    message(FATAL_ERROR "notes step c: accept should have changed level1's kg-hash comment")
+endif()
+string(REGEX REPLACE "kg-hash: [0-9a-f]+" "kg-hash: X" NORM_BEFORE "${CHAIN_MD_BEFORE}")
+string(REGEX REPLACE "kg-commit: [0-9a-f]+" "kg-commit: X" NORM_BEFORE "${NORM_BEFORE}")
+string(REGEX REPLACE "kg-hash: [0-9a-f]+" "kg-hash: X" NORM_AFTER "${CHAIN_MD_AFTER}")
+string(REGEX REPLACE "kg-commit: [0-9a-f]+" "kg-commit: X" NORM_AFTER "${NORM_AFTER}")
+assert_eq("notes step c: accept only rewrites kg-hash/kg-commit comments -- everything else byte-identical" "${NORM_BEFORE}" "${NORM_AFTER}")
+
+kg_notes_json(J 0 status --stale)
+string(JSON STALE_LEN LENGTH "${J}" stale)
+assert_eq("notes step c: 0 stale notes after accepting level1" "${STALE_LEN}" "0")
+
+# ------------------------------------------------------------------------
+# Step (notes-d): `git mv` the noted source file -> its notes file is
+# reported as an "orphaned-file" problem.
+# ------------------------------------------------------------------------
+
+message(STATUS "update_scenario: notes step d -- git mv chain.cpp -> chain_renamed.cpp")
+execute_process(COMMAND "${GIT}" mv src/chain.cpp src/chain_renamed.cpp WORKING_DIRECTORY "${WORK}/repo"
+    RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
+if(NOT rc EQUAL 0)
+    message(FATAL_ERROR "git mv src/chain.cpp src/chain_renamed.cpp failed: ${err}")
+endif()
+git_commit_all("${WORK}/repo" "notes-d: rename chain.cpp -> chain_renamed.cpp")
+reconfigure()
+
+kg_update_json(J 0)
+
+kg_notes_json(J 0 sync --notes-dir "${NOTES_DIR}")
+json_field(v "${J}" counts orphaned_files)
+assert_ge("notes step d: chain.cpp.md is reported orphaned-file" "${v}" "1")
+
+set(FOUND_ORPHAN FALSE)
+string(JSON PROBLEMS_LEN LENGTH "${J}" problems)
+if(PROBLEMS_LEN GREATER 0)
+    math(EXPR PROBLEMS_LAST "${PROBLEMS_LEN} - 1")
+    foreach(i RANGE ${PROBLEMS_LAST})
+        json_field(pkind "${J}" problems ${i} kind)
+        if(pkind STREQUAL "orphaned-file")
+            set(FOUND_ORPHAN TRUE)
+        endif()
+    endforeach()
+endif()
+if(NOT FOUND_ORPHAN)
+    message(FATAL_ERROR "notes step d: expected an 'orphaned-file' problem in: ${J}")
+endif()
+
+# ------------------------------------------------------------------------
+# Step (notes-e): delete a noted function (factorial, and its one call site
+# in runChain so the TU still compiles) -> its block becomes "unmatched"
+# after `kg update` + `kg notes sync`.
+# ------------------------------------------------------------------------
+
+message(STATUS "update_scenario: notes step e -- delete factorial()")
+file(READ "${WORK}/repo/src/chain_renamed.cpp" CHAIN_TEXT_NE)
+string(REPLACE
+    "int factorial(int n)\n{\n    if (n <= 1)\n    {\n        return 1;\n    }\n    return n * factorial(n - 1);\n}\n\n"
+    ""
+    CHAIN_TEXT_NE "${CHAIN_TEXT_NE}")
+string(REPLACE
+    "return level0() + factorial(5) + ping(4);"
+    "return level0() + ping(4);"
+    CHAIN_TEXT_NE "${CHAIN_TEXT_NE}")
+file(WRITE "${WORK}/repo/src/chain_renamed.cpp" "${CHAIN_TEXT_NE}")
+git_commit_all("${WORK}/repo" "notes-e: delete factorial()")
+reconfigure()
+
+kg_update_json(J 0)
+
+kg_notes_json(J 0 sync --notes-dir "${NOTES_DIR}")
+json_field(v "${J}" counts unmatched)
+assert_ge("notes step e: factorial's block is now unmatched" "${v}" "1")
 
 message(STATUS "update_scenario: ALL STEPS PASSED")

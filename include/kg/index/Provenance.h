@@ -95,6 +95,15 @@ struct Provenance
 
     std::string indexedAtUtc;     // ISO-8601 UTC timestamp of the full index that created this provenance
     std::string lastUpdateAtUtc;  // ISO-8601 UTC timestamp of the most recent `kg update` (empty until Phase 2)
+
+    // Phase 3 of docs/NOTES_DESIGN.md: `kg index --notes-dir DIR`'s absolute
+    // path, written to its OWN `meta.kg_notes_dir` key (writeProvenance()),
+    // deliberately NOT folded into kg_options_json -- changing it must never
+    // count as an "option change" for `kg update`'s stored-options
+    // comparison. Empty when --notes-dir wasn't given (the default,
+    // `<kg_repo_root>/notes` if it exists, is resolved lazily by every
+    // notes-aware verb instead -- see Cli.cpp's resolveNotesDirDefault()).
+    std::string notesDir;
 };
 
 // Writes every Provenance field into `meta` (see the kg_* key list in

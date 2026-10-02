@@ -15,6 +15,18 @@
 namespace kg::out
 {
 
+// Just enough of a `kg notes` note (kg::notes::StoredNote) for text
+// rendering under a `kg query context` tree node -- kept here (rather than
+// including kg/notes/NotesStore.h) so kg_out never links kg_notes; the CLI
+// (which links both) builds this map from the real StoredNote objects.
+struct NodeNoteText
+{
+    std::string brief;
+    bool filled = false;
+    bool stale = false;
+    std::string fullMarkdown;  // rendered block markdown, used only when notesFull is true
+};
+
 // Renders a BFS/graph result as an indented tree: one line per node,
 // indented by BfsNode::depth, showing "[KIND] display name  (file:line)".
 // `locations`, if given, supplies the optional "(file:line)" suffix (see
@@ -23,7 +35,19 @@ namespace kg::out
 // `showEdgeList = true` to also itemize them compactly underneath (kept
 // separate from the tree since a graph's edge list rarely reads well
 // interleaved with a node tree).
-void writeBfsResult(std::ostream& out, const kg::query::BfsResult& result, const std::unordered_map<int64_t, std::string>& locations = {}, bool showEdgeList = false);
+// `notes` (if non-null) prints, indented one level further than the node
+// line, a "brief" line with a "[stale]"/"[unfilled]" tag for any node found
+// in the map (nodes absent from the map -- no note -- print nothing extra);
+// when `notesFull` is also true, the node's `fullMarkdown` is printed
+// (indented) instead of just the brief line. Used by `kg query context`'s
+// text mode; every other graph verb passes `notes == nullptr`.
+void writeBfsResult(
+    std::ostream& out,
+    const kg::query::BfsResult& result,
+    const std::unordered_map<int64_t, std::string>& locations = {},
+    bool showEdgeList = false,
+    const std::unordered_map<int64_t, NodeNoteText>* notes = nullptr,
+    bool notesFull = false);
 
 // One line per reference hit: "kind  file:line:col  context -> target".
 void writeReferences(std::ostream& out, const kg::query::ReferencesResult& result);

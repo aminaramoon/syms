@@ -79,7 +79,21 @@ public:
     // `result` (kept as an explicit parameter, not measured internally, so
     // callers -- including tests wanting byte-identical determinism -- fully
     // control it).
-    nlohmann::json graph(const QueryContext& ctx, const kg::query::BfsResult& result, int64_t elapsedMs) const;
+    // `notesBySerializedName`, if non-null, adds a "notes" field to every
+    // node object: the map value (already the full kg.note/1-shaped JSON
+    // object, or JSON null) for that node's serialized_name if present,
+    // else JSON null. When the pointer is null (every existing graph verb),
+    // no "notes" field is added at all -- only `kg query context` (Phase 4)
+    // passes a non-null map, so kg.graph/1's shape for callers/callees/etc.
+    // is byte-for-byte unchanged. Kept as a plain
+    // unordered_map<string, nlohmann::json> (not a kg::notes::StoredNote
+    // map) so kg_out never has to depend on kg_notes -- the CLI, which
+    // links both, builds this map from the real StoredNote objects.
+    nlohmann::json graph(
+        const QueryContext& ctx,
+        const kg::query::BfsResult& result,
+        int64_t elapsedMs,
+        const std::unordered_map<std::string, nlohmann::json>* notesBySerializedName = nullptr) const;
 
     // kg.references/1.
     nlohmann::json references(const QueryContext& ctx, const kg::query::ReferencesResult& result, int64_t elapsedMs) const;
