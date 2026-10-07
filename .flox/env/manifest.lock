@@ -55,7 +55,8 @@
     "profile": {},
     "options": {
       "systems": [
-        "x86_64-linux"
+        "x86_64-linux",
+        "aarch64-linux"
       ]
     }
   },
@@ -63,17 +64,46 @@
     {
       "attr_path": "catch2_3",
       "broken": false,
+      "derivation": "/nix/store/7cah7jj89xn85rpnifqhgnhbkmqpr4gj-catch2-3.15.3.drv",
+      "description": "Modern, C++-native, test framework for unit-tests",
+      "install_id": "catch2",
+      "license": "BSL-1.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "catch2-3.15.3",
+      "pname": "catch2_3",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T05:30:00.068921Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "catch2-3.15.3",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/adzww0zfy1l5sl9mqrbzkal8f78b2max-catch2-3.15.3"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "catch2_3",
+      "broken": false,
       "derivation": "/nix/store/qcgzb5arbicf8wxrkv2lx7qbqr9qwq8j-catch2-3.15.3.drv",
       "description": "Modern, C++-native, test framework for unit-tests",
       "install_id": "catch2",
       "license": "BSL-1.0",
-      "locked_url": "https://github.com/flox/nixpkgs?rev=20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
       "name": "catch2-3.15.3",
       "pname": "catch2_3",
-      "rev": "20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
-      "rev_count": 1076192,
-      "rev_date": "2026-09-19T02:38:33Z",
-      "scrape_date": "2026-09-20T06:07:10.642893Z",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T06:06:00.720315Z",
       "stabilities": [
         "unstable"
       ],
@@ -92,17 +122,47 @@
     {
       "attr_path": "cmake",
       "broken": false,
+      "derivation": "/nix/store/nx7hdgym19r7k8b1lyk3r2gxydnsya8r-cmake-4.4.2.drv",
+      "description": "Cross-platform, open-source build system generator",
+      "install_id": "cmake",
+      "license": "BSD-3-Clause",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "cmake-4.4.2",
+      "pname": "cmake",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T05:30:00.351835Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "4.4.2",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "debug": "/nix/store/zylj9sxyv3f1gvl76jyzmxmsd4g89vhg-cmake-4.4.2-debug",
+        "out": "/nix/store/xi9gp9n1j1kv208bn3a5zgsgfcqx8lf0-cmake-4.4.2"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "cmake",
+      "broken": false,
       "derivation": "/nix/store/g9l85mf8f8lbnprx2i3h8b927xbrcwg2-cmake-4.4.2.drv",
       "description": "Cross-platform, open-source build system generator",
       "install_id": "cmake",
       "license": "BSD-3-Clause",
-      "locked_url": "https://github.com/flox/nixpkgs?rev=20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
       "name": "cmake-4.4.2",
       "pname": "cmake",
-      "rev": "20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
-      "rev_count": 1076192,
-      "rev_date": "2026-09-19T02:38:33Z",
-      "scrape_date": "2026-09-20T06:07:10.955384Z",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T06:06:01.021383Z",
       "stabilities": [
         "unstable"
       ],
@@ -122,17 +182,52 @@
     {
       "attr_path": "gcc",
       "broken": false,
+      "derivation": "/nix/store/27pyw666mq7gcya5zskf4lnhbds89092-gcc-wrapper-15.3.0.drv",
+      "description": "GNU Compiler Collection, version 15.3.0 (wrapper script)",
+      "install_id": "gcc",
+      "license": "GPL-3.0-or-later",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "gcc-wrapper-15.3.0",
+      "pname": "gcc",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T05:30:01.638423Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "15.3.0",
+      "outputs_to_install": [
+        "man",
+        "out",
+        "out",
+        "out",
+        "out"
+      ],
+      "outputs": {
+        "info": "/nix/store/x17rgagvkg5s7mqbv7mqp1asa6xyhc8p-gcc-wrapper-15.3.0-info",
+        "man": "/nix/store/4vw8y282g8p3f58rfxkn9k4z84rv10s9-gcc-wrapper-15.3.0-man",
+        "out": "/nix/store/z2qkl46kv87zcs2sfwfjgc75nq0hbzhf-gcc-wrapper-15.3.0"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "gcc",
+      "broken": false,
       "derivation": "/nix/store/lyb848yjq8pnlwkqnzlnkvjzqa4cvaqh-gcc-wrapper-15.3.0.drv",
       "description": "GNU Compiler Collection, version 15.3.0 (wrapper script)",
       "install_id": "gcc",
       "license": "GPL-3.0-or-later",
-      "locked_url": "https://github.com/flox/nixpkgs?rev=20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
       "name": "gcc-wrapper-15.3.0",
       "pname": "gcc",
-      "rev": "20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
-      "rev_count": 1076192,
-      "rev_date": "2026-09-19T02:38:33Z",
-      "scrape_date": "2026-09-20T06:07:12.313831Z",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T06:06:02.420758Z",
       "stabilities": [
         "unstable"
       ],
@@ -141,6 +236,7 @@
       "outputs_to_install": [
         "man",
         "man",
+        "out",
         "out",
         "out",
         "out",
@@ -158,23 +254,57 @@
     {
       "attr_path": "git",
       "broken": false,
-      "derivation": "/nix/store/5rkd99cklwdkxksl31vx4rpzdi4bl58a-git-2.55.0.drv",
+      "derivation": "/nix/store/vq6xiwp1j64iljrghwcinz80a7x3dxgc-git-2.55.0.drv",
       "description": "Distributed version control system",
       "install_id": "git",
       "license": "GPL-2.0",
-      "locked_url": "https://github.com/flox/nixpkgs?rev=20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
       "name": "git-2.55.0",
       "pname": "git",
-      "rev": "20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
-      "rev_count": 1076192,
-      "rev_date": "2026-09-19T02:38:33Z",
-      "scrape_date": "2026-09-20T06:07:12.493067Z",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T05:30:01.813743Z",
       "stabilities": [
         "unstable"
       ],
       "unfree": false,
       "version": "2.55.0",
       "outputs_to_install": [
+        "out",
+        "out",
+        "out"
+      ],
+      "outputs": {
+        "debug": "/nix/store/ldxw9zf2xy8f6zbky0scjiqch10jdp7w-git-2.55.0-debug",
+        "doc": "/nix/store/ka7q0r9bxnz0jmi2lh58qx5ijcd3lccf-git-2.55.0-doc",
+        "out": "/nix/store/wnv9pqby90h45gyha0xwfp1blhmrrcv1-git-2.55.0"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "git",
+      "broken": false,
+      "derivation": "/nix/store/5rkd99cklwdkxksl31vx4rpzdi4bl58a-git-2.55.0.drv",
+      "description": "Distributed version control system",
+      "install_id": "git",
+      "license": "GPL-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "git-2.55.0",
+      "pname": "git",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T06:06:02.602142Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "2.55.0",
+      "outputs_to_install": [
+        "out",
         "out",
         "out"
       ],
@@ -190,17 +320,50 @@
     {
       "attr_path": "llvmPackages_21.libclang",
       "broken": false,
+      "derivation": "/nix/store/5lrp089bsd282xy8mww5cl3ab58anjpg-clang-21.1.8.drv",
+      "description": "C language family frontend for LLVM",
+      "install_id": "libclang",
+      "license": "[ NCSA, [ Apache-2.0 LLVM-exception ] ]",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "clang-21.1.8",
+      "pname": "libclang",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T05:30:31.491219Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "21.1.8",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "debug": "/nix/store/0852ra5mll3bxaqy0bn7p155238dpaxw-clang-21.1.8-debug",
+        "dev": "/nix/store/31hwlnnzg16f5ryqd76h4x92x33vnyqw-clang-21.1.8-dev",
+        "lib": "/nix/store/hgxkpsr1cyzqf7yhglf4mcmm3rjilsnf-clang-21.1.8-lib",
+        "out": "/nix/store/laxggi64hw3kbfq3rnyfig6wxg6wh6m6-clang-21.1.8",
+        "python": "/nix/store/hrjphm7b0b5cvvxqqv0gy8mxcza282jl-clang-21.1.8-python"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "llvmPackages_21.libclang",
+      "broken": false,
       "derivation": "/nix/store/lg4cbfppj1fyqq4fi9bkc9dflydzjsc6-clang-21.1.8.drv",
       "description": "C language family frontend for LLVM",
       "install_id": "libclang",
       "license": "[ NCSA, [ Apache-2.0 LLVM-exception ] ]",
-      "locked_url": "https://github.com/flox/nixpkgs?rev=20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
       "name": "clang-21.1.8",
       "pname": "libclang",
-      "rev": "20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
-      "rev_count": 1076192,
-      "rev_date": "2026-09-19T02:38:33Z",
-      "scrape_date": "2026-09-20T06:07:44.028659Z",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T06:06:33.957981Z",
       "stabilities": [
         "unstable"
       ],
@@ -223,17 +386,46 @@
     {
       "attr_path": "ninja",
       "broken": false,
+      "derivation": "/nix/store/z4gz9259pa99nnggvnzmidwgr04z220l-ninja-1.13.2.drv",
+      "description": "Small build system with a focus on speed",
+      "install_id": "ninja",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "ninja-1.13.2",
+      "pname": "ninja",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T05:30:38.506077Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "1.13.2",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/ijbipgac9wyp1n5smvkd8fczs9jyr26g-ninja-1.13.2"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "ninja",
+      "broken": false,
       "derivation": "/nix/store/mp3193cvfyy8byfczcz58646w0mhsi3s-ninja-1.13.2.drv",
       "description": "Small build system with a focus on speed",
       "install_id": "ninja",
       "license": "Apache-2.0",
-      "locked_url": "https://github.com/flox/nixpkgs?rev=20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
       "name": "ninja-1.13.2",
       "pname": "ninja",
-      "rev": "20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
-      "rev_count": 1076192,
-      "rev_date": "2026-09-19T02:38:33Z",
-      "scrape_date": "2026-09-20T06:07:51.734170Z",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T06:06:41.549352Z",
       "stabilities": [
         "unstable"
       ],
@@ -252,17 +444,47 @@
     {
       "attr_path": "nlohmann_json",
       "broken": false,
+      "derivation": "/nix/store/7l9vnzsrz06487xwm7gm5cq6lbs1fnbb-nlohmann_json-3.12.0.drv",
+      "description": "JSON for Modern C++",
+      "install_id": "nlohmann_json",
+      "license": "MIT",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "nlohmann_json-3.12.0",
+      "pname": "nlohmann_json",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T05:30:38.876024Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "3.12.0",
+      "outputs_to_install": [
+        "out",
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/di43ny2idx5kmh6zaig6g3h0wnb3fqyd-nlohmann_json-3.12.0"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "nlohmann_json",
+      "broken": false,
       "derivation": "/nix/store/8f623qrk513rxkd5n4dwg3n80nk6bpqq-nlohmann_json-3.12.0.drv",
       "description": "JSON for Modern C++",
       "install_id": "nlohmann_json",
       "license": "MIT",
-      "locked_url": "https://github.com/flox/nixpkgs?rev=20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
       "name": "nlohmann_json-3.12.0",
       "pname": "nlohmann_json",
-      "rev": "20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
-      "rev_count": 1076192,
-      "rev_date": "2026-09-19T02:38:33Z",
-      "scrape_date": "2026-09-20T06:07:52.124642Z",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T06:06:41.948959Z",
       "stabilities": [
         "unstable"
       ],
@@ -282,17 +504,17 @@
     {
       "attr_path": "pkg-config",
       "broken": false,
-      "derivation": "/nix/store/4f4faayl06s0gvr7cnvcpvrcwh7lxaan-pkg-config-wrapper-0.29.2.drv",
+      "derivation": "/nix/store/mlfnx5bmdfzasmi8ib6yqhy0cb8b89j3-pkg-config-wrapper-0.29.2.drv",
       "description": "Tool that allows packages to find out information about other packages (wrapper script)",
       "install_id": "pkg-config",
       "license": "GPL-2.0-or-later",
-      "locked_url": "https://github.com/flox/nixpkgs?rev=20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
       "name": "pkg-config-wrapper-0.29.2",
       "pname": "pkg-config",
-      "rev": "20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
-      "rev_count": 1076192,
-      "rev_date": "2026-09-19T02:38:33Z",
-      "scrape_date": "2026-09-20T06:08:12.115502Z",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T05:30:57.850702Z",
       "stabilities": [
         "unstable"
       ],
@@ -300,6 +522,42 @@
       "version": "0.29.2",
       "outputs_to_install": [
         "man",
+        "out",
+        "out",
+        "out",
+        "out"
+      ],
+      "outputs": {
+        "doc": "/nix/store/l8kkikazpaqm903rswiyphzhf7mphivp-pkg-config-wrapper-0.29.2-doc",
+        "man": "/nix/store/40389sip5yjizpbjldjz25w1jz05snlb-pkg-config-wrapper-0.29.2-man",
+        "out": "/nix/store/96rqsbg8z242724qy85sbld7dbf4hipr-pkg-config-wrapper-0.29.2"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "pkg-config",
+      "broken": false,
+      "derivation": "/nix/store/4f4faayl06s0gvr7cnvcpvrcwh7lxaan-pkg-config-wrapper-0.29.2.drv",
+      "description": "Tool that allows packages to find out information about other packages (wrapper script)",
+      "install_id": "pkg-config",
+      "license": "GPL-2.0-or-later",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "pkg-config-wrapper-0.29.2",
+      "pname": "pkg-config",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T06:07:01.882285Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "0.29.2",
+      "outputs_to_install": [
+        "man",
+        "out",
         "out",
         "out",
         "out"
@@ -316,23 +574,64 @@
     {
       "attr_path": "sqlite",
       "broken": false,
-      "derivation": "/nix/store/cqnsh5zkzpngh81wgpf79qgzm2prv5dr-sqlite-3.53.3.drv",
+      "derivation": "/nix/store/rwwp595k3sgmg2z9zs9inax7yhflw66d-sqlite-3.53.3.drv",
       "description": "Self-contained, serverless, zero-configuration, transactional SQL database engine",
       "install_id": "sqlite",
       "license": "blessing",
-      "locked_url": "https://github.com/flox/nixpkgs?rev=20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
       "name": "sqlite-3.53.3",
       "pname": "sqlite",
-      "rev": "20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
-      "rev_count": 1076192,
-      "rev_date": "2026-09-19T02:38:33Z",
-      "scrape_date": "2026-09-20T06:09:52.698340Z",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T05:32:35.011611Z",
       "stabilities": [
         "unstable"
       ],
       "unfree": false,
       "version": "3.53.3",
       "outputs_to_install": [
+        "bin",
+        "bin",
+        "bin",
+        "bin",
+        "bin",
+        "man",
+        "man"
+      ],
+      "outputs": {
+        "bin": "/nix/store/1ag9nx63cvsq8144696shw1yx7xclk6b-sqlite-3.53.3-bin",
+        "debug": "/nix/store/p3ax2jqsyp5lrkd24gwr5glb145cxc42-sqlite-3.53.3-debug",
+        "dev": "/nix/store/5q261wj3mn5z5q45xjx8yjx8z7ak49vm-sqlite-3.53.3-dev",
+        "doc": "/nix/store/nfr4z7i3vivcynvsywd36268mx5f99dv-sqlite-3.53.3-doc",
+        "man": "/nix/store/qx8zyv7pk7pfal0q8440iscxarvbq22g-sqlite-3.53.3-man",
+        "out": "/nix/store/1z13nb8zh15n25d3ym19079kd3qb0yyl-sqlite-3.53.3"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "sqlite",
+      "broken": false,
+      "derivation": "/nix/store/cqnsh5zkzpngh81wgpf79qgzm2prv5dr-sqlite-3.53.3.drv",
+      "description": "Self-contained, serverless, zero-configuration, transactional SQL database engine",
+      "install_id": "sqlite",
+      "license": "blessing",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "sqlite-3.53.3",
+      "pname": "sqlite",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T06:08:41.943889Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "3.53.3",
+      "outputs_to_install": [
+        "bin",
         "bin",
         "bin",
         "bin",

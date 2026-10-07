@@ -121,6 +121,6 @@ on-activate = '''
 
 ## Other Environment Options -----------------------------------------
 [options]
-systems = ["x86_64-linux"]
+systems = ["x86_64-linux", "aarch64-linux"]
 # Uncomment to disable CUDA detection.
 # cuda-detection = false
