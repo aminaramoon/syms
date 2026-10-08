@@ -497,6 +497,15 @@ assert_eq("step g (dirty): repo.to == HEAD (uncommitted change tracked via dirty
 kg_index("${WORK}/full_g1.srctrldb")
 kg_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_g1.srctrldb")
 
+# Same uncommitted bytes: the second update must not parse chain.cpp again.
+file(SHA256 "${WORK}/inc.srctrldb" DB_BEFORE_DRY_G)
+kg_update_json(J 5 --dry-run)
+file(SHA256 "${WORK}/inc.srctrldb" DB_AFTER_DRY_G)
+assert_eq("step g repeated dry-run: database byte-identical" "${DB_AFTER_DRY_G}" "${DB_BEFORE_DRY_G}")
+kg_update_json(J 5)
+json_field(v "${J}" tus to_index)
+assert_eq("step g repeated dirty update: zero TUs" "${v}" "0")
+
 message(STATUS "update_scenario: step g -- revert the uncommitted edit")
 execute_process(COMMAND "${GIT}" checkout -q -- src/chain.cpp WORKING_DIRECTORY "${WORK}/repo"
     RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)

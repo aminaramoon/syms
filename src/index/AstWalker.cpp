@@ -805,6 +805,7 @@ LocalId AstWalker::fileFactId(CXFile file)
     fact.language = "cpp";
     fact.indexed = info.indexed;
     fact.system = info.system;
+    fact.contentHash = info.contentHash;
     return m_sink.file(std::move(fact));
 }
 

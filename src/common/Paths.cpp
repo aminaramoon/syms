@@ -32,4 +32,14 @@ std::string normalize(const std::string& path)
     return p.lexically_normal().string();
 }
 
+const std::string& NormalizationCache::operator()(const std::string& path)
+{
+    const auto it = m_paths.find(path);
+    if (it != m_paths.end())
+    {
+        return it->second;
+    }
+    return m_paths.emplace(path, normalize(path)).first->second;
+}
+
 }  // namespace kg::common::paths

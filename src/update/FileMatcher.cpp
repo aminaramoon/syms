@@ -19,7 +19,8 @@ namespace
 // "first-write-wins is arbitrary, don't rely on it" -- collisions here mean
 // two DB rows / two CDB entries normalize to the same file, which shouldn't
 // happen in practice).
-std::unordered_map<std::string, std::string> buildNormalizedIndex(const std::unordered_set<std::string>& originals)
+std::unordered_map<std::string, std::string> buildNormalizedIndex(
+    const std::unordered_set<std::string>& originals, kg::common::paths::NormalizationCache& normalizePath)
 {
     std::unordered_map<std::string, std::string> index;
     for (const std::string& original : originals)
@@ -29,7 +30,8 @@ std::unordered_map<std::string, std::string> buildNormalizedIndex(const std::uno
     return index;
 }
 
-std::unordered_map<std::string, std::string> buildNormalizedCdbIndex(const std::vector<kg::index::CompileEntry>& cdb)
+std::unordered_map<std::string, std::string> buildNormalizedCdbIndex(
+    const std::vector<kg::index::CompileEntry>& cdb, kg::common::paths::NormalizationCache& normalizePath)
 {
     std::unordered_map<std::string, std::string> index;
     for (const kg::index::CompileEntry& entry : cdb)
@@ -43,10 +45,16 @@ std::unordered_map<std::string, std::string> buildNormalizedCdbIndex(const std::
 
 MatchResult matchChanged(const MatchInput& input)
 {
+    kg::common::paths::NormalizationCache normalizePath;
+    return matchChanged(input, normalizePath);
+}
+
+MatchResult matchChanged(const MatchInput& input, kg::common::paths::NormalizationCache& normalizePath)
+{
     MatchResult result;
 
-    const std::unordered_map<std::string, std::string> dbIndex = buildNormalizedIndex(input.dbFilePaths);
-    const std::unordered_map<std::string, std::string> cdbIndex = buildNormalizedCdbIndex(input.cdb);
+    const std::unordered_map<std::string, std::string> dbIndex = buildNormalizedIndex(input.dbFilePaths, normalizePath);
+    const std::unordered_map<std::string, std::string> cdbIndex = buildNormalizedCdbIndex(input.cdb, normalizePath);
 
     for (const ChangedFile& change : input.changes)
     {
@@ -86,6 +94,14 @@ MatchResult matchChanged(const MatchInput& input)
 
 std::vector<kg::index::CompileEntry> selectEntries(
     const std::vector<kg::index::CompileEntry>& entries, const std::unordered_set<std::string>& normalizedPaths)
+{
+    kg::common::paths::NormalizationCache normalizePath;
+    return selectEntries(entries, normalizedPaths, normalizePath);
+}
+
+std::vector<kg::index::CompileEntry> selectEntries(
+    const std::vector<kg::index::CompileEntry>& entries, const std::unordered_set<std::string>& normalizedPaths,
+    kg::common::paths::NormalizationCache& normalizePath)
 {
     std::vector<kg::index::CompileEntry> selected;
     for (const kg::index::CompileEntry& entry : entries)

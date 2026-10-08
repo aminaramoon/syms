@@ -51,6 +51,8 @@ struct FileFact
     std::string language;
     bool indexed = false;
     bool system = false;
+    // SHA-256 of libclang's exact parsed bytes; empty means unavailable.
+    std::string contentHash;
 };
 
 struct SymbolFact

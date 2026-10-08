@@ -13,6 +13,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "kg/common/ContentHash.h"
 #include "kg/db/Database.h"
 #include "kg/db/Meta.h"
 #include "kg/db/WritableDb.h"
@@ -235,6 +236,8 @@ struct EffectiveOptions
 int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
 {
     const auto runStart = std::chrono::steady_clock::now();
+    // One cache shared by planning, matching and selection; never across runs.
+    kg::common::paths::NormalizationCache normalizePath;
     UpdateSummary summary;
     summary.database = options.dbPath;
     summary.dryRun = options.dryRun;
@@ -599,6 +602,95 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     {
         tuByNormPath[normalizePath(row.path)] = &row;
     }
+    // Suppress only content-derived changes, BEFORE adding flag changes or
+    // retry seeds. --files and explicit revisions retain their force semantics.
+    // A missing/unreadable file, absent/unknown fingerprint, or new TU always
+    // takes the conservative path. Previous dirty paths still participate:
+    // reverting one differs from its indexed hash and must be re-indexed.
+    if (!changes.empty() && options.explicitFiles.empty() && options.fromRev.empty() && options.toRev.empty() && !diverges)
+    {
+        try
+        {
+            kg::db::Database db(options.dbPath, 0);
+            bool haveFingerprints = false;
+            db.run("SELECT 1 FROM sqlite_master WHERE type='table' AND name='kg_file_fingerprint'",
+                [&](sqlite3_stmt*) { haveFingerprints = true; });
+            if (haveFingerprints)
+            {
+                std::unordered_set<std::string> candidatePaths;
+                for (const auto& change : changes)
+                {
+                    if (change.kind == ChangeKind::Modified || change.kind == ChangeKind::Added)
+                    {
+                        candidatePaths.insert(normalizePath(change.newPath));
+                    }
+                }
+                std::unordered_map<std::string, std::string> indexedHashes;
+                // Fetch hashes only for changed candidates, not the whole corpus.
+                for (const auto& [id, path] : filePathById)
+                {
+                    const std::string norm = normalizePath(path);
+                    if (candidatePaths.count(norm) == 0)
+                    {
+                        continue;
+                    }
+                    db.run(
+                        "SELECT fp.sha256 FROM kg_file_fingerprint fp JOIN file f ON f.id=fp.file_node_id "
+                        "WHERE f.id=?1 AND f.indexed=1 AND f.complete=1",
+                        [&](sqlite3_stmt* stmt) { sqlite3_bind_int64(stmt, 1, id); },
+                        [&](sqlite3_stmt* stmt) {
+                            const char* hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+                            if (hash != nullptr)
+                            {
+                                auto [it, inserted] = indexedHashes.emplace(norm, hash);
+                                if (!inserted && it->second != hash)
+                                {
+                                    it->second.clear(); // ambiguous aliases: don't skip
+                                }
+                            }
+                        });
+                }
+                std::unordered_set<std::string> newCdbPaths;
+                for (const auto& entry : cdb)
+                {
+                    const std::string norm = normalizePath(entry.file);
+                    if (tuByNormPath.find(norm) == tuByNormPath.end())
+                    {
+                        newCdbPaths.insert(norm);
+                    }
+                }
+                std::unordered_map<std::string, std::optional<std::string>> diskHashes;
+                changes.erase(std::remove_if(changes.begin(), changes.end(), [&](const ChangedFile& change) {
+                    if (change.kind != ChangeKind::Modified && change.kind != ChangeKind::Added)
+                    {
+                        return false; // deletions/renames must invalidate path identity
+                    }
+                    const std::string norm = normalizePath(change.newPath);
+                    if (newCdbPaths.count(norm) != 0)
+                    {
+                        return false; // file was a header, but is now also a new TU
+                    }
+                    const auto indexed = indexedHashes.find(norm);
+                    if (indexed == indexedHashes.end() || indexed->second.empty())
+                    {
+                        return false;
+                    }
+                    auto disk = diskHashes.find(norm);
+                    if (disk == diskHashes.end())
+                    {
+                        disk = diskHashes.emplace(norm, kg::common::fileContentHash(change.newPath)).first;
+                    }
+                    return disk->second.has_value() && *disk->second == indexed->second;
+                }), changes.end());
+            }
+        }
+        catch (const std::exception& e)
+        {
+            reportError(options, "failed to compare indexed content: " + std::string(e.what()));
+            return 1;
+        }
+    }
+
     const std::unordered_map<std::string, kg::index::PathArgsInfo> cdbPathHashes = kg::index::pathArgsHashes(cdb);
     std::unordered_set<std::string> cdbNormPaths;
     std::unordered_set<std::string> flaggedNormPaths;
@@ -723,7 +815,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     matchInput.changes = changes;
     matchInput.dbFilePaths = dbFilePaths;
     matchInput.cdb = cdb;
-    const MatchResult match = matchChanged(matchInput);
+    const MatchResult match = matchChanged(matchInput, normalizePath);
 
     summary.changedCount = static_cast<uint32_t>(match.changedInDb.size());
     summary.deletedCount = static_cast<uint32_t>(match.deleted.size());
@@ -951,7 +1043,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
         reindexNorm.insert(normalizePath(p));
     }
 
-    std::vector<kg::index::CompileEntry> presetEntries = selectEntries(cdb, reindexNorm);
+    std::vector<kg::index::CompileEntry> presetEntries = selectEntries(cdb, reindexNorm, normalizePath);
     std::vector<kg::index::CompileEntry> filteredEntries;
     filteredEntries.reserve(presetEntries.size());
     uint32_t skippedMissing = 0;

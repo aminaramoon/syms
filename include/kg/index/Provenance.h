@@ -77,6 +77,15 @@ inline constexpr const char* kKgTuDdl =
     "entry_count INTEGER NOT NULL DEFAULT 1"
     ");";
 
+// Optional optimization state. Old databases remain updateable: missing
+// hashes conservatively trigger re-indexing, and checkpoints fill them in.
+// FK lifetime matches file facts, so invalidation/deletion removes stale hashes.
+inline constexpr const char* kKgFileFingerprintDdl =
+    "CREATE TABLE IF NOT EXISTS kg_file_fingerprint("
+    "file_node_id INTEGER PRIMARY KEY REFERENCES file(id) ON DELETE CASCADE, "
+    "sha256 TEXT NOT NULL"
+    ");";
+
 struct Provenance
 {
     std::string kgVersion;

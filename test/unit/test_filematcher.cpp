@@ -1,6 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <unistd.h>
 
 #include "kg/update/FileMatcher.h"
 
@@ -34,6 +37,46 @@ TEST_CASE("filematcher: normalizePath collapses ./ and ../ for nonexistent paths
 {
     REQUIRE(normalizePath("/repo/./a/../b.cpp") == "/repo/b.cpp");
     REQUIRE(normalizePath("/repo/b.cpp") == "/repo/b.cpp");
+}
+
+TEST_CASE("filematcher: normalization cache preserves spelling and is shared across matching and selection")
+{
+    kg::common::paths::NormalizationCache cache;
+    MatchInput in;
+    in.dbFilePaths = {"/repo/./a.cpp"};
+    in.cdb = {entryFor("/repo/./a.cpp"), entryFor("/repo/./a.cpp")};
+    in.changes = {ChangedFile{ChangeKind::Modified, "", "/repo/a.cpp"}};
+    REQUIRE(matchChanged(in, cache).changedInDb == std::vector<std::string>{"/repo/./a.cpp"});
+    REQUIRE(cache.size() == 2);
+    REQUIRE(selectEntries(in.cdb, {"/repo/a.cpp"}, cache).size() == 2);
+    REQUIRE(cache.size() == 2);
+}
+
+TEST_CASE("filematcher: normalization cache is operation scoped and resolves symlinks")
+{
+    const auto dir = std::filesystem::temp_directory_path() / ("kg_path_cache_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    struct Cleanup
+    {
+        std::filesystem::path path;
+        ~Cleanup() { std::filesystem::remove_all(path); }
+    } cleanup{dir};
+    std::ofstream(dir / "a.cpp") << "int a;";
+    std::ofstream(dir / "b.cpp") << "int b;";
+    const auto link = dir / "link.cpp";
+    std::filesystem::create_symlink(dir / "a.cpp", link);
+
+    kg::common::paths::NormalizationCache first;
+    REQUIRE(first(link.string()) == (dir / "a.cpp").string());
+    REQUIRE(first((dir / "./link.cpp").string()) == (dir / "a.cpp").string());
+    REQUIRE(first((dir / "missing/../gone.cpp").string()) == (dir / "gone.cpp").string());
+
+    std::filesystem::remove(link);
+    std::filesystem::create_symlink(dir / "b.cpp", link);
+    REQUIRE(first(link.string()) == (dir / "a.cpp").string()); // memoized for this operation
+    kg::common::paths::NormalizationCache next;
+    REQUIRE(next(link.string()) == (dir / "b.cpp").string()); // no stale cross-run cache
 }
 
 TEST_CASE("filematcher: Modified in DB -> changedInDb, spelled as the DB's original")

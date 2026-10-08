@@ -1,5 +1,38 @@
 # Known limitations
 
+## Incremental-update performance improvements
+
+- Update planning now shares a single operation-scoped normalization cache
+  across matching and TU selection. Each original spelling is resolved at
+  most once; symlink resolution and exact DB/CDB output spellings are
+  unchanged. The cache is not shared across updates or indexing workers.
+- `kg_file_fingerprint(file_node_id, sha256)` is optional optimization
+  state, foreign-keyed to `file(id)` with cascading deletion. SHA-256
+  fingerprints describe the exact buffers returned by
+  `clang_getFileContents()`, not a later read of disk or the vendored
+  writer's newline-normalized `filecontent`. They are flushed alongside
+  TU status at checkpoints, including interrupted runs.
+- Normal git/worktree updates compare only content-derived change
+  candidates with these fingerprints before adding compiler-argument changes
+  and retry seeds. Unchanged dirty/untracked source or header bytes can
+  therefore produce exit 5 without parsing or invalidation; a later edit
+  or revert still triggers indexing, even with identical size/mtime.
+  `--files`, explicit `--from`/`--to` revisions, option divergence,
+  new TUs, deletions, renames, and failed/partial retries retain their
+  previous behavior.
+- Missing/unknown fingerprints and unreadable/non-regular files never
+  suppress indexing. Older databases remain supported and acquire hashes
+  when their file facts are rebuilt; no walker/provenance version bump is
+  required. Surviving shared-header facts are only certified when their
+  prior fingerprint matches the parsed bytes. Different snapshots within
+  a session or across a partial append disable skipping rather than
+  certifying possibly mixed old/new facts.
+- This is still git-driven change detection, not a filesystem watcher.
+  Changes git does not report (for example ignored generated dependencies)
+  still need explicit invalidation. Avoid editing source during indexing:
+  per-file fingerprints do not make a multi-TU build an atomic snapshot.
+  Logical `kg dbdiff` intentionally ignores this acceleration state.
+
 ## Phase 1
 
 - No indexing: `kg_index` is a stub target with no libclang-based indexing

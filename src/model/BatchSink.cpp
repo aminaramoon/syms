@@ -75,6 +75,10 @@ LocalId BatchSink::file(FileFact f)
         {
             existing.language = f.language;
         }
+        if (existing.contentHash.empty())
+        {
+            existing.contentHash = f.contentHash;
+        }
         existing.indexed = existing.indexed || f.indexed;
         existing.system = existing.system && f.system;
         return it->second;

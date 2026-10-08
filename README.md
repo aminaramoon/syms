@@ -143,6 +143,16 @@ uncommitted edit still triggers one more re-index of that file (to bring
 it back in sync with the now-clean worktree) rather than silently leaving
 stale facts behind.
 
+Repeated updates of the **same uncommitted bytes** now skip parsing: kg
+stores SHA-256 fingerprints of libclang's actual source/header buffers and
+checks git-reported changes against those snapshots. Further edits and
+reverts still invalidate affected TUs, even when file size/mtime are
+unchanged. Compiler-argument changes, failed/partial-TU retries, explicit
+revisions, and `--files` are never suppressed by content matching. Older
+databases without fingerprints remain updateable and acquire fingerprints
+as their files are re-indexed. Path normalization is cached within each
+update, while retaining symlink resolution and original stored spellings.
+
 Useful flags: `--files PATH...` (classify these files as changed directly,
 skipping git entirely — handy for scripting or when there's no repo),
 `--to REV` (diff against a specific commit instead of the worktree),
@@ -161,7 +171,7 @@ with `kg index`), one written by an incompatible walker version, a
 pre-Phase-4 `kg_tu` table with no `status` column, one an interrupted
 `--in-place` run left half-updated, or `--system-file-rows=all` (not
 supported incrementally) — and `5` nothing changed since the last run (the
-database is untouched; this is not an error). See
+index facts are unchanged, though provenance may be refreshed; this is not an error). See
 `docs/KNOWN_LIMITATIONS.md`'s Phase 3/4 sections for the full invalidation
 algorithm.
 

@@ -22,6 +22,8 @@ add_executable(kg_unit_tests
     unit/test_incremental_fixture.cpp
     unit/test_gitdiff.cpp
     unit/test_filematcher.cpp
+    unit/test_content_hash.cpp
+    unit/test_content_fingerprint.cpp
     unit/test_git.cpp
     unit/test_snapshot.cpp
     unit/test_invalidator.cpp

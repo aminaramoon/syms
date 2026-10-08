@@ -157,6 +157,9 @@ bool SrctrldbBackend::begin(const std::string& dbPath, std::string* err)
     try
     {
         m_sideDb = std::make_unique<kg::db::WritableDb>(dbPath, /*foreignKeys=*/false);
+        m_sideDb->query("SELECT 1 FROM file LIMIT 1", [&](sqlite3_stmt*) { m_hasExistingFiles = true; });
+        m_sideDb->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='kg_file_fingerprint'",
+            [&](sqlite3_stmt*) { m_hasExistingFingerprints = true; });
     }
     catch (const std::exception& e)
     {
@@ -219,7 +222,39 @@ int SrctrldbBackend::ensureFileNodeByPath(const std::string& path, const std::st
 
 int SrctrldbBackend::ensureFileNode(const kg::model::FileFact& fact)
 {
-    return ensureFileNodeByPath(fact.path, fact.language, fact.indexed);
+    const int id = ensureFileNodeByPath(fact.path, fact.language, fact.indexed);
+    if (id != 0 && fact.indexed)
+    {
+        auto [it, inserted] = m_fileFingerprints.emplace(id, fact.contentHash);
+        if (inserted && m_hasExistingFiles)
+        {
+            // A surviving shared header may still have facts from TUs NOT
+            // re-indexed this pass. Never certify new bytes over old/mixed
+            // facts. Only a newly materialized file, or a surviving file
+            // with an identical prior hash, can get a trusted fingerprint.
+            const std::string sql = m_hasExistingFingerprints
+                ? "SELECT fp.sha256 FROM file f LEFT JOIN kg_file_fingerprint fp ON fp.file_node_id=f.id WHERE f.id=?1"
+                : "SELECT NULL FROM file WHERE id=?1";
+            m_sideDb->query(sql,
+                [&](sqlite3_stmt* stmt) { sqlite3_bind_int(stmt, 1, id); },
+                [&](sqlite3_stmt* stmt) {
+                    const char* previous = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+                    if (previous == nullptr || fact.contentHash != previous)
+                    {
+                        it->second.clear();
+                    }
+                });
+        }
+        if (inserted || it->second != fact.contentHash)
+        {
+            if (!inserted)
+            {
+                it->second.clear(); // mixed/unknown parsed bytes: never skip
+            }
+            m_pendingFileFingerprints.insert(id);
+        }
+    }
+    return id;
 }
 
 int SrctrldbBackend::resolveTuFileReal(const kg::model::TuFactBatch& batch, const std::vector<int>& fileReal)
@@ -535,6 +570,7 @@ bool SrctrldbBackend::consume(const kg::model::TuFactBatch& batch, std::string* 
 
 void SrctrldbBackend::flushPending(kg::db::WritableDb& db, const std::vector<PendingTuRow>& tuRows)
 {
+    db.exec(kKgFileFingerprintDdl);
     // Non-indexed files touched since the last flush: the vendored writer
     // always creates a `file` row as indexed=1/complete=1 (recordFile()
     // has no concept of "non-indexed"), so every file this pass recorded
@@ -549,6 +585,7 @@ void SrctrldbBackend::flushPending(kg::db::WritableDb& db, const std::vector<Pen
         const std::string idList = joinIds(m_nonIndexedFileIds);
         db.exec("UPDATE file SET indexed = 0, complete = 0 WHERE id IN (" + idList + ");");
         db.exec("DELETE FROM filecontent WHERE id IN (" + idList + ");");
+        db.exec("DELETE FROM kg_file_fingerprint WHERE file_node_id IN (" + idList + ");");
         m_nonIndexedFileIds.clear();
     }
 
@@ -562,6 +599,27 @@ void SrctrldbBackend::flushPending(kg::db::WritableDb& db, const std::vector<Pen
         "PRIMARY KEY(node_id, file_node_id)"
         ") WITHOUT ROWID;");
     db.exec(kKgTuDdl);
+
+    // Persist only this checkpoint's delta, from the bytes libclang parsed,
+    // never by re-reading disk after parsing (especially important for -j).
+    // Fingerprints and kg_tu status land in the same checkpoint transaction.
+    for (int id : m_pendingFileFingerprints)
+    {
+        const std::string& hash = m_fileFingerprints.at(id);
+        db.execBound("DELETE FROM kg_file_fingerprint WHERE file_node_id=?1",
+            [&](sqlite3_stmt* stmt) { sqlite3_bind_int(stmt, 1, id); });
+        if (!hash.empty())
+        {
+            db.execBound(
+                "INSERT INTO kg_file_fingerprint(file_node_id, sha256) "
+                "SELECT id, ?2 FROM file WHERE id=?1 AND indexed=1 AND complete=1",
+                [&](sqlite3_stmt* stmt) {
+                    sqlite3_bind_int(stmt, 1, id);
+                    sqlite3_bind_text(stmt, 2, hash.c_str(), -1, SQLITE_TRANSIENT);
+                });
+        }
+    }
+    m_pendingFileFingerprints.clear();
 
     // kg_touched: every node id THIS indexing pass created or looked up
     // (symbols via m_byKey, files via m_fileNodeIdByPath). Describes the

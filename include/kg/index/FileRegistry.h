@@ -41,6 +41,7 @@ public:
         bool system = false;
         bool indexed = false;
         bool directIncludeOfIndexed = false;
+        std::string contentHash; // indexed files only; exact libclang buffer
     };
 
     explicit FileRegistry(FileRegistryOptions options);

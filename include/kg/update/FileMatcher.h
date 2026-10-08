@@ -4,6 +4,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "kg/common/Paths.h"
 #include "kg/index/CompileDb.h"
 #include "kg/update/GitDiff.h"
 
@@ -68,12 +69,18 @@ std::string normalizePath(const std::string& path);
 // sides; the ORIGINAL (un-normalized) spelling from `dbFilePaths`/`cdb` is
 // what's returned (see MatchResult's comments for exactly which spelling
 // each field uses and why).
+// Cache-taking overloads let an entire update share the same resolution
+// snapshot. Convenience overloads create an operation-local cache.
 MatchResult matchChanged(const MatchInput& input);
+MatchResult matchChanged(const MatchInput& input, kg::common::paths::NormalizationCache& normalizePath);
 
 // Returns the subset of `entries` whose normalizePath(file) is in
 // `normalizedPaths` (already-normalized paths, e.g. from
 // MatchResult::newTus run back through normalizePath() by the caller).
 std::vector<kg::index::CompileEntry> selectEntries(
     const std::vector<kg::index::CompileEntry>& entries, const std::unordered_set<std::string>& normalizedPaths);
+std::vector<kg::index::CompileEntry> selectEntries(
+    const std::vector<kg::index::CompileEntry>& entries, const std::unordered_set<std::string>& normalizedPaths,
+    kg::common::paths::NormalizationCache& normalizePath);
 
 }  // namespace kg::update

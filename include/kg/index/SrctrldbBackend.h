@@ -178,6 +178,14 @@ private:
     std::unordered_set<int> m_nonIndexedFileIds;
     bool m_anyNonIndexedFiles = false;
 
+    // Parsed-buffer hashes, carried across checkpoints to detect a header
+    // observed with different bytes by two TUs in this session. A conflict
+    // permanently disables that file's skip optimization for this session.
+    std::unordered_map<int, std::string> m_fileFingerprints;
+    std::unordered_set<int> m_pendingFileFingerprints;
+    bool m_hasExistingFiles = false;
+    bool m_hasExistingFingerprints = false;
+
     // kg::common::paths::normalize(path) -> real node id, kept in lockstep
     // with m_fileNodeIdByPath -- lets checkpoint()'s kg_tu upsert resolve a
     // PendingTuRow's path to a file_node_id via an in-memory lookup instead

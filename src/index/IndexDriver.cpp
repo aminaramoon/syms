@@ -132,6 +132,7 @@ void appendDiagnostics(const ParsedTU& parsed, FileRegistry& files, kg::model::F
                 ff.language = "cpp";
                 ff.indexed = info.indexed;
                 ff.system = info.system;
+                ff.contentHash = info.contentHash;
                 fileId = sink.file(std::move(ff));
             }
         }

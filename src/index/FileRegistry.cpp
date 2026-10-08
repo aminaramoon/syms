@@ -2,6 +2,7 @@
 
 #include <stdexcept>
 
+#include "kg/common/ContentHash.h"
 #include "kg/common/Glob.h"
 #include "kg/index/ClangUtil.h"
 
@@ -70,6 +71,16 @@ FileRegistry::Info& FileRegistry::mutableInfoFor(CXTranslationUnit tu, CXFile fi
     info.system = clang_Location_isInSystemHeader(clang_getLocationForOffset(tu, file, 0)) != 0;
     info.indexed = !info.system && (m_options.includeGlobs.empty() || matchesAny(m_options.includeGlobs, info.path)) &&
                    !matchesAny(m_options.excludeGlobs, info.path);
+
+    if (info.indexed)
+    {
+        std::size_t size = 0;
+        const char* contents = clang_getFileContents(tu, file, &size);
+        if (contents != nullptr)
+        {
+            info.contentHash = kg::common::contentHash(std::string_view(contents, size));
+        }
+    }
 
     auto [inserted, ok] = m_files.emplace(key, std::move(info));
     (void)ok;

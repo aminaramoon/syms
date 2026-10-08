@@ -14,6 +14,7 @@ add_library(kg_common STATIC
     common/Glob.cpp
     common/Process.cpp
     common/Paths.cpp
+    common/ContentHash.cpp
 )
 target_include_directories(kg_common PUBLIC ${KG_INCLUDE_DIR})
 target_link_libraries(kg_common PRIVATE kg_options)
