@@ -1,0 +1,29 @@
+[package]
+name = "symwhere"
+version = "0.1.0"
+edition = "2021"
+description = "Fast, fuzzy, incremental symbol index for C/C++/CUDA/Rust repositories, powered by tree-sitter"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+blake3 = "1"
+clap = { version = "4", features = ["derive"] }
+nucleo-matcher = "0.3"
+rayon = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tree-sitter = "0.25"
+tree-sitter-c = "0.23"
+tree-sitter-cpp = "0.23"
+tree-sitter-rust = "0.24"
+walkdir = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+[profile.dev.package."*"]
+opt-level = 2
