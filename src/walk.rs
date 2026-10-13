@@ -28,7 +28,17 @@ pub struct Filter {
 /// `root`) that pass the language and glob filters. Order is deterministic
 /// (sorted by file name at each level). Directories that are hidden or in
 /// [`SKIP_DIRS`] are pruned entirely.
+///
+/// Include/exclude patterns are matched against repo-relative paths. Absolute
+/// patterns are normalized against `root` first (see
+/// [`normalize_patterns`]), so `-i /abs/path/to/repo/include` works.
 pub fn walk(root: &Path, filter: &Filter) -> Vec<PathBuf> {
+    let (excludes, includes) = normalize_patterns(root, &filter.excludes, &filter.includes);
+    let filter = Filter {
+        excludes,
+        includes,
+        langs: filter.langs.clone(),
+    };
     let mut out = Vec::new();
     let walker = WalkDir::new(root)
         .follow_links(false)
@@ -58,6 +68,91 @@ pub fn walk(root: &Path, filter: &Filter) -> Vec<PathBuf> {
         out.push(entry.into_path());
     }
     out
+}
+
+/// Normalize include/exclude patterns to be repo-relative.
+///
+/// Patterns are matched against paths relative to `root`, but users naturally
+/// pass absolute directory paths (`-i /home/me/repo/include`). For each
+/// pattern:
+/// - relative patterns pass through unchanged;
+/// - absolute patterns under `root` are rebased (with a trailing `/` or a
+///   canonicalization mismatch, e.g. `/tmp` vs `/private/tmp`, both handled);
+/// - absolute patterns outside `root` can never match: they are kept as inert
+///   no-ops (dropping an unmatchable *include* would dangerously widen the
+///   filter to "everything") and a warning is printed instead.
+///
+/// Returns `(excludes, includes)` with warnings emitted on stderr.
+fn normalize_patterns(
+    root: &Path,
+    excludes: &[String],
+    includes: &[String],
+) -> (Vec<String>, Vec<String>) {
+    // Compare against the canonical root so symlinked paths (`/var` vs
+    // `/private/var` on macOS) still rebase correctly.
+    let canon_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let norm = |pats: &[String], kind: &str| -> Vec<String> {
+        pats.iter()
+            .filter_map(|p| normalize_one(&canon_root, p, kind))
+            .collect()
+    };
+    (norm(excludes, "exclude"), norm(includes, "include"))
+}
+
+/// Normalize one pattern. Always returns a pattern; outside-root absolutes
+/// are warned about and returned unchanged (they match no relative path).
+fn normalize_one(root: &Path, pattern: &str, kind: &str) -> Option<String> {
+    let path = Path::new(pattern);
+    if !path.is_absolute() {
+        return Some(pattern.to_string());
+    }
+    // Absolute pattern directly under the root (handles a trailing slash).
+    if let Ok(rel) = path.strip_prefix(root) {
+        return Some(rel_to_str(rel));
+    }
+    // Canonicalize in case the caller's path goes through a symlink or an
+    // unresolved form (`/tmp/...` vs `/private/tmp/...` on macOS). Only the
+    // directory prefix can be canonicalized; a trailing glob tail is kept.
+    if let Some((existing, tail)) = split_glob_tail(path) {
+        if let Ok(canon) = existing.canonicalize() {
+            if let Ok(rel) = canon.strip_prefix(root) {
+                let mut rel = rel_to_str(rel);
+                if !tail.is_empty() {
+                    rel.push('/');
+                    rel.push_str(tail);
+                }
+                return Some(rel);
+            }
+        }
+    }
+    eprintln!(
+        "symwhere: warning: {kind} pattern `{pattern}` is outside the repo root {} \
+         and can never match",
+        root.display()
+    );
+    Some(pattern.to_string())
+}
+
+/// Split an absolute pattern into its longest existing directory prefix and
+/// the remainder (which may contain glob metacharacters), so the prefix can
+/// be canonicalized. Returns `(existing_prefix, tail)` where `tail` is `""`
+/// when the whole pattern is an existing path.
+fn split_glob_tail(pattern: &Path) -> Option<(PathBuf, &str)> {
+    let mut current: Option<&Path> = Some(pattern);
+    while let Some(dir) = current {
+        if dir.exists() {
+            let existing = dir.to_path_buf();
+            let full = pattern.to_str()?;
+            let prefix = existing.to_str()?;
+            let tail = full
+                .strip_prefix(prefix)
+                .unwrap_or_default()
+                .trim_start_matches('/');
+            return Some((existing, tail));
+        }
+        current = dir.parent();
+    }
+    None
 }
 
 /// Predicate for `filter_entry`: prune hidden directories and the standard
@@ -310,7 +405,64 @@ mod tests {
         let names = rel_names(&base, walk(&base, &filter));
         assert_eq!(names, vec!["src/lib.rs"]);
 
+        // 4. Absolute include directories under the root are rebased.
+        let filter = Filter {
+            excludes: vec![],
+            includes: vec![
+                base.join("src").to_string_lossy().into_owned(),
+                format!("{}/", base.join("src").display()), // trailing slash form
+            ],
+            langs: set(&[Lang::Rust]),
+        };
+        let names = rel_names(&base, walk(&base, &filter));
+        assert_eq!(names, vec!["src/inner/mod.rs", "src/lib.rs"]);
+
+        // 5. Absolute patterns outside the root never match (kept as inert
+        //    no-ops, with a warning).
+        let filter = Filter {
+            excludes: vec!["/some/other/repo".into()],
+            includes: vec!["/elsewhere/include".into()],
+            langs: set(&[Lang::Rust]),
+        };
+        assert!(walk(&base, &filter).is_empty());
+
+        // 6. A canonicalization mismatch (/tmp vs /private/tmp on macOS) is
+        //    still rebased when the pattern is an existing absolute path.
+        let filter = Filter {
+            excludes: vec![],
+            includes: vec![base
+                .join("src")
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()],
+            langs: set(&[Lang::Rust]),
+        };
+        let names = rel_names(&base, walk(&base, &filter));
+        assert_eq!(names, vec!["src/inner/mod.rs", "src/lib.rs"]);
+
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn normalize_rebases_absolute_patterns() {
+        let base = fs::canonicalize(".").unwrap();
+        // Under-root absolute → relative.
+        let (e, i) = normalize_patterns(
+            &base,
+            &[format!("{}/third_party", base.display())],
+            &[format!("{}", base.join("src").display())],
+        );
+        assert_eq!(e, vec!["third_party"]);
+        assert_eq!(i, vec!["src"]);
+        // Outside-root absolute → kept as an inert no-op (never matches).
+        let (e, i) = normalize_patterns(&base, &["/etc".to_string()], &["/usr".to_string()]);
+        assert_eq!(e, vec!["/etc"]);
+        assert_eq!(i, vec!["/usr"]);
+        // Relative patterns pass through untouched.
+        let (e, i) = normalize_patterns(&base, &["src/gen/**".to_string()], &["*.cpp".to_string()]);
+        assert_eq!(e, vec!["src/gen/**"]);
+        assert_eq!(i, vec!["*.cpp"]);
     }
 
     fn rel_names(base: &Path, paths: Vec<PathBuf>) -> Vec<String> {

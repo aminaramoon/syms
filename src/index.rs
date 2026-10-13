@@ -63,6 +63,19 @@ pub fn run_index(opts: IndexOptions) -> Result<()> {
     };
     let files = walk::walk(&root, &filter);
     let total_files = files.len();
+    if total_files == 0 {
+        let filtered =
+            !opts.includes.is_empty() || !opts.excludes.is_empty() || !opts.langs.is_empty();
+        if filtered {
+            eprintln!(
+                "symwhere: warning: no files matched under {} with the given filters.\n\
+                 hints: include/exclude patterns are matched against repo-relative \
+                 paths (e.g. `-i src -i include` or `-i 'src/**'`); absolute paths \
+                 under the root are rebased automatically",
+                root.display()
+            );
+        }
+    }
 
     // Compile one symbols query per language up front.
     let registry = LangRegistry::new();
