@@ -1,0 +1,31 @@
+[package]
+name = "symhow"
+version = "0.1.0"
+edition = "2021"
+description = "Index C++/CUDA code into a Sourcetrail-schema SQLite database and query it (Rust backend)"
+license = "Apache-2.0"
+build = "build.rs"
+
+[lib]
+name = "symhow"
+path = "src/lib.rs"
+
+[[bin]]
+name = "symhow"
+path = "src/main.rs"
+
+[dependencies]
+rusqlite = { version = "0.32", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+sha2 = "0.10"
+thiserror = "2"
+libc = "0.2"
+clang-sys = { version = "1", features = ["runtime", "clang_20_0"] }
+
+[build-dependencies]
+cc = "1"
+
+[profile.release]
+debug = 1
