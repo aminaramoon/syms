@@ -1,12 +1,14 @@
 # symhow JSON output schema
 
-`symhow query <verb> ... --json` and `symhow index ... --json` print exactly one JSON
+`symhow query <verb> ... --json`, `symhow graph <verb> ... --json`, and `symhow index ... --json` print exactly one JSON
 object to stdout (never split across lines, never mixed with any other
 stdout output) and set the same process exit code text mode would have used
 (0 ok, 2 ambiguous symbol, 3 not found, 4 db missing/unreadable, etc. -- see
 `symhow --help`). This document is the schema reference for that output,
 implemented by `symhow::out::json::JsonWriter` (`include/symhow/out/JsonWriter.h`,
-`src/out/JsonWriter.cpp`).
+`src/out/JsonWriter.cpp`); the `symhow.graph.*` schemas at the bottom are the
+one exception -- they are produced by the Rust-only `symhow graph` subcommand
+(`rust/src/out/graph_writer.rs`) and have no C++ counterpart.
 
 If a verb prints multiple results in text mode (`file` with `--all-matches`
 against several matching paths), JSON mode prints multiple JSON objects too,
@@ -138,6 +140,19 @@ re-fetching the actual `node` row for that id could show something
 different. `symhow.file/1`'s per-occurrence `node` field is intentionally
 **minimal** (`{"kind": ..., "qualified_name": ...}` only) rather than the
 full shape above -- see that section below.
+
+The `symhow.graph.*` schemas (Rust-only `symhow graph` subcommand, sections
+at the bottom of this doc) use a further **reduced** node object: `{id,
+kind, name, qualified_name, signature, display_name?}` only -- the
+DB-hydrated `indexed`/`definition_kind`/`location` fields (and the BFS
+`depth`/`seed`) are deliberately omitted, because the graph layer carries
+only `{node id, kind, serialized_name}` per participant and re-querying the
+database for every ranked node would turn the ranked verbs into O(result)
+extra queries. Consumers join on `id` with `symhow.graph/1` /
+`symhow.definition/1` output instead. Unlike the C++ writer, `signature` is
+always present (an empty string when the name has no signature postfix);
+`display_name` keeps the same "only when the TU-local disambiguator is
+actually present" rule.
 
 ### Location objects
 
@@ -954,6 +969,181 @@ DB involved (same as `lint`): a plain canonical re-render
   nothing is written.
 - Exit codes: `0` ok (nothing to change, or `--check` found nothing),
   `1` usage error, `3` `--check` found >=1 file that would change.
+
+## `symhow.graph.centrality/1`
+
+Printed by `symhow graph centrality -d DB [--top N] [--include-unsolved]
+[--json] [--dot FILE]` -- the Rust-only `symhow graph` subcommand (see
+`docs/GRAPH_SCHEMA_NOTES.md` for the schema study behind it). Betweenness
+centrality (Brandes, unweighted) over the loaded call/usage graph: every
+FUNCTION/METHOD node plus every CALL edge, with USAGE edges on top, and the
+shared unsolved-symbol hub node excluded by default (`--include-unsolved`
+re-includes it). Scores are **raw directed dependency sums** -- not halved,
+not normalized; the normalized 0-1 value is `score / ((n-1)(n-2))`, and
+`stats.normalized_denominator` hands you that denominator (JSON `null` when
+the graph has <= 2 nodes). Ranked by score descending; `--top` caps both the
+listing and the `--dot` subgraph (which renders the subgraph induced by the
+reported nodes).
+
+```json
+{ "symhow_version": "0.1.0", "schema": "symhow.graph.centrality/1",
+  "query": { "verb": "centrality", "db": "build/fixture.srctrldb",
+             "top": 3, "include_unsolved": false },
+  "truncated": true,
+  "stats": { "node_count": 48, "edge_count": 39, "shown": 3,
+             "normalized_denominator": 2162, "elapsed_ms": 0 },
+  "nodes": [ { "id": 149, "kind": "FUNCTION", "name": "level2",
+               "qualified_name": "level2", "score": 6.0,
+               "signature": "int  level2()" } ] }
+```
+
+- `query.top` is the effective `--top` value (`0` = show all); `stats.shown`
+  is the number of rows actually in `nodes[]`; `truncated` is `true` only
+  when `--top` cut the full ranked list.
+- `nodes[]` is the reduced node object (see "The node object" above) plus
+  `score`, in ranked order.
+
+## `symhow.graph.pagerank/1`
+
+Printed by `symhow graph pagerank -d DB [--seed SYMBOL]... [--damping F]
+[--top N] [--json] [--dot FILE]`. Personalized PageRank (power iteration,
+scores sum to ~1) over the same loaded graph. Seeds are the resolved
+`--seed` symbols (repeatable; every candidate of an unambiguous name
+counts); with no `--seed` the entry-point fallback applies: FUNCTION nodes
+named `main`, then root-file functions. `--damping` is the damping factor in
+[0,1] (default 0.85). `--top` caps the listing and the `--dot` subgraph the
+same way `centrality` does.
+
+```json
+{ "symhow_version": "0.1.0", "schema": "symhow.graph.pagerank/1",
+  "query": { "verb": "pagerank", "db": "build/fixture.srctrldb",
+             "seeds": [], "seed_ids": [206, 211], "seeds_explicit": false,
+             "damping": 0.85, "top": 2 },
+  "truncated": true,
+  "stats": { "node_count": 48, "edge_count": 39, "shown": 2,
+             "seed_count": 2, "elapsed_ms": 0 },
+  "nodes": [ { "display_name": "main()", "id": 206, "kind": "FUNCTION",
+               "name": "main", "qualified_name": "main",
+               "score": 0.2702703723455352,
+               "signature": "int  main() [tu_a.cpp#04c3b899]" } ] }
+```
+
+- `query.seeds` echoes the raw `--seed` values (empty when the fallback
+  ran); `query.seed_ids` lists the ids actually used (explicit or
+  fallback); `query.seeds_explicit` distinguishes the two.
+- Caveat: `--damping 1.0` removes the teleport term, so with dangling nodes
+  (functions with no outgoing edges) the iteration provably oscillates and
+  runs to `max_iterations` -- the default 0.85 is unaffected.
+
+## `symhow.graph.dominators/1`
+
+Printed by `symhow graph dominators -d DB [--entry SYMBOL] [--json] [--dot
+FILE]`. Dominator tree of the call graph rooted at one entry point: which
+functions must have been called on every path from the entry to a node
+(**call-graph** dominance -- the schema has no basic blocks, so this is not
+control-flow dominance). `--entry` defaults to the `main` heuristic; when
+several candidates exist the command prints the candidate list (text table,
+or the usual `symhow.ambiguous/1` envelope under `--json`) and exits `2` --
+pick one with `--entry SYMBOL` or `--entry '#<id>'`.
+
+```json
+{ "symhow_version": "0.1.0", "schema": "symhow.graph.dominators/1",
+  "query": { "verb": "dominators", "db": "build/fixture.srctrldb",
+             "entry": "#206", "entry_id": 206, "entry_explicit": true },
+  "truncated": false,
+  "stats": { "node_count": 48, "edge_count": 39, "dominated_count": 1,
+             "elapsed_ms": 0 },
+  "root_id": 206,
+  "nodes": [ { "display_name": "helper()", "id": 205, "kind": "FUNCTION",
+               "name": "helper", "qualified_name": "helper",
+               "signature": "void  helper() [tu_a.cpp#04c3b899]" },
+             { "display_name": "main()", "id": 206, "kind": "FUNCTION",
+               "name": "main", "qualified_name": "main",
+               "signature": "int  main() [tu_a.cpp#04c3b899]" } ],
+  "idoms": [ { "idom": 206, "node": 205 } ] }
+```
+
+- `query.entry` is the raw `--entry` value, or `""` when the entry-point
+  fallback chose the root (`query.entry_explicit` distinguishes the two).
+- `root_id` is the entry point's node id; `nodes[]` is the root plus every
+  dominated node (the reduced node object), sorted ascending by id.
+- `idoms[]` is the immediate-dominator pairs `{node, idom}` (the root has no
+  pair), sorted by node id. `stats.dominated_count` is `idoms.len()`.
+- No cap concept: the tree is reported whole, so `truncated` is always
+  `false`.
+
+## `symhow.graph.slice/1`
+
+Printed by `symhow graph slice -d DB --criterion SYMBOL [--lines] [--json]
+[--dot FILE]`. Backward slice of the criterion symbol: its reverse
+transitive closure over the USAGE+CALL edges (function granularity), with
+the induced dependence edges between members. **Approximate by design**:
+USAGE does not distinguish reads from writes, and there is no
+statement-level dependence (local variables have no edges at all).
+
+```json
+{ "symhow_version": "0.1.0", "schema": "symhow.graph.slice/1",
+  "query": { "verb": "slice", "db": "build/fixture.srctrldb",
+             "criterion": "level2", "criterion_id": 149, "lines": true },
+  "truncated": false,
+  "stats": { "member_count": 4, "edge_count": 3, "elapsed_ms": 0 },
+  "nodes": [ { "id": 149, "kind": "FUNCTION", "name": "level2",
+               "qualified_name": "level2", "signature": "int  level2()" } ],
+  "edges": [ { "id": 162, "kind": "CALL", "source": 150, "target": 149,
+               "call_sites": 1,
+               "locations": [ { "file": "/path/to/chain.cpp",
+                                "start_line": 21, "end_line": 21 } ] } ] }
+```
+
+- `query.criterion` echoes the raw `--criterion` value; `query.criterion_id`
+  is its resolved node id; `query.lines` echoes the `--lines` flag.
+- `nodes[]` is the member set (criterion included), sorted ascending by id.
+- `edges[]` are the induced dependence edges between members: `{id, kind,
+  source, target, call_sites, locations[]}`. `locations[]` carries the
+  deduped structured sites (`file`, `start_line`, `end_line` -- no columns)
+  of that edge's reference sites.
+- `--lines` is a text-mode presentation flag only: the JSON always carries
+  the sites (they are the slice's core data).
+- No cap concept: the slice is reported whole, so `truncated` is always
+  `false`.
+
+## `symhow.graph.path/1`
+
+Printed by `symhow graph path -d DB --from SYMBOL --to SYMBOL [--weight
+hops|calls|lines] [--json] [--dot FILE]`. Weighted shortest path (Dijkstra)
+between two symbols. Weight schemes: `hops` (uniform 1 per edge, default),
+`calls` (the edge's call-site count), `lines` (the callee's body line
+count) -- all synthetic structural weights; there is no profile data in the
+database.
+
+```json
+{ "symhow_version": "0.1.0", "schema": "symhow.graph.path/1",
+  "query": { "verb": "path", "db": "build/fixture.srctrldb",
+             "from": "runChain", "from_id": 155,
+             "to": "level0", "to_id": 151, "weight": "calls" },
+  "truncated": false,
+  "stats": { "total_cost": 1.0, "hop_count": 1, "node_count": 2,
+             "elapsed_ms": 0 },
+  "found": true,
+  "nodes": [ { "id": 155, "kind": "FUNCTION", "name": "runChain",
+               "qualified_name": "runChain", "signature": "int  runChain()" },
+             { "id": 151, "kind": "FUNCTION", "name": "level0",
+               "qualified_name": "level0", "signature": "int  level0()" } ],
+  "edges": [ { "id": 167, "kind": "CALL", "source": 155, "target": 151,
+               "weight": 1.0 } ] }
+```
+
+- `query.from`/`query.to` echo the raw symbols; `query.from_id`/`query.to_id`
+  are the resolved node ids; `query.weight` is the effective scheme name.
+- `found` is `false` -- with empty `nodes[]`/`edges[]` and a JSON `null`
+  `stats.total_cost` -- when the target is unreachable. That is a **result,
+  not an error**: exit 0 in both modes ("no path" in text mode), because
+  reachability is the answer the verb exists to give.
+- `edges[].weight` is the per-edge cost under the chosen scheme;
+  `stats.total_cost` is the path's total, `stats.hop_count` the number of
+  edges (`nodes.len() - 1`).
+- No cap concept: a path is reported whole (or not at all), so `truncated`
+  is always `false`.
 
 ## Text-mode truncation footer
 

@@ -8,6 +8,7 @@
 pub mod cli;
 pub mod common;
 pub mod db;
+pub mod graph;
 pub mod index;
 pub mod model;
 pub mod notes;

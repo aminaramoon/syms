@@ -1,6 +1,6 @@
 ---
 name: symhow
-description: Use when you need to explore or query the structure of a C++/CUDA codebase through the `symhow` CLI tool — call graphs (callers/callees with depth), class inheritance hierarchies (bases/derived), method overrides, symbol references, definition locations, fuzzy symbol search, file contents/occurrences, or database stats — or to read/write the per-function knowledge notes attached to it (`symhow query context`, `symhow notes`). Also covers indexing a `compile_commands.json` into a `.srctrldb` database (`symhow index`, parallel/resumable) and keeping it current after code changes (`symhow update`). Trigger on tasks like "find callers of X", "who calls this function", "build/show a call graph", "class hierarchy", "who inherits from / overrides X", "find references to X", "search for a symbol", "what does function X do / what do we know about X", "update the index after my changes", working with a `.srctrldb` file or a `notes/*.md` function-notes file, or being asked to run `symhow index` / `symhow update` / `symhow query` / `symhow notes`.
+description: Use when you need to explore or query the structure of a C++/CUDA codebase through the `symhow` CLI tool — call graphs (callers/callees with depth), class inheritance hierarchies (bases/derived), method overrides, symbol references, definition locations, fuzzy symbol search, file contents/occurrences, or database stats — or to run whole-graph analyses over the indexed call/usage graph (`symhow graph`: betweenness centrality, personalized PageRank, dominator tree, backward slice, weighted shortest path) — or to read/write the per-function knowledge notes attached to it (`symhow query context`, `symhow notes`). Also covers indexing a `compile_commands.json` into a `.srctrldb` database (`symhow index`, parallel/resumable) and keeping it current after code changes (`symhow update`). Trigger on tasks like "find callers of X", "who calls this function", "build/show a call graph", "class hierarchy", "who inherits from / overrides X", "find references to X", "search for a symbol", "what does function X do / what do we know about X", "update the index after my changes", "which functions are load-bearing", "find the bottlenecks / orchestrators / decision hubs", "what is the execution backbone from main", "what does this function depend on", "trace back what can affect X", "what's the happy path / shortest path from A to B", "which functions must have been called before X", working with a `.srctrldb` file or a `notes/*.md` function-notes file, or being asked to run `symhow index` / `symhow update` / `symhow query` / `symhow graph` / `symhow notes`.
 ---
 
 # symhow — index and query a C++/CUDA codebase
@@ -103,6 +103,50 @@ Plain text is for humans (indented tree for graph verbs, one-line-per-hit for re
 
 `0` success · `1` usage/argument error · `2` symbol/file ambiguous (candidates printed to stdout under `--json`, else stdout text table) · `3` symbol/file not found (suggestions printed) · `4` database missing/unreadable/wrong schema version.
 
+## Graph analysis — `symhow graph` (Rust backend only)
+
+`symhow graph <VERB>` runs whole-graph algorithms over the indexed call/usage graph — the layer you want when the question is about the *shape* of the graph ("what's load-bearing", "what's the backbone", "what does X depend on") rather than one symbol's neighborhood. **Rust-only subcommand**: the C++ binary has no `graph` verb — run the Rust binary (`rust/target/debug/symhow`; build it with `flox activate -- bash -c 'cd rust && cargo build'` from the repo root, using the symhow flox env — a parent-workspace flox env lacks `nlohmann/json.hpp` and breaks the vendored writer build).
+
+Grammar: **the verb comes before the flags**.
+
+```bash
+flox activate -- ./rust/target/debug/symhow graph VERB -d DB [OPTIONS]
+# VERB ∈ {centrality, pagerank, dominators, slice, path}
+```
+
+Shared flags: `-d/--db PATH` (or `$SYMHOW_DB`, or `./symhow.srctrldb`), `--json`, `--dot FILE` (also writes a Graphviz DOT file; parent dirs are created — for `centrality`/`pagerank` it renders the subgraph induced by the reported top-N nodes), `-v`, `-q`. Symbols resolve exactly like `symhow query` (qualified/display/leaf name, or `#<id>`); exit codes are the same contract: `0` ok, `1` usage error, `2` ambiguous symbol / entry-point choice, `3` not found, `4` database error.
+
+| Verb | Flags | Question it answers (algorithm) |
+|---|---|---|
+| `centrality` | `--top N` (default 25, `0` = all), `--include-unsolved` | **Which functions are the orchestrators / decision hubs?** Betweenness centrality (Brandes, unweighted). Scores are raw directed dependency sums, *not* normalized — divide by `stats.normalized_denominator` = `(n-1)(n-2)` if you need 0–1 values. The shared unsolved-symbol hub node is excluded by default (`--include-unsolved` keeps it) because it collects every unresolved reference and distorts the ranking. |
+| `pagerank` | `--seed SYMBOL` (repeatable), `--damping F` (default 0.85), `--top N` | **Which load-bearing logic is reachable from the entry points?** Personalized PageRank (scores sum to ~1). No `--seed` → entry-point fallback (`main` functions, then root-file functions). |
+| `dominators` | `--entry SYMBOL` | **What is the execution backbone from an entry — which functions run on EVERY path to a node?** Dominator tree of the call graph. No `--entry` → `main` heuristic; when several candidates exist it lists them and exits `2` (pick one with `--entry` or `#<id>`). |
+| `slice` | `--criterion SYMBOL` (required), `--lines` | **What does this function depend on — everything that can affect it?** Backward slice: reverse transitive closure over USAGE+CALL edges, function granularity. `--lines` annotates each edge with its source-line sites (text + DOT). |
+| `path` | `--from SYMBOL`, `--to SYMBOL` (both required), `--weight hops\|calls\|lines` (default `hops`) | **What's the happy path from A to B?** Weighted shortest path (Dijkstra). An unreachable target prints "no path" and exits **0** — reachability is the answer, not an error. |
+
+Worked examples (verified against `build/fixture.srctrldb`):
+
+```bash
+cd <symhow repo>
+# Orchestrators / decision hubs, as JSON
+flox activate -- ./rust/target/debug/symhow graph centrality -d build/fixture.srctrldb --top 10 --json
+# Load-bearing logic reachable from the entry points (fallback seeds)
+flox activate -- ./rust/target/debug/symhow graph pagerank -d build/fixture.srctrldb --json
+# Execution backbone from one entry point, plus a DOT rendering
+flox activate -- ./rust/target/debug/symhow graph dominators -d build/fixture.srctrldb --entry '#206' --dot /tmp/dom.dot
+# Everything a function depends on, with call-site line numbers
+flox activate -- ./rust/target/debug/symhow graph slice -d build/fixture.srctrldb --criterion level2 --lines
+# Happy path from A to B, weighted by call-site count
+flox activate -- ./rust/target/debug/symhow graph path -d build/fixture.srctrldb --from runChain --to level0 --weight calls
+```
+
+JSON: `--json` emits `symhow.graph.centrality/1`, `symhow.graph.pagerank/1`, `symhow.graph.dominators/1`, `symhow.graph.slice/1`, `symhow.graph.path/1` — same envelope conventions as every other schema (`symhow_version`+`schema` first, `query` echo, `stats`, `truncated`, alphabetical keys). Ambiguous symbols reuse `symhow.ambiguous/1` (exit 2), not-found reuses `symhow.not-found/1` (exit 3). One deviation from the canonical node object: graph node objects carry only `{id, kind, name, qualified_name, signature, display_name?}` — they omit `indexed`/`definition_kind`/`location` (and `depth`/`seed`); join on `id` with `symhow.graph/1`/`symhow.definition/1` output when you need locations. Full field lists in `docs/JSON_SCHEMA.md`.
+
+**Honest approximations — read before trusting any of the five verbs:**
+- The graph is the **call + usage graph at symbol granularity** (USAGE edges = field/global accesses, included by default). There are no basic blocks in the schema: `dominators` is *call-graph* dominance, not control-flow dominance, and `slice` is a function-granularity reverse closure that cannot separate reads from writes. Local variables/parameters have no edges at all.
+- Weights are **synthetic** (`hops` = 1 per edge, `calls` = the edge's call-site count, `lines` = the callee's body line count) — there is no profile/runtime data in the database, so "shortest" means structurally cheapest, not fastest.
+- `pagerank --damping 1.0` with dangling nodes (functions with no outgoing edges) oscillates and runs to `max_iterations` — the teleport term is what guarantees convergence; the default 0.85 is unaffected.
+
 ## Real worked examples (verified against this repo's own databases)
 
 ```bash
@@ -144,6 +188,11 @@ Every `--json` output is exactly one JSON object (never an array-wrapped list, n
 | Schema | Used by | Top-level array field |
 |---|---|---|
 | `symhow.graph/1` | `callers callees bases derived members neighbors overrides overridden-by context` | `nodes[]`, `edges[]` |
+| `symhow.graph.centrality/1` | `symhow graph centrality` | `nodes[]` (+ `score`) |
+| `symhow.graph.pagerank/1` | `symhow graph pagerank` | `nodes[]` (+ `score`) |
+| `symhow.graph.dominators/1` | `symhow graph dominators` | `nodes[]`, `idoms[]` |
+| `symhow.graph.slice/1` | `symhow graph slice` | `nodes[]`, `edges[]` |
+| `symhow.graph.path/1` | `symhow graph path` | `nodes[]`, `edges[]` (+ `found`) |
 | `symhow.references/1` | `references` | `references[]` (+ `nodes[]`) |
 | `symhow.definition/1` | `definition` | `locations[]` (+ single `symbol`) |
 | `symhow.search/1` | `search` | `hits[]` (each `{score, matched_indices, node}`) |
@@ -163,7 +212,7 @@ Every `--json` output is exactly one JSON object (never an array-wrapped list, n
   "location": { "file": "...", "start_line": 164, "start_column": 15,
                 "end_line": 164, "end_column": 29, "kind": "TOKEN" } }
 ```
-Use **`qualified_name`** as "the" canonical name field (bare ancestor path, no signature). `name` is just the leaf. `signature` includes params/return type — use it to tell overloads apart. `depth`/`seed` only appear on `symhow.graph/1` nodes. `location` and `definition_kind` are JSON `null` (present key, null value) when the node has none / isn't indexed — not an absent key. `kind` is **always a string** (`"CLASS"`, `"FUNCTION"`, `"CALL"`, etc.), never a raw integer.
+Use **`qualified_name`** as "the" canonical name field (bare ancestor path, no signature). `name` is just the leaf. `signature` includes params/return type — use it to tell overloads apart. `depth`/`seed` only appear on `symhow.graph/1` nodes. `location` and `definition_kind` are JSON `null` (present key, null value) when the node has none / isn't indexed — not an absent key. `kind` is **always a string** (`"CLASS"`, `"FUNCTION"`, `"CALL"`, etc.), never a raw integer. The `symhow graph` verbs use a **reduced** node object instead: `{id, kind, name, qualified_name, signature, display_name?}` only — no `indexed`/`definition_kind`/`location`/`depth`/`seed` (join on `id` with a `symhow.graph/1`/`symhow.definition/1` result when you need locations).
 
 Full field-by-field docs, every schema's complete shape, and every "invented, not from the DB" convention (see Gotchas below) are in `docs/JSON_SCHEMA.md` in this repo — read it directly if a field's meaning isn't obvious from context.
 

@@ -4,12 +4,17 @@
 Sourcetrail-schema-compatible SQLite database (`.srctrldb`), and queries
 that database — call graphs, class hierarchies, overrides, references,
 definitions, fuzzy symbol/file search, and corpus-wide stats — as either
-human-readable text or machine-readable JSON.
+human-readable text or machine-readable JSON. The Rust backend additionally
+exposes `symhow graph <verb>`: whole-graph analysis over the indexed
+call/usage graph (betweenness centrality, personalized PageRank, dominator
+trees, backward slices, weighted shortest paths).
 
 **Status: feature-complete (all 6 phases done).** `symhow index` is a real
 libclang-backed indexer (including CUDA support, with a rung-retry ladder
 for `.cu` files), and `symhow query <verb>` is a full read-only query engine
-with both text and `--json` output for every verb. See
+with both text and `--json` output for every verb. The Rust backend adds
+`symhow graph <verb>` — whole-graph analysis over the indexed call/usage
+graph (Rust-only subcommand, see "Graph analysis" below). See
 `docs/KNOWN_LIMITATIONS.md` for known gaps and edge cases, and
 `docs/JSON_SCHEMA.md` for the JSON output contract.
 
@@ -218,6 +223,72 @@ The full verb list: `callers callees bases derived overrides overridden-by
 members neighbors references definition search file stats`. Run
 `symhow query --help` (or `symhow --help`) for the complete flag reference.
 
+### Graph analysis (Rust backend only)
+
+`symhow graph <VERB>` runs whole-graph algorithms over the indexed call/usage
+graph — every FUNCTION/METHOD node plus every CALL edge, with USAGE edges
+(field/global accesses, carrying their source-line sites) on top, and the
+shared unsolved-symbol hub node excluded. This is the layer for questions
+about the *shape* of the graph rather than one symbol's neighborhood, and it
+is implemented **only in the Rust backend** (there is no C++ `Cli.cpp`
+counterpart — the C++ binary rejects `graph`): run
+`./rust/target/debug/symhow graph ...` instead of `./build/symhow ...`. The
+verb comes **before** the flags.
+
+```sh
+# Which functions are the orchestrators / decision hubs?
+# (Brandes betweenness; raw dependency sums — divide by
+# stats.normalized_denominator = (n-1)(n-2) for a 0-1 value)
+flox activate -- ./rust/target/debug/symhow graph centrality \
+  -d build/fixture.srctrldb --top 10 --json
+
+# Which load-bearing logic is reachable from the entry points?
+# (personalized PageRank; --seed is repeatable, default seeds are the
+# `main` functions then root-file functions)
+flox activate -- ./rust/target/debug/symhow graph pagerank \
+  -d build/fixture.srctrldb --seed runChain --top 10
+
+# What is the execution backbone from an entry point — which functions
+# run on EVERY path to a node? (call-graph dominator tree; --entry
+# defaults to the `main` heuristic — if several `main` candidates exist
+# it lists them and exits 2, pick one with --entry '#<id>')
+flox activate -- ./rust/target/debug/symhow graph dominators \
+  -d build/fixture.srctrldb --entry '#206' --dot /tmp/dominators.dot
+
+# What does this function depend on — everything that can affect it?
+# (backward slice over USAGE+CALL edges, function granularity;
+# --lines annotates each edge with its source-line sites)
+flox activate -- ./rust/target/debug/symhow graph slice \
+  -d build/fixture.srctrldb --criterion level2 --lines
+
+# What's the happy path from A to B? (weighted shortest path;
+# --weight hops|calls|lines, default hops)
+flox activate -- ./rust/target/debug/symhow graph path \
+  -d build/fixture.srctrldb --from runChain --to level0 --weight calls
+```
+
+Shared flags: `-d/--db PATH` (default `$SYMHOW_DB` or `./symhow.srctrldb`),
+`--json` (schemas `symhow.graph.centrality/1`, `symhow.graph.pagerank/1`,
+`symhow.graph.dominators/1`, `symhow.graph.slice/1`,
+`symhow.graph.path/1` — see `docs/JSON_SCHEMA.md`; ambiguous symbols reuse
+`symhow.ambiguous/1`, not-found `symhow.not-found/1`), `--dot FILE` (also
+writes a Graphviz DOT rendering, creating parent dirs; for
+`centrality`/`pagerank` it is the subgraph induced by the reported top-N
+nodes), `-v`, `-q`. Exit codes follow the shared contract: `0` ok, `1` usage
+error, `2` ambiguous symbol / entry-point choice, `3` not found, `4`
+database error. An unreachable `path` target is **not** an error — it prints
+"no path" and exits `0`, because reachability is the answer.
+
+Honest approximations to keep in mind when reading the results: the graph is
+the call + usage graph at **symbol granularity** (no basic blocks exist in
+the schema, so `dominators` is call-graph dominance, not control-flow
+dominance, and `slice` cannot separate reads from writes — local variables
+have no edges at all); `path` weights are **synthetic** structural measures
+(hops / call-site counts / callee body lines), not profile data; and
+`pagerank --damping 1.0` oscillates on graphs with dangling nodes and runs
+to `max_iterations` (the default 0.85 is unaffected). The algorithms and
+their feasibility study live in `docs/GRAPH_SCHEMA_NOTES.md`.
+
 ### Notes
 
 `symhow notes` attaches durable, reviewable function-level knowledge (brief /
@@ -315,9 +386,10 @@ legitimately do not.
 - `rust/` — the Rust backend: a complete, faithful migration of the C++ implementation. See "The Rust backend" below.
 - `scripts/symhow-notes-fake.py` — deterministic fake `symhow notes` markdown generator (see `docs/NOTES_DESIGN.md`).
 - `test/unit/`, `test/integration/`, `test/fixtures/` — Catch2-based tests (see "Testing" below).
-- `docs/JSON_SCHEMA.md` — the `--json` output contract for every `symhow index`/`symhow query`/`symhow notes` invocation.
+- `docs/JSON_SCHEMA.md` — the `--json` output contract for every `symhow index`/`symhow query`/`symhow notes`/`symhow graph` invocation.
 - `docs/KNOWN_LIMITATIONS.md` — known gaps, edge cases, and implementation notes, organized by phase.
 - `docs/NOTES_DESIGN.md` — the `symhow notes` design (markdown format, cache schema, CLI, phases).
+- `docs/GRAPH_SCHEMA_NOTES.md` — the `.srctrldb` schema study behind `symhow graph` (extraction SQL, per-algorithm feasibility, fixture ground truth).
 
 ## Testing
 
@@ -394,10 +466,11 @@ one-to-one:
 | `src/model/` (enums, facts, fact_sink incl. `BatchSink`/`IndexBackend`) | `model/` |
 | `src/index/` (compile_db, arg_sanitizer, cuda_support, progress, provenance, file_registry, clangutil, name_builder, tu_parser, ast_walker — via `clang-sys` — srctrldb_backend, index_driver) | `index/` |
 | `src/query/` (query_engine, bfs, fuzzy_matcher, symbol_resolver, results) | `query/` |
-| `src/out/` (text_writer, json_writer) | `out/` |
+| `src/graph/` (loader, centrality, pagerank, dominators, slicing, path, render) | — (Rust-only; no C++ counterpart — see "Graph analysis" above) |
+| `src/out/` (text_writer, json_writer, graph_writer) | `out/` (graph_writer is Rust-only) |
 | `src/notes/` (markdown, body_hash, notes_store, scaffold, sync, note_model) | `notes/` |
 | `src/update/` (git, git_diff, file_matcher, snapshot, invalidator, update_driver) | `update/` |
-| `src/cli/` (mod, index_cmd, query_cmd, update_cmd, notes_cmd, dbdiff_cmd) | `cli/` |
+| `src/cli/` (mod, index_cmd, query_cmd, update_cmd, notes_cmd, dbdiff_cmd, graph_cmd) | `cli/` (graph_cmd is Rust-only) |
 
 The **only** C++ code the Rust binary links is the vendored
 SourcetrailDB writer (`third_party/sourcetraildb/`, which stays C++,
@@ -417,9 +490,12 @@ flox activate -- ./rust/target/debug/symhow --version
 
 The flox env provides the Rust toolchain (cargo/rustc/rustfmt/clippy),
 libclang (for `clang-sys`'s runtime loading, via `LIBCLANG_PATH`), and
-sqlite3 (linked by both `rusqlite` and the C++ writer shim).
+sqlite3 (linked by both `rusqlite` and the C++ writer shim). Run cargo with
+the **symhow** flox env active (as above, or `flox activate -d symhow` from
+`rust/`) — a parent-workspace flox env lacks `nlohmann/json.hpp`, which the
+vendored SourcetrailDB writer's build needs, and breaks the build.
 
-The Rust suite (270+ tests) ports the Catch2 cases layer by layer —
+The Rust suite (327 tests) ports the Catch2 cases layer by layer —
 including the fixture-driven ones, which run against the same
 `build/fixture.srctrldb` the C++ suite builds (`SYMHOW_FIXTURE_DB`, default
 `../build/fixture.srctrldb`, and `SYMHOW_FIXTURE_CDB`) — plus an

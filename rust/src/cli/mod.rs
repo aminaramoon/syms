@@ -2,12 +2,15 @@
 //! Mirrors `symhow::cli` (src/cli/Cli.cpp): every verb (`index`, `query`,
 //! `update`, `notes`, hidden `dbdiff`) hand-rolls its own argument parsing --
 //! exact flags, exact error messages, exact exit codes -- and results go to
-//! stdout while diagnostics go to stderr, exactly as the C++ does.
+//! stdout while diagnostics go to stderr, exactly as the C++ does. The
+//! Rust-only `graph` verb (call-graph analysis over `crate::graph`) follows
+//! the same conventions; it has no C++ counterpart.
 //!
 //! The one-file C++ Cli.cpp is split here into one submodule per verb purely
 //! for file-size sanity; the behavior contract is identical.
 
 pub mod dbdiff_cmd;
+pub mod graph_cmd;
 pub mod index_cmd;
 pub mod notes_cmd;
 pub mod query_cmd;
@@ -82,6 +85,7 @@ pub fn print_help(program_name: &str) {
        {PN} query VERB SYMBOL-or-TEXT-or-PATH [OPTIONS]
        {PN} update -d DB [OPTIONS]
        {PN} notes lint --notes-dir DIR [OPTIONS]
+       {PN} graph VERB -d DB [OPTIONS]
 
 symhow indexes C++/CUDA code via libclang into a Sourcetrail-schema-compatible
 SQLite database, and queries it.
@@ -192,6 +196,14 @@ see docs/NOTES_DESIGN.md):
   accept   -d DB (SYMBOL|--all|--file GLOB) [--json]     re-anchor symhow-hash/symhow-commit
   fmt      --notes-dir DIR [--check] [--json]            canonical re-render (no DB)
 
+graph subcommand (Rust-only; analysis over the indexed call/usage graph --
+full flag list via `symhow graph --help`):
+  centrality  -d DB [--top N] [--include-unsolved] [--json] [--dot FILE]
+  pagerank    -d DB [--seed SYMBOL]... [--damping F] [--top N] [--json] [--dot FILE]
+  dominators  -d DB [--entry SYMBOL] [--json] [--dot FILE]
+  slice       -d DB --criterion SYMBOL [--lines] [--json] [--dot FILE]
+  path        -d DB --from SYMBOL --to SYMBOL [--weight hops|calls|lines] [--json] [--dot FILE]
+
 Exit codes: 0 ok, 1 usage error, 2 ambiguous symbol / refused (legacy db / update in progress),
             3 not found / lint problems found, 4 database missing/unreadable/wrong version,
             5 nothing to do (update).
@@ -219,6 +231,7 @@ pub fn run(args: &[String]) -> i32 {
         "query" => query_cmd::run_query_cmd(args, 2),
         "update" => update_cmd::run_update_cmd(args, 2),
         "notes" => notes_cmd::run_notes(args, 2),
+        "graph" => graph_cmd::run_graph_cmd(args, 2),
         "dbdiff" => {
             // Hidden maintenance command -- see run_dbdiff()'s own comment.
             // Deliberately not in print_help()'s usage text.
@@ -451,9 +464,7 @@ pub(crate) fn collect_md_files(dir: &str) -> Vec<String> {
             };
             if file_type.is_dir() {
                 stack.push(path.to_string_lossy().into_owned());
-            } else if file_type.is_file()
-                && path.extension().map(|e| e == "md").unwrap_or(false)
-            {
+            } else if file_type.is_file() && path.extension().map(|e| e == "md").unwrap_or(false) {
                 out.push(path.to_string_lossy().into_owned());
             }
         }

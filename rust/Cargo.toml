@@ -23,6 +23,7 @@ sha2 = "0.10"
 thiserror = "2"
 libc = "0.2"
 clang-sys = { version = "1", features = ["runtime", "clang_20_0"] }
+petgraph = "0.8"
 
 [build-dependencies]
 cc = "1"
