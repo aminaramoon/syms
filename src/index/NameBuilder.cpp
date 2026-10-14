@@ -1,4 +1,4 @@
-#include "kg/index/NameBuilder.h"
+#include "symhow/index/NameBuilder.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -6,27 +6,27 @@
 #include <unordered_map>
 #include <vector>
 
-#include "kg/common/Paths.h"
-#include "kg/index/ClangUtil.h"
+#include "symhow/common/Paths.h"
+#include "symhow/index/ClangUtil.h"
 
-namespace kg::index
+namespace symhow::index
 {
 
 namespace
 {
 
-using kg::index::clangutil::fnv1a64;
-using kg::index::clangutil::hex8;
-using kg::index::clangutil::toString;
-using kg::model::Name;
-using kg::model::NameElement;
+using symhow::index::clangutil::fnv1a64;
+using symhow::index::clangutil::hex8;
+using symhow::index::clangutil::toString;
+using symhow::model::Name;
+using symhow::model::NameElement;
 
 std::string basenameOf(const std::string& path)
 {
     return std::filesystem::path(path).filename().string();
 }
 
-// Normalized (kg::common::paths::normalize()) file path for a CXFile,
+// Normalized (symhow::common::paths::normalize()) file path for a CXFile,
 // memoized per (worker) thread -- normalize() does real filesystem stat
 // calls (weakly_canonical()), so this avoids re-stat'ing the same header
 // for every local-scope declaration/lambda it contains.
@@ -40,7 +40,7 @@ std::string basenameOf(const std::string& path)
 // disambiguators for the exact same translation-unit-local entity (a
 // lambda, a `static` function, an anonymous-namespace member) depending on
 // which TU happened to be first to touch it this session -- caught via
-// `kg dbdiff` between a fresh `kg index` and a resumed/partial `kg update`
+// `symhow dbdiff` between a fresh `symhow index` and a resumed/partial `symhow update`
 // on the real cucs corpus (a lambda inside `io_worker.hpp`, reached both
 // via `test/data/../../src/data/io_worker.hpp` and `src/data/io_worker.hpp`,
 // ending up as two distinct nodes). Normalizing first makes the identity a
@@ -59,7 +59,7 @@ std::string normalizedFileName(CXFile file)
     {
         return it->second;
     }
-    const std::string normalized = kg::common::paths::normalize(raw);
+    const std::string normalized = symhow::common::paths::normalize(raw);
     cache.emplace(raw, normalized);
     return normalized;
 }
@@ -224,7 +224,7 @@ NameElement elementForCursor(CXCursor c)
 // to observe a given USR wins; later observations just dedup via m_byKey)
 // -- so which TU happened to be first decided whether the resulting
 // NameHierarchy carried a spurious extra empty-name element, differing
-// between e.g. a full `kg index` and a `kg update` resume that reindexes a
+// between e.g. a full `symhow index` and a `symhow update` resume that reindexes a
 // different TU subset/order. Skipping LinkageSpec ancestors entirely
 // removes the instability at its source (there's no "sometimes present,
 // sometimes not" element to disagree about) while also fixing the
@@ -338,7 +338,7 @@ std::string normalizeLambdaPathsInText(const std::string& text)
         const std::smatch& m = *it;
         const auto matchStart = static_cast<std::size_t>(m.position(0));
         result.append(text, lastPos, matchStart - lastPos);
-        result += "(lambda at " + kg::common::paths::normalize(m[1].str()) + ":" + m[2].str() + ":" + m[3].str() + ")";
+        result += "(lambda at " + symhow::common::paths::normalize(m[1].str()) + ":" + m[2].str() + ":" + m[3].str() + ")";
         lastPos = matchStart + static_cast<std::size_t>(m.length(0));
     }
     result.append(text, lastPos, std::string::npos);
@@ -444,4 +444,4 @@ std::string buildLocalSymbolName(CXCursor cursor)
     return path + ":" + std::to_string(line) + ":" + std::to_string(col);
 }
 
-}  // namespace kg::index
+}  // namespace symhow::index

@@ -1,4 +1,4 @@
-#include "kg/notes/BodyHash.h"
+#include "symhow/notes/BodyHash.h"
 
 #include <sqlite3.h>
 
@@ -6,11 +6,11 @@
 #include <cctype>
 #include <vector>
 
-#include "kg/db/Enums.h"
-#include "kg/db/Meta.h"
-#include "kg/index/ClangUtil.h"
+#include "symhow/db/Enums.h"
+#include "symhow/db/Meta.h"
+#include "symhow/index/ClangUtil.h"
 
-namespace kg::notes
+namespace symhow::notes
 {
 
 namespace
@@ -77,7 +77,7 @@ struct Occ
     int endColumn = 0;
 };
 
-std::string filePathFor(kg::db::Database& db, int64_t fileId)
+std::string filePathFor(symhow::db::Database& db, int64_t fileId)
 {
     std::string path;
     db.run(
@@ -89,7 +89,7 @@ std::string filePathFor(kg::db::Database& db, int64_t fileId)
 
 }  // namespace
 
-std::string bodyHashForNode(kg::db::Database& db, int64_t nodeId)
+std::string bodyHashForNode(symhow::db::Database& db, int64_t nodeId)
 {
     std::vector<Occ> scopeOccs;
     std::vector<Occ> tokenOccs;
@@ -108,7 +108,7 @@ std::string bodyHashForNode(kg::db::Database& db, int64_t nodeId)
             occ.endColumn = sqlite3_column_int(stmt, 4);
             const int kind = sqlite3_column_int(stmt, 5);
             occ.filePath = filePathFor(db, occ.fileId);
-            if (kind == kg::db::LocationKind::SCOPE)
+            if (kind == symhow::db::LocationKind::SCOPE)
             {
                 scopeOccs.push_back(std::move(occ));
             }
@@ -230,12 +230,12 @@ std::string bodyHashForNode(kg::db::Database& db, int64_t nodeId)
     }
 
     const std::string normalized = normalizeWhitespace(span);
-    return hex16(kg::index::clangutil::fnv1a64(normalized));
+    return hex16(symhow::index::clangutil::fnv1a64(normalized));
 }
 
-std::string currentCommit(const kg::db::Database& db)
+std::string currentCommit(const symhow::db::Database& db)
 {
-    return kg::db::getMeta(db.handle(), "kg_repo_commit").value_or("");
+    return symhow::db::getMeta(db.handle(), "symhow_repo_commit").value_or("");
 }
 
-}  // namespace kg::notes
+}  // namespace symhow::notes

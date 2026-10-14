@@ -4,7 +4,13 @@
 /build-*/
 compile_commands.json
 
-# Databases produced by running kg (index outputs, not source)
+# CTest/Dart scratch (created by cmake configure runs)
+/Testing/
+
+# Rust backend: cargo build output (source, Cargo.lock and parity.sh ARE tracked)
+/rust/target/
+
+# Databases produced by running symhow (index outputs, not source)
 *.srctrldb
 *.srctrlprj
 

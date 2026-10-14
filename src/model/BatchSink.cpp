@@ -1,8 +1,8 @@
-#include "kg/model/FactSink.h"
+#include "symhow/model/FactSink.h"
 
 #include <utility>
 
-namespace kg::model
+namespace symhow::model
 {
 
 namespace
@@ -46,7 +46,7 @@ void upgrade(SymbolFact& existing, SymbolKind kind, DefinitionKind definition)
     // symbolKindBeats() (not a bare kindRank() > comparison) so an
     // equal-rank disagreement within one TU is resolved the same
     // deterministic, order-independent way as the cross-TU/cross-session
-    // merge in kg::index::SrctrldbBackend::bufferKindDef() -- see its
+    // merge in symhow::index::SrctrldbBackend::bufferKindDef() -- see its
     // comment for the corpus bug this class of "first observed wins" tie-
     // break caused.
     if (symbolKindBeats(kind, existing.kind))
@@ -189,4 +189,4 @@ void BatchSink::declaredIn(LocalId symbol, LocalId file)
     m_b.symbols[symbol].declFiles.push_back(file);
 }
 
-}  // namespace kg::model
+}  // namespace symhow::model

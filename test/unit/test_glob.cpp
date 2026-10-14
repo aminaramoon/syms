@@ -1,8 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "kg/common/Glob.h"
+#include "symhow/common/Glob.h"
 
-using kg::common::glob::match;
+using symhow::common::glob::match;
 
 TEST_CASE("glob::match matches literal strings exactly", "[glob]")
 {

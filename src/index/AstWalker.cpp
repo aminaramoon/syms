@@ -1,18 +1,18 @@
-#include "kg/index/AstWalker.h"
+#include "symhow/index/AstWalker.h"
 
-#include "kg/index/ClangUtil.h"
-#include "kg/index/NameBuilder.h"
+#include "symhow/index/ClangUtil.h"
+#include "symhow/index/NameBuilder.h"
 
-namespace kg::index
+namespace symhow::index
 {
 
-using kg::model::DefinitionKind;
-using kg::model::ElementClass;
-using kg::model::LocalId;
-using kg::model::LocationKind;
-using kg::model::ReferenceKind;
-using kg::model::SymbolKind;
-using kg::model::kNoLocal;
+using symhow::model::DefinitionKind;
+using symhow::model::ElementClass;
+using symhow::model::LocalId;
+using symhow::model::LocationKind;
+using symhow::model::ReferenceKind;
+using symhow::model::SymbolKind;
+using symhow::model::kNoLocal;
 
 namespace
 {
@@ -176,7 +176,7 @@ struct AstWalker::ContextFrame
     ContextFrame& operator=(const ContextFrame&) = delete;
 };
 
-AstWalker::AstWalker(CXTranslationUnit tu, FileRegistry& files, kg::model::FactSink& sink)
+AstWalker::AstWalker(CXTranslationUnit tu, FileRegistry& files, symhow::model::FactSink& sink)
     : m_tu(tu), m_files(files), m_sink(sink)
 {
 }
@@ -243,7 +243,7 @@ void AstWalker::handleInclusion(CXFile includedFile, CXSourceLocation* stack, un
         clang_getFileLocation(stack[0], &locFile, &line, &col, &off);
         if (locFile != nullptr)
         {
-            kg::model::SourceRange range;
+            symhow::model::SourceRange range;
             range.file = fileFactId(locFile);
             range.startLine = line;
             range.startCol = col;
@@ -765,7 +765,7 @@ LocalId AstWalker::registerOne(CXCursor canonicalCursor)
 {
     SymbolIdentity identity = buildSymbolIdentity(canonicalCursor);
 
-    kg::model::SymbolFact fact;
+    symhow::model::SymbolFact fact;
     fact.key = std::move(identity.key);
     fact.name = std::move(identity.name);
     fact.kind = classifyKind(canonicalCursor);
@@ -800,7 +800,7 @@ CXSourceRange AstWalker::spellingRangeOrPoint(CXCursor c)
 LocalId AstWalker::fileFactId(CXFile file)
 {
     const FileRegistry::Info& info = m_files.infoFor(m_tu, file);
-    kg::model::FileFact fact;
+    symhow::model::FileFact fact;
     fact.path = info.path;
     fact.language = "cpp";
     fact.indexed = info.indexed;
@@ -814,10 +814,10 @@ LocalId AstWalker::fileSymbolId(CXFile file)
     fileFactId(file);  // ensure the FileFact row exists too
     const FileRegistry::Info& info = m_files.infoFor(m_tu, file);
 
-    kg::model::SymbolFact fact;
+    symhow::model::SymbolFact fact;
     fact.key = info.path;  // SrctrldbBackend special-cases SymbolKind::File: key IS the absolute path
     fact.name.delimiter = "/";
-    fact.name.elements.push_back(kg::model::NameElement{"", info.path, ""});
+    fact.name.elements.push_back(symhow::model::NameElement{"", info.path, ""});
     fact.kind = SymbolKind::File;
     fact.definition = DefinitionKind::None;
     return m_sink.symbol(std::move(fact));
@@ -852,7 +852,7 @@ bool AstWalker::rangeFileIndexed(CXSourceRange range)
     return m_files.infoFor(m_tu, file).indexed;
 }
 
-bool AstWalker::rangeToModelRange(CXSourceRange range, kg::model::SourceRange& out)
+bool AstWalker::rangeToModelRange(CXSourceRange range, symhow::model::SourceRange& out)
 {
     if (clang_Range_isNull(range) != 0)
     {
@@ -893,7 +893,7 @@ void AstWalker::emitOccurrenceForRange(ElementClass cls, LocalId element, CXSour
         // ever emitted if ITS OWN range lands in an indexed file.
         return;
     }
-    kg::model::SourceRange modelRange;
+    symhow::model::SourceRange modelRange;
     if (!rangeToModelRange(range, modelRange))
     {
         return;
@@ -901,4 +901,4 @@ void AstWalker::emitOccurrenceForRange(ElementClass cls, LocalId element, CXSour
     m_sink.occurrence(cls, element, modelRange, kind);
 }
 
-}  // namespace kg::index
+}  // namespace symhow::index

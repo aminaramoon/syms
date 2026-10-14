@@ -1,8 +1,8 @@
-#include "kg/index/TuParser.h"
+#include "symhow/index/TuParser.h"
 
 #include <vector>
 
-namespace kg::index
+namespace symhow::index
 {
 
 namespace
@@ -101,4 +101,4 @@ ParsedTU parseTU(const std::vector<std::string>& args)
     return result;
 }
 
-}  // namespace kg::index
+}  // namespace symhow::index

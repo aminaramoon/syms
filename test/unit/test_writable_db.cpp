@@ -6,10 +6,10 @@
 
 #include <sqlite3.h>
 
-#include "kg/db/Meta.h"
-#include "kg/db/WritableDb.h"
+#include "symhow/db/Meta.h"
+#include "symhow/db/WritableDb.h"
 
-using kg::db::WritableDb;
+using symhow::db::WritableDb;
 
 namespace
 {
@@ -32,7 +32,7 @@ std::string tempDbPath(const char* name)
 
 TEST_CASE("writable_db: exec runs DDL and run()/changes() work against bound INSERT/SELECT")
 {
-    const std::string path = tempDbPath("kg_test_writable_db_basic.sqlite");
+    const std::string path = tempDbPath("symhow_test_writable_db_basic.sqlite");
     std::filesystem::remove(path);
     createEmptyDb(path);
 
@@ -57,7 +57,7 @@ TEST_CASE("writable_db: exec runs DDL and run()/changes() work against bound INS
 
 TEST_CASE("writable_db: exec throws std::runtime_error with the sqlite message on failure")
 {
-    const std::string path = tempDbPath("kg_test_writable_db_error.sqlite");
+    const std::string path = tempDbPath("symhow_test_writable_db_error.sqlite");
     std::filesystem::remove(path);
     createEmptyDb(path);
 
@@ -69,7 +69,7 @@ TEST_CASE("writable_db: exec throws std::runtime_error with the sqlite message o
 
 TEST_CASE("writable_db: begin/commit persists, begin/rollback (via destructor) discards")
 {
-    const std::string path = tempDbPath("kg_test_writable_db_txn.sqlite");
+    const std::string path = tempDbPath("symhow_test_writable_db_txn.sqlite");
     std::filesystem::remove(path);
     createEmptyDb(path);
 
@@ -100,7 +100,7 @@ TEST_CASE("writable_db: begin/commit persists, begin/rollback (via destructor) d
 
 TEST_CASE("writable_db: explicit rollback() discards")
 {
-    const std::string path = tempDbPath("kg_test_writable_db_rollback.sqlite");
+    const std::string path = tempDbPath("symhow_test_writable_db_rollback.sqlite");
     std::filesystem::remove(path);
     createEmptyDb(path);
 
@@ -119,20 +119,20 @@ TEST_CASE("writable_db: explicit rollback() discards")
 
 TEST_CASE("writable_db + meta: set/get/overwrite/delete round-trip")
 {
-    const std::string path = tempDbPath("kg_test_writable_db_meta.sqlite");
+    const std::string path = tempDbPath("symhow_test_writable_db_meta.sqlite");
     std::filesystem::remove(path);
     createEmptyDb(path);
 
     WritableDb db(path);
     db.exec("CREATE TABLE meta(id INTEGER PRIMARY KEY, key TEXT, value TEXT)");
 
-    REQUIRE_FALSE(kg::db::getMeta(db.handle(), "foo").has_value());
+    REQUIRE_FALSE(symhow::db::getMeta(db.handle(), "foo").has_value());
 
-    kg::db::setMeta(db, "foo", "bar");
-    REQUIRE(kg::db::getMeta(db.handle(), "foo") == "bar");
+    symhow::db::setMeta(db, "foo", "bar");
+    REQUIRE(symhow::db::getMeta(db.handle(), "foo") == "bar");
 
-    kg::db::setMeta(db, "foo", "baz");
-    REQUIRE(kg::db::getMeta(db.handle(), "foo") == "baz");
+    symhow::db::setMeta(db, "foo", "baz");
+    REQUIRE(symhow::db::getMeta(db.handle(), "foo") == "baz");
     // setMeta is DELETE-then-INSERT (meta.key has no UNIQUE constraint), so
     // there must be exactly one row for the key after an overwrite.
     int rows = -1;
@@ -142,8 +142,8 @@ TEST_CASE("writable_db + meta: set/get/overwrite/delete round-trip")
         [&](sqlite3_stmt* stmt) { rows = sqlite3_column_int(stmt, 0); });
     REQUIRE(rows == 1);
 
-    kg::db::deleteMeta(db, "foo");
-    REQUIRE_FALSE(kg::db::getMeta(db.handle(), "foo").has_value());
+    symhow::db::deleteMeta(db, "foo");
+    REQUIRE_FALSE(symhow::db::getMeta(db.handle(), "foo").has_value());
 
     std::filesystem::remove(path);
 }
@@ -154,8 +154,8 @@ TEST_CASE("writable_db: foreignKeys=true actually enforces ON DELETE CASCADE")
     // never deletes rows, so it doesn't need the pragma) -- this proves the
     // `foreignKeys` constructor argument itself does what it claims, so a
     // future caller that DOES need cascading deletes (e.g. Phase 3's
-    // `kg update` invalidation) can rely on it.
-    const std::string path = tempDbPath("kg_test_writable_db_fk_cascade.sqlite");
+    // `symhow update` invalidation) can rely on it.
+    const std::string path = tempDbPath("symhow_test_writable_db_fk_cascade.sqlite");
     std::filesystem::remove(path);
     createEmptyDb(path);
 

@@ -1,15 +1,15 @@
-#include "kg/update/FileMatcher.h"
+#include "symhow/update/FileMatcher.h"
 
 #include <unordered_map>
 
-#include "kg/common/Paths.h"
+#include "symhow/common/Paths.h"
 
-namespace kg::update
+namespace symhow::update
 {
 
 std::string normalizePath(const std::string& path)
 {
-    return kg::common::paths::normalize(path);
+    return symhow::common::paths::normalize(path);
 }
 
 namespace
@@ -20,7 +20,7 @@ namespace
 // two DB rows / two CDB entries normalize to the same file, which shouldn't
 // happen in practice).
 std::unordered_map<std::string, std::string> buildNormalizedIndex(
-    const std::unordered_set<std::string>& originals, kg::common::paths::NormalizationCache& normalizePath)
+    const std::unordered_set<std::string>& originals, symhow::common::paths::NormalizationCache& normalizePath)
 {
     std::unordered_map<std::string, std::string> index;
     for (const std::string& original : originals)
@@ -31,10 +31,10 @@ std::unordered_map<std::string, std::string> buildNormalizedIndex(
 }
 
 std::unordered_map<std::string, std::string> buildNormalizedCdbIndex(
-    const std::vector<kg::index::CompileEntry>& cdb, kg::common::paths::NormalizationCache& normalizePath)
+    const std::vector<symhow::index::CompileEntry>& cdb, symhow::common::paths::NormalizationCache& normalizePath)
 {
     std::unordered_map<std::string, std::string> index;
-    for (const kg::index::CompileEntry& entry : cdb)
+    for (const symhow::index::CompileEntry& entry : cdb)
     {
         index[normalizePath(entry.file)] = entry.file;
     }
@@ -45,11 +45,11 @@ std::unordered_map<std::string, std::string> buildNormalizedCdbIndex(
 
 MatchResult matchChanged(const MatchInput& input)
 {
-    kg::common::paths::NormalizationCache normalizePath;
+    symhow::common::paths::NormalizationCache normalizePath;
     return matchChanged(input, normalizePath);
 }
 
-MatchResult matchChanged(const MatchInput& input, kg::common::paths::NormalizationCache& normalizePath)
+MatchResult matchChanged(const MatchInput& input, symhow::common::paths::NormalizationCache& normalizePath)
 {
     MatchResult result;
 
@@ -92,19 +92,19 @@ MatchResult matchChanged(const MatchInput& input, kg::common::paths::Normalizati
     return result;
 }
 
-std::vector<kg::index::CompileEntry> selectEntries(
-    const std::vector<kg::index::CompileEntry>& entries, const std::unordered_set<std::string>& normalizedPaths)
+std::vector<symhow::index::CompileEntry> selectEntries(
+    const std::vector<symhow::index::CompileEntry>& entries, const std::unordered_set<std::string>& normalizedPaths)
 {
-    kg::common::paths::NormalizationCache normalizePath;
+    symhow::common::paths::NormalizationCache normalizePath;
     return selectEntries(entries, normalizedPaths, normalizePath);
 }
 
-std::vector<kg::index::CompileEntry> selectEntries(
-    const std::vector<kg::index::CompileEntry>& entries, const std::unordered_set<std::string>& normalizedPaths,
-    kg::common::paths::NormalizationCache& normalizePath)
+std::vector<symhow::index::CompileEntry> selectEntries(
+    const std::vector<symhow::index::CompileEntry>& entries, const std::unordered_set<std::string>& normalizedPaths,
+    symhow::common::paths::NormalizationCache& normalizePath)
 {
-    std::vector<kg::index::CompileEntry> selected;
-    for (const kg::index::CompileEntry& entry : entries)
+    std::vector<symhow::index::CompileEntry> selected;
+    for (const symhow::index::CompileEntry& entry : entries)
     {
         if (normalizedPaths.count(normalizePath(entry.file)) != 0)
         {
@@ -114,4 +114,4 @@ std::vector<kg::index::CompileEntry> selectEntries(
     return selected;
 }
 
-}  // namespace kg::update
+}  // namespace symhow::update

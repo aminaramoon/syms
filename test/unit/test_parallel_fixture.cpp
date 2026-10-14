@@ -1,9 +1,9 @@
 // Feature 2 (`--parallel`/`-j`) equivalence tests: indexes the real
 // synthetic fixture CDB (the same one test_json_shape.cpp/
-// test_incremental_fixture.cpp use, via KG_FIXTURE_CDB) through
-// kg::index::runIndex() with different `parallel` values into separate temp
+// test_incremental_fixture.cpp use, via SYMHOW_FIXTURE_CDB) through
+// symhow::index::runIndex() with different `parallel` values into separate temp
 // databases, and asserts the RESULT is identical regardless of N -- both at
-// the logical-snapshot level (kg::update::diffSnapshots, id-independent)
+// the logical-snapshot level (symhow::update::diffSnapshots, id-independent)
 // and, crucially, at the raw sqlite `node` table level INCLUDING ids: the
 // design's determinism guarantee is that the reorder buffer makes the
 // consumer see (and therefore assign ids to) TUs in the exact same CDB
@@ -16,20 +16,20 @@
 
 #include <sqlite3.h>
 
-#include "kg/db/Database.h"
-#include "kg/index/IndexDriver.h"
-#include "kg/update/Snapshot.h"
+#include "symhow/db/Database.h"
+#include "symhow/index/IndexDriver.h"
+#include "symhow/update/Snapshot.h"
 
-using kg::update::diffSnapshots;
-using kg::update::takeSnapshot;
+using symhow::update::diffSnapshots;
+using symhow::update::takeSnapshot;
 
 namespace
 {
 
 std::string fixtureCdbPath()
 {
-#ifdef KG_FIXTURE_CDB
-    return KG_FIXTURE_CDB;
+#ifdef SYMHOW_FIXTURE_CDB
+    return SYMHOW_FIXTURE_CDB;
 #else
     return "fixture_build/compile_commands.json";
 #endif
@@ -37,20 +37,20 @@ std::string fixtureCdbPath()
 
 std::string testBinaryDir()
 {
-#ifdef KG_TEST_BINARY_DIR
-    return KG_TEST_BINARY_DIR;
+#ifdef SYMHOW_TEST_BINARY_DIR
+    return SYMHOW_TEST_BINARY_DIR;
 #else
     return ".";
 #endif
 }
 
-// Runs a full `kg index` (via the real runIndex(), never a shell-out) of
+// Runs a full `symhow index` (via the real runIndex(), never a shell-out) of
 // the fixture CDB into `outputPath` with the given `parallel` value.
 // Returns the process exit code (expected 0: the fixture always produces
 // content).
 int indexFixture(const std::string& outputPath, int parallel, int commitEvery = 0)
 {
-    kg::index::IndexRunOptions opts;
+    symhow::index::IndexRunOptions opts;
     opts.compileCommandsPath = fixtureCdbPath();
     opts.outputPath = outputPath;
     opts.force = true;
@@ -58,8 +58,8 @@ int indexFixture(const std::string& outputPath, int parallel, int commitEvery = 
     opts.superQuiet = true;
     opts.parallel = parallel;
     opts.commitEvery = commitEvery;
-    opts.kgVersion = "test-version";
-    return kg::index::runIndex(opts);
+    opts.symhowVersion = "test-version";
+    return symhow::index::runIndex(opts);
 }
 
 // "id, serialized_name" pairs from `node`, ordered by id -- the strictest
@@ -68,7 +68,7 @@ int indexFixture(const std::string& outputPath, int parallel, int commitEvery = 
 // they were assigned the SAME ids in the SAME order.
 std::vector<std::pair<int, std::string>> nodeIdsAndNames(const std::string& dbPath)
 {
-    kg::db::Database db(dbPath);
+    symhow::db::Database db(dbPath);
     std::vector<std::pair<int, std::string>> rows;
     db.run("SELECT id, serialized_name FROM node ORDER BY id", [&](sqlite3_stmt* stmt) {
         const int id = sqlite3_column_int(stmt, 0);
@@ -120,7 +120,7 @@ TEST_CASE("parallel: parallel=4 with --commit-every 3 still matches the sequenti
     // Phase 8: checkpointing (commitEvery > 0) must not interact badly with
     // the parallel reorder buffer -- checkpoints only ever happen on the
     // single consumer thread, after a TU is consumed in strict CDB order,
-    // so a chunk's kg_tu rows are always a contiguous CDB prefix regardless
+    // so a chunk's symhow_tu rows are always a contiguous CDB prefix regardless
     // of how many worker threads raced to produce them.
     const std::string dbA = testBinaryDir() + "/parallel_test_p1_ce0.srctrldb";
     const std::string dbB = testBinaryDir() + "/parallel_test_p4_ce3.srctrldb";

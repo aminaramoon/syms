@@ -1,12 +1,12 @@
-#include "kg/index/FileRegistry.h"
+#include "symhow/index/FileRegistry.h"
 
 #include <stdexcept>
 
-#include "kg/common/ContentHash.h"
-#include "kg/common/Glob.h"
-#include "kg/index/ClangUtil.h"
+#include "symhow/common/ContentHash.h"
+#include "symhow/common/Glob.h"
+#include "symhow/index/ClangUtil.h"
 
-namespace kg::index
+namespace symhow::index
 {
 
 namespace
@@ -16,7 +16,7 @@ bool matchesAny(const std::vector<std::string>& globs, const std::string& path)
 {
     for (const auto& g : globs)
     {
-        if (kg::common::glob::match(g, path))
+        if (symhow::common::glob::match(g, path))
         {
             return true;
         }
@@ -78,7 +78,7 @@ FileRegistry::Info& FileRegistry::mutableInfoFor(CXTranslationUnit tu, CXFile fi
         const char* contents = clang_getFileContents(tu, file, &size);
         if (contents != nullptr)
         {
-            info.contentHash = kg::common::contentHash(std::string_view(contents, size));
+            info.contentHash = symhow::common::contentHash(std::string_view(contents, size));
         }
     }
 
@@ -116,4 +116,4 @@ bool FileRegistry::shouldRegister(CXTranslationUnit tu, CXFile file)
     return false;
 }
 
-}  // namespace kg::index
+}  // namespace symhow::index

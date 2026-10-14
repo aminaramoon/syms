@@ -15,8 +15,8 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "KG_BUILD_TESTS": "ON",
-                "KG_BUILD_INTEGRATION_TESTS": "ON"
+                "SYMHOW_BUILD_TESTS": "ON",
+                "SYMHOW_BUILD_INTEGRATION_TESTS": "ON"
             }
         },
         {
@@ -28,8 +28,8 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "KG_BUILD_TESTS": "OFF",
-                "KG_BUILD_INTEGRATION_TESTS": "OFF"
+                "SYMHOW_BUILD_TESTS": "OFF",
+                "SYMHOW_BUILD_INTEGRATION_TESTS": "OFF"
             }
         }
     ],

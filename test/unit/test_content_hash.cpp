@@ -4,11 +4,11 @@
 #include <fstream>
 #include <unistd.h>
 
-#include "kg/common/ContentHash.h"
+#include "symhow/common/ContentHash.h"
 
 TEST_CASE("content_hash: SHA-256 standard vectors, padding boundaries and binary bytes")
 {
-    using kg::common::contentHash;
+    using symhow::common::contentHash;
     REQUIRE(contentHash("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     REQUIRE(contentHash("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     REQUIRE(contentHash("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") ==
@@ -25,9 +25,9 @@ TEST_CASE("content_hash: SHA-256 standard vectors, padding boundaries and binary
 
 TEST_CASE("content_hash: streamed files match buffers and read failures are conservative")
 {
-    using kg::common::contentHash;
-    using kg::common::fileContentHash;
-    const auto dir = std::filesystem::temp_directory_path() / ("kg_content_hash_" + std::to_string(::getpid()));
+    using symhow::common::contentHash;
+    using symhow::common::fileContentHash;
+    const auto dir = std::filesystem::temp_directory_path() / ("symhow_content_hash_" + std::to_string(::getpid()));
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
     struct Cleanup

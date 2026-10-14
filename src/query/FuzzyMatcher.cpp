@@ -1,11 +1,11 @@
-#include "kg/query/FuzzyMatcher.h"
+#include "symhow/query/FuzzyMatcher.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <optional>
 
-namespace kg::query
+namespace symhow::query
 {
 
 namespace
@@ -191,4 +191,4 @@ std::vector<FuzzyHit> fuzzyMatch(const std::string& pattern, const std::vector<s
     return out;
 }
 
-}  // namespace kg::query
+}  // namespace symhow::query

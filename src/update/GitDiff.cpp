@@ -1,6 +1,6 @@
-#include "kg/update/GitDiff.h"
+#include "symhow/update/GitDiff.h"
 
-namespace kg::update
+namespace symhow::update
 {
 
 namespace
@@ -180,4 +180,4 @@ bool statusHasUnmergedEntries(std::string_view nulSeparated)
     return false;
 }
 
-}  // namespace kg::update
+}  // namespace symhow::update

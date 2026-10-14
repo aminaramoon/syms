@@ -1,7 +1,7 @@
 // Loads test/integration/data/cucs_cdb_samples.json -- 3 entries copied
 // verbatim from the real cucs corpus's compile_commands.json (one .cpp, one
 // .cc, one .cu) -- and runs the full CompileDb::load() + ArgSanitizer
-// pipeline against them, the same way `kg index --dry-run` does against the
+// pipeline against them, the same way `symhow index --dry-run` does against the
 // real 200-entry CDB.
 
 #include <catch2/catch_test_macros.hpp>
@@ -11,8 +11,8 @@
 #include <fstream>
 #include <string>
 
-#include "kg/index/ArgSanitizer.h"
-#include "kg/index/CompileDb.h"
+#include "symhow/index/ArgSanitizer.h"
+#include "symhow/index/CompileDb.h"
 
 namespace
 {
@@ -23,20 +23,20 @@ std::filesystem::path samplesPath()
     // at test/integration/data/cucs_cdb_samples.json, i.e. ../integration/data
     // relative to this translation unit's source file, or more robustly,
     // resolved from the CMake source dir baked in at configure time.
-#ifdef KG_TEST_SOURCE_DIR
-    return std::filesystem::path(KG_TEST_SOURCE_DIR) / "integration" / "data" / "cucs_cdb_samples.json";
+#ifdef SYMHOW_TEST_SOURCE_DIR
+    return std::filesystem::path(SYMHOW_TEST_SOURCE_DIR) / "integration" / "data" / "cucs_cdb_samples.json";
 #else
     return "test/integration/data/cucs_cdb_samples.json";
 #endif
 }
 
-// Writes `content` to a fresh scratch file under KG_TEST_BINARY_DIR (falling
+// Writes `content` to a fresh scratch file under SYMHOW_TEST_BINARY_DIR (falling
 // back to the system temp dir) and returns its path, for tests that need a
 // small ad-hoc compile_commands.json rather than the real cucs fixture.
 std::filesystem::path writeScratchCdb(const std::string& name, const std::string& content)
 {
-#ifdef KG_TEST_BINARY_DIR
-    std::filesystem::path dir(KG_TEST_BINARY_DIR);
+#ifdef SYMHOW_TEST_BINARY_DIR
+    std::filesystem::path dir(SYMHOW_TEST_BINARY_DIR);
 #else
     std::filesystem::path dir = std::filesystem::temp_directory_path();
 #endif
@@ -52,13 +52,13 @@ std::filesystem::path writeScratchCdb(const std::string& name, const std::string
 
 TEST_CASE("cucs CDB samples: full remap + sanitize pipeline", "[cdb][cucs]")
 {
-    kg::index::CompileDbOptions dbOptions;
+    symhow::index::CompileDbOptions dbOptions;
     dbOptions.remaps.push_back({"/mnt/workspace", "/home/aaramoon/workspace"});
 
-    const auto entries = kg::index::load(samplesPath().string(), dbOptions);
+    const auto entries = symhow::index::load(samplesPath().string(), dbOptions);
     REQUIRE(entries.size() == 3);
 
-    kg::index::SanitizerOptions sanitizerOptions;
+    symhow::index::SanitizerOptions sanitizerOptions;
     sanitizerOptions.resourceDir = "/opt/resource-dir";
 
     int cuCount = 0;
@@ -70,7 +70,7 @@ TEST_CASE("cucs CDB samples: full remap + sanitize pipeline", "[cdb][cucs]")
         CHECK(entry.directory.find("/mnt/workspace") == std::string::npos);
         CHECK(entry.file.find("/mnt/workspace") == std::string::npos);
 
-        const auto result = kg::index::sanitize(entry, sanitizerOptions);
+        const auto result = symhow::index::sanitize(entry, sanitizerOptions);
 
         for (const auto& tok : result.args)
         {
@@ -121,8 +121,8 @@ TEST_CASE("cdb_samples: CompileDb::load supports the already-tokenized 'argument
     ])";
     const auto path = writeScratchCdb("arguments_form.json", json);
 
-    kg::index::CompileDbOptions dbOptions;
-    const auto entries = kg::index::load(path.string(), dbOptions);
+    symhow::index::CompileDbOptions dbOptions;
+    const auto entries = symhow::index::load(path.string(), dbOptions);
     REQUIRE(entries.size() == 1);
     CHECK(entries[0].directory == "/work");
     CHECK(entries[0].file == "/work/foo.cpp");
@@ -144,9 +144,9 @@ TEST_CASE("cdb_samples: CompileDb::load applies remap to the output field too", 
     ])";
     const auto path = writeScratchCdb("output_remap.json", json);
 
-    kg::index::CompileDbOptions dbOptions;
+    symhow::index::CompileDbOptions dbOptions;
     dbOptions.remaps.push_back({"/mnt/workspace", "/home/aaramoon/workspace"});
-    const auto entries = kg::index::load(path.string(), dbOptions);
+    const auto entries = symhow::index::load(path.string(), dbOptions);
     REQUIRE(entries.size() == 1);
     CHECK(entries[0].output == "/home/aaramoon/workspace/build/foo.o");
 }
@@ -159,10 +159,10 @@ TEST_CASE("cdb_samples: CompileDb::load --include/--exclude filter on the post-r
     ])";
     const auto path = writeScratchCdb("include_exclude.json", json);
 
-    kg::index::CompileDbOptions dbOptions;
+    symhow::index::CompileDbOptions dbOptions;
     dbOptions.remaps.push_back({"/mnt/workspace", "/home/aaramoon/workspace"});
     dbOptions.includeGlobs.push_back("/home/aaramoon/workspace/src/**");
-    const auto entries = kg::index::load(path.string(), dbOptions);
+    const auto entries = symhow::index::load(path.string(), dbOptions);
     REQUIRE(entries.size() == 1);
     CHECK(entries[0].file == "/home/aaramoon/workspace/src/foo.cpp");
 }

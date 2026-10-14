@@ -1,4 +1,4 @@
-#include "kg/index/CompileDb.h"
+#include "symhow/index/CompileDb.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -9,10 +9,10 @@
 
 #include <nlohmann/json.hpp>
 
-#include "kg/common/Glob.h"
-#include "kg/common/Shell.h"
+#include "symhow/common/Glob.h"
+#include "symhow/common/Shell.h"
 
-namespace kg::index
+namespace symhow::index
 {
 
 std::pair<std::string, std::string> parseRemapArg(const std::string& spec)
@@ -61,7 +61,7 @@ bool matchesAny(const std::vector<std::string>& globs, const std::string& path)
 {
     for (const auto& g : globs)
     {
-        if (kg::common::glob::match(g, path))
+        if (symhow::common::glob::match(g, path))
         {
             return true;
         }
@@ -116,7 +116,7 @@ std::vector<CompileEntry> load(const std::string& path, const CompileDbOptions& 
         }
         else if (entryJson.contains("command") && entryJson.at("command").is_string())
         {
-            entry.args = kg::common::shell::split(entryJson.at("command").get<std::string>());
+            entry.args = symhow::common::shell::split(entryJson.at("command").get<std::string>());
         }
         else
         {
@@ -225,4 +225,4 @@ std::unordered_map<std::string, PathArgsInfo> pathArgsHashes(const std::vector<C
     return result;
 }
 
-}  // namespace kg::index
+}  // namespace symhow::index

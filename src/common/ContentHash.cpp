@@ -1,4 +1,4 @@
-#include "kg/common/ContentHash.h"
+#include "symhow/common/ContentHash.h"
 
 #include <array>
 #include <bit>
@@ -6,7 +6,7 @@
 #include <filesystem>
 #include <fstream>
 
-namespace kg::common
+namespace symhow::common
 {
 namespace
 {
@@ -132,4 +132,4 @@ std::optional<std::string> fileContentHash(const std::string& path)
     return hash.finish();
 }
 
-}  // namespace kg::common
+}  // namespace symhow::common

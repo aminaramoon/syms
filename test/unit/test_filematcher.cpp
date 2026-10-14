@@ -5,16 +5,16 @@
 #include <fstream>
 #include <unistd.h>
 
-#include "kg/update/FileMatcher.h"
+#include "symhow/update/FileMatcher.h"
 
-using kg::index::CompileEntry;
-using kg::update::ChangedFile;
-using kg::update::ChangeKind;
-using kg::update::MatchInput;
-using kg::update::MatchResult;
-using kg::update::matchChanged;
-using kg::update::normalizePath;
-using kg::update::selectEntries;
+using symhow::index::CompileEntry;
+using symhow::update::ChangedFile;
+using symhow::update::ChangeKind;
+using symhow::update::MatchInput;
+using symhow::update::MatchResult;
+using symhow::update::matchChanged;
+using symhow::update::normalizePath;
+using symhow::update::selectEntries;
 
 namespace
 {
@@ -41,7 +41,7 @@ TEST_CASE("filematcher: normalizePath collapses ./ and ../ for nonexistent paths
 
 TEST_CASE("filematcher: normalization cache preserves spelling and is shared across matching and selection")
 {
-    kg::common::paths::NormalizationCache cache;
+    symhow::common::paths::NormalizationCache cache;
     MatchInput in;
     in.dbFilePaths = {"/repo/./a.cpp"};
     in.cdb = {entryFor("/repo/./a.cpp"), entryFor("/repo/./a.cpp")};
@@ -54,7 +54,7 @@ TEST_CASE("filematcher: normalization cache preserves spelling and is shared acr
 
 TEST_CASE("filematcher: normalization cache is operation scoped and resolves symlinks")
 {
-    const auto dir = std::filesystem::temp_directory_path() / ("kg_path_cache_" + std::to_string(::getpid()));
+    const auto dir = std::filesystem::temp_directory_path() / ("symhow_path_cache_" + std::to_string(::getpid()));
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
     struct Cleanup
@@ -67,16 +67,25 @@ TEST_CASE("filematcher: normalization cache is operation scoped and resolves sym
     const auto link = dir / "link.cpp";
     std::filesystem::create_symlink(dir / "a.cpp", link);
 
-    kg::common::paths::NormalizationCache first;
-    REQUIRE(first(link.string()) == (dir / "a.cpp").string());
-    REQUIRE(first((dir / "./link.cpp").string()) == (dir / "a.cpp").string());
+    // Normalization resolves symlinks (that's the point of this test), so the
+    // symlink expectations must be computed the same way. On macOS the temp
+    // dir itself may be reached through a symlink (/var -> /private/var), so
+    // symlink-resolved expectations use the canonical spelling of `dir`.
+    // The "missing/../gone.cpp" case is different: its parent doesn't exist,
+    // so normalization can only do a lexical pass and preserves the raw
+    // spelling (see NormalizationCache) -- that expectation keeps `dir`.
+    const auto canonDir = std::filesystem::canonical(dir);
+
+    symhow::common::paths::NormalizationCache first;
+    REQUIRE(first(link.string()) == (canonDir / "a.cpp").string());
+    REQUIRE(first((dir / "./link.cpp").string()) == (canonDir / "a.cpp").string());
     REQUIRE(first((dir / "missing/../gone.cpp").string()) == (dir / "gone.cpp").string());
 
     std::filesystem::remove(link);
     std::filesystem::create_symlink(dir / "b.cpp", link);
-    REQUIRE(first(link.string()) == (dir / "a.cpp").string()); // memoized for this operation
-    kg::common::paths::NormalizationCache next;
-    REQUIRE(next(link.string()) == (dir / "b.cpp").string()); // no stale cross-run cache
+    REQUIRE(first(link.string()) == (canonDir / "a.cpp").string()); // memoized for this operation
+    symhow::common::paths::NormalizationCache next;
+    REQUIRE(next(link.string()) == (canonDir / "b.cpp").string()); // no stale cross-run cache
 }
 
 TEST_CASE("filematcher: Modified in DB -> changedInDb, spelled as the DB's original")

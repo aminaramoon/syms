@@ -1,7 +1,7 @@
-// Phase 2 of docs/NOTES_DESIGN.md: end-to-end coverage of kg::notes::
-// syncNotes()/openNotes()/matchBlock() and the `kg notes sync/show/status`
+// Phase 2 of docs/NOTES_DESIGN.md: end-to-end coverage of symhow::notes::
+// syncNotes()/openNotes()/matchBlock() and the `symhow notes sync/show/status`
 // CLI verbs built on them, against the real synthetic fixture database
-// (KG_FIXTURE_DB) and scripts/kg-notes-fake.py's generated notes.
+// (SYMHOW_FIXTURE_DB) and scripts/symhow-notes-fake.py's generated notes.
 //
 // Deliberately ONE TEST_CASE (not several independent ones) -- every step
 // after the first depends on state the previous step left behind (the
@@ -43,25 +43,25 @@
 
 #include <nlohmann/json.hpp>
 
-#include "kg/common/Process.h"
-#include "kg/db/Database.h"
-#include "kg/db/Enums.h"
-#include "kg/db/Meta.h"
-#include "kg/db/NameDecode.h"
-#include "kg/notes/BodyHash.h"
-#include "kg/notes/Markdown.h"
-#include "kg/notes/NotesStore.h"
-#include "kg/notes/Sync.h"
+#include "symhow/common/Process.h"
+#include "symhow/db/Database.h"
+#include "symhow/db/Enums.h"
+#include "symhow/db/Meta.h"
+#include "symhow/db/NameDecode.h"
+#include "symhow/notes/BodyHash.h"
+#include "symhow/notes/Markdown.h"
+#include "symhow/notes/NotesStore.h"
+#include "symhow/notes/Sync.h"
 
-using namespace kg::notes;
+using namespace symhow::notes;
 
 namespace
 {
 
 std::string fixtureDbPath()
 {
-#ifdef KG_FIXTURE_DB
-    return KG_FIXTURE_DB;
+#ifdef SYMHOW_FIXTURE_DB
+    return SYMHOW_FIXTURE_DB;
 #else
     return "fixture.srctrldb";
 #endif
@@ -69,26 +69,26 @@ std::string fixtureDbPath()
 
 std::string fixtureCdbPath()
 {
-#ifdef KG_FIXTURE_CDB
-    return KG_FIXTURE_CDB;
+#ifdef SYMHOW_FIXTURE_CDB
+    return SYMHOW_FIXTURE_CDB;
 #else
     return "fixture_build/compile_commands.json";
 #endif
 }
 
-std::string kgBinary()
+std::string symhowBinary()
 {
-#ifdef KG_BINARY
-    return KG_BINARY;
+#ifdef SYMHOW_BINARY
+    return SYMHOW_BINARY;
 #else
-    return "kg";
+    return "symhow";
 #endif
 }
 
 std::string testSourceDir()
 {
-#ifdef KG_TEST_SOURCE_DIR
-    return KG_TEST_SOURCE_DIR;
+#ifdef SYMHOW_TEST_SOURCE_DIR
+    return SYMHOW_TEST_SOURCE_DIR;
 #else
     return ".";
 #endif
@@ -110,9 +110,9 @@ void writeFile(const std::string& path, const std::string& content)
 
 std::string dumpNoteTable(const std::string& dbPath)
 {
-    kg::db::Database db(dbPath);
+    symhow::db::Database db(dbPath);
     std::string out;
-    db.run("SELECT serialized_name, brief, what, stale FROM kg_note ORDER BY serialized_name", [&](sqlite3_stmt* stmt) {
+    db.run("SELECT serialized_name, brief, what, stale FROM symhow_note ORDER BY serialized_name", [&](sqlite3_stmt* stmt) {
         auto text = [&](int col) {
             const unsigned char* t = sqlite3_column_text(stmt, col);
             return t != nullptr ? std::string(reinterpret_cast<const char*>(t)) : std::string();
@@ -130,7 +130,7 @@ struct Oracle
     std::size_t blocks = 0, matched = 0, unmatched = 0, ambiguous = 0, duplicateTarget = 0, filled = 0, stale = 0, unanchored = 0;
 };
 
-Oracle buildOracle(kg::db::Database& db, const std::string& notesDir)
+Oracle buildOracle(symhow::db::Database& db, const std::string& notesDir)
 {
     Oracle o;
     std::unordered_set<int64_t> matchedNodes;
@@ -191,7 +191,7 @@ Oracle buildOracle(kg::db::Database& db, const std::string& notesDir)
 
 TEST_CASE("notes_sync: end-to-end sync + show + status + overlay + disposable cache + determinism", "[fixture][notes]")
 {
-    const std::filesystem::path tmp = std::filesystem::temp_directory_path() / "kg_test_notes_sync";
+    const std::filesystem::path tmp = std::filesystem::temp_directory_path() / "symhow_test_notes_sync";
     std::filesystem::create_directories(tmp);
 
     const std::string dbPath = (tmp / "notes_sync.srctrldb").string();
@@ -200,18 +200,18 @@ TEST_CASE("notes_sync: end-to-end sync + show + status + overlay + disposable ca
     const std::string notesDir = (tmp / "notes_dir").string();
     std::filesystem::remove_all(notesDir);
 
-    // --- step 1: `kg notes symbols --json` -> generator -----------------
-    const auto symsResult = kg::common::process::run({kgBinary(), "notes", "symbols", "-d", dbPath, "--json"});
+    // --- step 1: `symhow notes symbols --json` -> generator -----------------
+    const auto symsResult = symhow::common::process::run({symhowBinary(), "notes", "symbols", "-d", dbPath, "--json"});
     REQUIRE(symsResult.exitCode == 0);
     const std::string symsPath = (tmp / "symbols.json").string();
     writeFile(symsPath, symsResult.out);
 
     const nlohmann::json symsJson = nlohmann::json::parse(symsResult.out);
-    REQUIRE(symsJson["schema"] == "kg.notes-symbols/1");
+    REQUIRE(symsJson["schema"] == "symhow.notes-symbols/1");
     REQUIRE(symsJson["symbols"].size() > 0);
 
-    const std::string generatorPath = (std::filesystem::path(testSourceDir()) / ".." / "scripts" / "kg-notes-fake.py").lexically_normal().string();
-    const auto genResult = kg::common::process::run(
+    const std::string generatorPath = (std::filesystem::path(testSourceDir()) / ".." / "scripts" / "symhow-notes-fake.py").lexically_normal().string();
+    const auto genResult = symhow::common::process::run(
         {"python3",
          generatorPath,
          "--symbols-json",
@@ -236,7 +236,7 @@ TEST_CASE("notes_sync: end-to-end sync + show + status + overlay + disposable ca
     CHECK(sync1.counts.blocks > 0);
     CHECK(sync1.counts.blocks == sync1.counts.matched + sync1.counts.unmatched + sync1.counts.ambiguous + sync1.counts.duplicateTarget);
 
-    kg::db::Database dbAfterSync1(dbPath);
+    symhow::db::Database dbAfterSync1(dbPath);
     const Oracle oracle = buildOracle(dbAfterSync1, notesDir);
     CHECK(oracle.blocks == sync1.counts.blocks);
     CHECK(oracle.matched == sync1.counts.matched);
@@ -258,11 +258,11 @@ TEST_CASE("notes_sync: end-to-end sync + show + status + overlay + disposable ca
     CHECK(sync1.counts.stale > 0);
     CHECK(sync1.counts.unanchored > 0);
 
-    // `kg notes sync --json` (CLI) reports the exact same counts.
-    const auto cliSyncResult = kg::common::process::run({kgBinary(), "notes", "sync", "-d", dbPath, "--notes-dir", notesDir, "--json"});
+    // `symhow notes sync --json` (CLI) reports the exact same counts.
+    const auto cliSyncResult = symhow::common::process::run({symhowBinary(), "notes", "sync", "-d", dbPath, "--notes-dir", notesDir, "--json"});
     REQUIRE(cliSyncResult.exitCode == 0);
     const nlohmann::json cliSyncJson = nlohmann::json::parse(cliSyncResult.out);
-    CHECK(cliSyncJson["schema"] == "kg.notes-sync/1");
+    CHECK(cliSyncJson["schema"] == "symhow.notes-sync/1");
     CHECK(cliSyncJson["counts"]["matched"].get<std::size_t>() == sync1.counts.matched);
     CHECK(cliSyncJson["counts"]["ambiguous"].get<std::size_t>() == sync1.counts.ambiguous);
     CHECK(cliSyncJson["counts"]["stale"].get<std::size_t>() == sync1.counts.stale);
@@ -272,8 +272,8 @@ TEST_CASE("notes_sync: end-to-end sync + show + status + overlay + disposable ca
     std::string filledSerializedName, filledQualifiedName, filledWhat;
     int64_t filledNodeId = 0;
     {
-        kg::db::Database db(dbPath);
-        db.run("SELECT serialized_name, qualified_name, what FROM kg_note WHERE filled = 1 LIMIT 1", [&](sqlite3_stmt* stmt) {
+        symhow::db::Database db(dbPath);
+        db.run("SELECT serialized_name, qualified_name, what FROM symhow_note WHERE filled = 1 LIMIT 1", [&](sqlite3_stmt* stmt) {
             auto text = [&](int col) {
                 const unsigned char* t = sqlite3_column_text(stmt, col);
                 return t != nullptr ? std::string(reinterpret_cast<const char*>(t)) : std::string();
@@ -291,16 +291,16 @@ TEST_CASE("notes_sync: end-to-end sync + show + status + overlay + disposable ca
     }
 
     const std::string idSpec = "#" + std::to_string(filledNodeId);
-    const auto showJsonResult = kg::common::process::run({kgBinary(), "notes", "show", "-d", dbPath, idSpec, "--json"});
+    const auto showJsonResult = symhow::common::process::run({symhowBinary(), "notes", "show", "-d", dbPath, idSpec, "--json"});
     REQUIRE(showJsonResult.exitCode == 0);
     const nlohmann::json showJson = nlohmann::json::parse(showJsonResult.out);
-    CHECK(showJson["schema"] == "kg.note/1");
+    CHECK(showJson["schema"] == "symhow.note/1");
     REQUIRE(!showJson["note"].is_null());
     CHECK(showJson["note"]["filled"].get<bool>() == true);
     CHECK(showJson["note"]["what"].get<std::string>() == filledWhat);
     CHECK(showJson["symbol"]["id"].get<int64_t>() == filledNodeId);
 
-    const auto showSectionResult = kg::common::process::run({kgBinary(), "notes", "show", "-d", dbPath, idSpec, "--section", "what"});
+    const auto showSectionResult = symhow::common::process::run({symhowBinary(), "notes", "show", "-d", dbPath, idSpec, "--section", "what"});
     REQUIRE(showSectionResult.exitCode == 0);
     std::string sectionOut = showSectionResult.out;
     while (!sectionOut.empty() && (sectionOut.back() == '\n' || sectionOut.back() == '\r'))
@@ -311,11 +311,11 @@ TEST_CASE("notes_sync: end-to-end sync + show + status + overlay + disposable ca
 
     // A FUNCTION/METHOD symbol with no note -> exit 3.
     {
-        kg::db::Database db(dbPath);
+        symhow::db::Database db(dbPath);
         std::optional<int64_t> unnotedId;
         db.run(
             "SELECT n.id, n.serialized_name FROM node n JOIN symbol s ON s.id = n.id WHERE (n.type & ?) != 0",
-            [&](sqlite3_stmt* stmt) { sqlite3_bind_int(stmt, 1, kg::db::NodeKind::FUNCTION | kg::db::NodeKind::METHOD); },
+            [&](sqlite3_stmt* stmt) { sqlite3_bind_int(stmt, 1, symhow::db::NodeKind::FUNCTION | symhow::db::NodeKind::METHOD); },
             [&](sqlite3_stmt* stmt) {
                 if (unnotedId.has_value())
                 {
@@ -326,7 +326,7 @@ TEST_CASE("notes_sync: end-to-end sync + show + status + overlay + disposable ca
                 const std::string sn = t != nullptr ? reinterpret_cast<const char*>(t) : std::string();
                 bool noted = false;
                 db.run(
-                    "SELECT 1 FROM kg_note WHERE serialized_name = ?",
+                    "SELECT 1 FROM symhow_note WHERE serialized_name = ?",
                     [&](sqlite3_stmt* s2) { sqlite3_bind_text(s2, 1, sn.c_str(), -1, SQLITE_TRANSIENT); },
                     [&](sqlite3_stmt*) { noted = true; });
                 if (!noted)
@@ -337,16 +337,16 @@ TEST_CASE("notes_sync: end-to-end sync + show + status + overlay + disposable ca
         if (unnotedId.has_value())
         {
             const auto notFoundResult =
-                kg::common::process::run({kgBinary(), "notes", "show", "-d", dbPath, "#" + std::to_string(*unnotedId)});
+                symhow::common::process::run({symhowBinary(), "notes", "show", "-d", dbPath, "#" + std::to_string(*unnotedId)});
             CHECK(notFoundResult.exitCode == 3);
         }
     }
 
     // --- step 4: `status --json` counts consistent with sync ------------
-    const auto statusResult = kg::common::process::run({kgBinary(), "notes", "status", "-d", dbPath, "--json"});
+    const auto statusResult = symhow::common::process::run({symhowBinary(), "notes", "status", "-d", dbPath, "--json"});
     REQUIRE(statusResult.exitCode == 0);
     const nlohmann::json statusJson = nlohmann::json::parse(statusResult.out);
-    CHECK(statusJson["schema"] == "kg.notes-status/1");
+    CHECK(statusJson["schema"] == "symhow.notes-status/1");
     CHECK(statusJson["counts"]["noted"].get<std::size_t>() == sync1.counts.matched);
     CHECK(statusJson["counts"]["filled"].get<std::size_t>() == sync1.counts.filled);
     CHECK(statusJson["counts"]["stale"].get<std::size_t>() == sync1.counts.stale);
@@ -355,11 +355,11 @@ TEST_CASE("notes_sync: end-to-end sync + show + status + overlay + disposable ca
     // --- step 5: overlay -- edit on disk WITHOUT re-syncing --------------
     std::string editedFileFull;
     {
-        kg::db::Database db(dbPath);
+        symhow::db::Database db(dbPath);
         std::string notesPath;
         int headingLine = 0;
         db.run(
-            "SELECT notes_path, heading_line FROM kg_note WHERE serialized_name = ?",
+            "SELECT notes_path, heading_line FROM symhow_note WHERE serialized_name = ?",
             [&](sqlite3_stmt* stmt) { sqlite3_bind_text(stmt, 1, filledSerializedName.c_str(), -1, SQLITE_TRANSIENT); },
             [&](sqlite3_stmt* stmt) {
                 const unsigned char* t = sqlite3_column_text(stmt, 0);
@@ -373,12 +373,12 @@ TEST_CASE("notes_sync: end-to-end sync + show + status + overlay + disposable ca
 
     const std::string beforeEdit = readFile(editedFileFull);
     REQUIRE(beforeEdit.find(filledWhat) != std::string::npos);
-    const std::string kOverlayMarker = "OVERLAY_MARKER_TEXT_kg_notes_phase2_test";
+    const std::string kOverlayMarker = "OVERLAY_MARKER_TEXT_symhow_notes_phase2_test";
     std::string afterEdit = beforeEdit;
     afterEdit.replace(afterEdit.find(filledWhat), filledWhat.size(), kOverlayMarker);
     writeFile(editedFileFull, afterEdit);
 
-    const auto showAfterEditResult = kg::common::process::run({kgBinary(), "notes", "show", "-d", dbPath, idSpec, "--json"});
+    const auto showAfterEditResult = symhow::common::process::run({symhowBinary(), "notes", "show", "-d", dbPath, idSpec, "--json"});
     REQUIRE(showAfterEditResult.exitCode == 0);
     const nlohmann::json showAfterEditJson = nlohmann::json::parse(showAfterEditResult.out);
     CHECK(showAfterEditJson["note"]["what"].get<std::string>() == kOverlayMarker);
@@ -388,7 +388,7 @@ TEST_CASE("notes_sync: end-to-end sync + show + status + overlay + disposable ca
     // Re-sync -> the hint goes away and the new text is persisted.
     const SyncResult sync2 = syncNotes(dbPath, notesDir, false);
     (void)sync2;
-    const auto showAfterResyncResult = kg::common::process::run({kgBinary(), "notes", "show", "-d", dbPath, idSpec, "--json"});
+    const auto showAfterResyncResult = symhow::common::process::run({symhowBinary(), "notes", "show", "-d", dbPath, idSpec, "--json"});
     REQUIRE(showAfterResyncResult.exitCode == 0);
     const nlohmann::json showAfterResyncJson = nlohmann::json::parse(showAfterResyncResult.out);
     CHECK(showAfterResyncJson["note"]["what"].get<std::string>() == kOverlayMarker);
@@ -404,7 +404,7 @@ TEST_CASE("notes_sync: end-to-end sync + show + status + overlay + disposable ca
 
     // --- step 7: disposable cache -- fresh index, same notes -> same rows
     const std::string freshDbPath = (tmp / "notes_sync_fresh.srctrldb").string();
-    const auto indexResult = kg::common::process::run({kgBinary(), "index", "-c", fixtureCdbPath(), "-o", freshDbPath, "--force"});
+    const auto indexResult = symhow::common::process::run({symhowBinary(), "index", "-c", fixtureCdbPath(), "-o", freshDbPath, "--force"});
     REQUIRE(indexResult.exitCode == 0);
     const SyncResult freshSync = syncNotes(freshDbPath, notesDir, false);
     (void)freshSync;

@@ -1,6 +1,6 @@
-#include "kg/cli/Cli.h"
+#include "symhow/cli/Cli.h"
 
 int main(int argc, char** argv)
 {
-    return kg::cli::run(argc, argv);
+    return symhow::cli::run(argc, argv);
 }

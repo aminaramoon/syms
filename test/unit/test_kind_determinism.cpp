@@ -18,22 +18,22 @@
 
 #include <sqlite3.h>
 
-#include "kg/db/Database.h"
-#include "kg/index/CompileDb.h"
-#include "kg/index/IndexDriver.h"
-#include "kg/index/Provenance.h"
-#include "kg/update/Snapshot.h"
+#include "symhow/db/Database.h"
+#include "symhow/index/CompileDb.h"
+#include "symhow/index/IndexDriver.h"
+#include "symhow/index/Provenance.h"
+#include "symhow/update/Snapshot.h"
 
-using kg::update::diffSnapshots;
-using kg::update::takeSnapshot;
+using symhow::update::diffSnapshots;
+using symhow::update::takeSnapshot;
 
 namespace
 {
 
 std::string fixtureDbPath()
 {
-#ifdef KG_FIXTURE_DB
-    return KG_FIXTURE_DB;
+#ifdef SYMHOW_FIXTURE_DB
+    return SYMHOW_FIXTURE_DB;
 #else
     return "fixture.srctrldb";
 #endif
@@ -41,8 +41,8 @@ std::string fixtureDbPath()
 
 std::string fixtureCdbPath()
 {
-#ifdef KG_FIXTURE_CDB
-    return KG_FIXTURE_CDB;
+#ifdef SYMHOW_FIXTURE_CDB
+    return SYMHOW_FIXTURE_CDB;
 #else
     return "fixture_build/compile_commands.json";
 #endif
@@ -50,17 +50,17 @@ std::string fixtureCdbPath()
 
 std::string testBinaryDir()
 {
-#ifdef KG_TEST_BINARY_DIR
-    return KG_TEST_BINARY_DIR;
+#ifdef SYMHOW_TEST_BINARY_DIR
+    return SYMHOW_TEST_BINARY_DIR;
 #else
     return ".";
 #endif
 }
 
-kg::index::Provenance fixtureProvenance()
+symhow::index::Provenance fixtureProvenance()
 {
-    kg::db::Database db(fixtureDbPath());
-    const auto prov = kg::index::readProvenance(db.handle());
+    symhow::db::Database db(fixtureDbPath());
+    const auto prov = symhow::index::readProvenance(db.handle());
     REQUIRE(prov.has_value());
     return *prov;
 }
@@ -73,7 +73,7 @@ kg::index::Provenance fixtureProvenance()
 // to which node.type.
 std::vector<std::pair<std::string, int>> namesAndTypes(const std::string& dbPath)
 {
-    kg::db::Database db(dbPath);
+    symhow::db::Database db(dbPath);
     std::vector<std::pair<std::string, int>> rows;
     db.run("SELECT serialized_name, type FROM node ORDER BY serialized_name", [&](sqlite3_stmt* stmt) {
         const char* name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
@@ -83,34 +83,34 @@ std::vector<std::pair<std::string, int>> namesAndTypes(const std::string& dbPath
     return rows;
 }
 
-int indexEntries(const std::string& outputPath, const std::vector<kg::index::CompileEntry>& entries)
+int indexEntries(const std::string& outputPath, const std::vector<symhow::index::CompileEntry>& entries)
 {
-    const kg::index::Provenance prov = fixtureProvenance();
-    kg::index::IndexRunOptions opts;
+    const symhow::index::Provenance prov = fixtureProvenance();
+    symhow::index::IndexRunOptions opts;
     opts.compileCommandsPath = fixtureCdbPath();  // unused when presetEntries is set, kept for logging/consistency
     opts.outputPath = outputPath;
     opts.force = true;
     opts.quiet = true;
     opts.superQuiet = true;
-    opts.kgVersion = "test-version";
+    opts.symhowVersion = "test-version";
     opts.commitEvery = 0;
     opts.dbOptions = prov.dbOptions;
     opts.sanitizerOptions = prov.sanitizerOptions;
     opts.systemFileRows = prov.systemFileRows;
     opts.provenance = prov;
     opts.presetEntries = entries;
-    return kg::index::runIndex(opts);
+    return symhow::index::runIndex(opts);
 }
 
 }  // namespace
 
 TEST_CASE("kind determinism: indexing the fixture CDB in reverse TU order produces an identical database", "[fixture]")
 {
-    const kg::index::Provenance prov = fixtureProvenance();
-    std::vector<kg::index::CompileEntry> entries = kg::index::load(fixtureCdbPath(), prov.dbOptions);
+    const symhow::index::Provenance prov = fixtureProvenance();
+    std::vector<symhow::index::CompileEntry> entries = symhow::index::load(fixtureCdbPath(), prov.dbOptions);
     REQUIRE_FALSE(entries.empty());
 
-    std::vector<kg::index::CompileEntry> reversed(entries.rbegin(), entries.rend());
+    std::vector<symhow::index::CompileEntry> reversed(entries.rbegin(), entries.rend());
     REQUIRE(reversed.size() == entries.size());
 
     const std::string dbForward = testBinaryDir() + "/kind_determinism_forward.srctrldb";

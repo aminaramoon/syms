@@ -1,4 +1,4 @@
-// Round-trips kg::db::decodeSerializedName() against both hand-constructed
+// Round-trips symhow::db::decodeSerializedName() against both hand-constructed
 // serialized_name strings (mirroring exactly what
 // sourcetrail::serializeNameHierarchyToDatabaseString() produces -- see
 // third_party/sourcetraildb/src/NameHierarchy.cpp) and real values pulled
@@ -13,9 +13,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "kg/db/NameDecode.h"
+#include "symhow/db/NameDecode.h"
 
-using kg::db::decodeSerializedName;
+using symhow::db::decodeSerializedName;
 
 namespace
 {
@@ -34,7 +34,7 @@ constexpr const char* kTuAMain = "::\tmmain\tsint \tp() [tu_a.cpp#317677a3]";
 
 TEST_CASE("name_decode round-trips a plain two-level class name (real: fixture::Square)", "[name_decode]")
 {
-    const kg::db::DecodedName d = decodeSerializedName(kSquareClass);
+    const symhow::db::DecodedName d = decodeSerializedName(kSquareClass);
     REQUIRE(d.nameDelimiter == "::");
     REQUIRE(d.elements.size() == 2);
     CHECK(d.elements[0].name == "fixture");
@@ -49,7 +49,7 @@ TEST_CASE("name_decode round-trips a plain two-level class name (real: fixture::
 
 TEST_CASE("name_decode keeps a function-signature postfix out of namePath but in qualifiedName (real: Square ctor)", "[name_decode]")
 {
-    const kg::db::DecodedName d = decodeSerializedName(kSquareCtor);
+    const symhow::db::DecodedName d = decodeSerializedName(kSquareCtor);
     REQUIRE(d.elements.size() == 3);
     CHECK(d.elements.back().name == "Square");
     CHECK(d.elements.back().postfix == "(double)");
@@ -61,7 +61,7 @@ TEST_CASE("name_decode keeps a function-signature postfix out of namePath but in
 
 TEST_CASE("name_decode decodes a prefix+postfix method signature (real: Square::area)", "[name_decode]")
 {
-    const kg::db::DecodedName d = decodeSerializedName(kSquareArea);
+    const symhow::db::DecodedName d = decodeSerializedName(kSquareArea);
     REQUIRE(d.elements.size() == 3);
     CHECK(d.elements.back().prefix == "double ");
     CHECK(d.elements.back().name == "area");
@@ -75,8 +75,8 @@ TEST_CASE("name_decode decodes a prefix+postfix method signature (real: Square::
 
 TEST_CASE("name_decode strips Phase 3's TU-local disambiguator from displayName but keeps it in qualifiedName (real: tu_a/tu_b helper)", "[name_decode]")
 {
-    const kg::db::DecodedName a = decodeSerializedName(kTuAHelper);
-    const kg::db::DecodedName b = decodeSerializedName(kTuBHelper);
+    const symhow::db::DecodedName a = decodeSerializedName(kTuAHelper);
+    const symhow::db::DecodedName b = decodeSerializedName(kTuBHelper);
 
     CHECK(a.qualifiedName() == "helper() [tu_a.cpp#317677a3]");
     CHECK(b.qualifiedName() == "helper() [tu_b.cpp#c490d472]");
@@ -93,7 +93,7 @@ TEST_CASE("name_decode strips Phase 3's TU-local disambiguator from displayName 
 
 TEST_CASE("name_decode disambiguator stripping also works on a return-type-prefixed function (real: tu_a main)", "[name_decode]")
 {
-    const kg::db::DecodedName d = decodeSerializedName(kTuAMain);
+    const symhow::db::DecodedName d = decodeSerializedName(kTuAMain);
     CHECK(d.elements.back().prefix == "int ");
     CHECK(d.qualifiedName() == "main() [tu_a.cpp#317677a3]");
     CHECK(d.displayName() == "main()");
@@ -106,7 +106,7 @@ TEST_CASE("name_decode hand-constructed: multi-element hierarchy with a non-empt
     //   nameDelimiter + "\tm" + name0 + "\ts" + prefix0 + "\tp" + postfix0
     //     + "\tn" + name1 + "\ts" + prefix1 + "\tp" + postfix1 + ...
     const std::string serialized = "::\tmouter\ts\tp\tninner\tsPfx \tp[]";
-    const kg::db::DecodedName d = decodeSerializedName(serialized);
+    const symhow::db::DecodedName d = decodeSerializedName(serialized);
 
     REQUIRE(d.nameDelimiter == "::");
     REQUIRE(d.elements.size() == 2);
@@ -129,20 +129,20 @@ TEST_CASE("name_decode does not strip a bracket suffix that almost, but doesn't 
 {
     // Only 4 hex digits, not 8 -- must not be treated as a disambiguator.
     const std::string notQuiteDisambig = "::\tmfoo\tsvoid \tp() [x#1234]";
-    const kg::db::DecodedName d1 = decodeSerializedName(notQuiteDisambig);
+    const symhow::db::DecodedName d1 = decodeSerializedName(notQuiteDisambig);
     CHECK(d1.displayName() == d1.qualifiedName());
     CHECK(d1.displayName() == "foo() [x#1234]");
 
     // No trailing "#" at all.
     const std::string noHash = "::\tmfoo\tsvoid \tp() [array of 4]";
-    const kg::db::DecodedName d2 = decodeSerializedName(noHash);
+    const symhow::db::DecodedName d2 = decodeSerializedName(noHash);
     CHECK(d2.displayName() == d2.qualifiedName());
 }
 
 TEST_CASE("name_decode single-element (no ancestors) name, e.g. a free function", "[name_decode]")
 {
     const std::string serialized = "::\tmlevel0\tsint \tp()";
-    const kg::db::DecodedName d = decodeSerializedName(serialized);
+    const symhow::db::DecodedName d = decodeSerializedName(serialized);
     REQUIRE(d.elements.size() == 1);
     CHECK(d.namePath() == "level0");
     CHECK(d.qualifiedName() == "level0()");

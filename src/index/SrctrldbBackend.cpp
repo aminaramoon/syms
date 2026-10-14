@@ -1,4 +1,4 @@
-#include "kg/index/SrctrldbBackend.h"
+#include "symhow/index/SrctrldbBackend.h"
 
 #include <cstdio>
 #include <sstream>
@@ -13,18 +13,18 @@
 #include "SourcetrailDBWriter.h"
 #include "SymbolKind.h"
 
-#include "kg/common/Paths.h"
-#include "kg/db/Meta.h"
-#include "kg/db/WritableDb.h"
-#include "kg/index/Provenance.h"
+#include "symhow/common/Paths.h"
+#include "symhow/db/Meta.h"
+#include "symhow/db/WritableDb.h"
+#include "symhow/index/Provenance.h"
 
-namespace kg::index
+namespace symhow::index
 {
 
 namespace
 {
 
-sourcetrail::NameHierarchy toNameHierarchy(const kg::model::Name& name)
+sourcetrail::NameHierarchy toNameHierarchy(const symhow::model::Name& name)
 {
     sourcetrail::NameHierarchy nh;
     nh.nameDelimiter = name.delimiter;
@@ -36,9 +36,9 @@ sourcetrail::NameHierarchy toNameHierarchy(const kg::model::Name& name)
     return nh;
 }
 
-sourcetrail::SymbolKind translateSymbolKind(kg::model::SymbolKind kind)
+sourcetrail::SymbolKind translateSymbolKind(symhow::model::SymbolKind kind)
 {
-    using kg::model::SymbolKind;
+    using symhow::model::SymbolKind;
     switch (kind)
     {
         case SymbolKind::Namespace:
@@ -78,9 +78,9 @@ sourcetrail::SymbolKind translateSymbolKind(kg::model::SymbolKind kind)
     }
 }
 
-sourcetrail::ReferenceKind translateReferenceKind(kg::model::ReferenceKind kind)
+sourcetrail::ReferenceKind translateReferenceKind(symhow::model::ReferenceKind kind)
 {
-    using kg::model::ReferenceKind;
+    using symhow::model::ReferenceKind;
     switch (kind)
     {
         case ReferenceKind::TypeUsage:
@@ -103,14 +103,14 @@ sourcetrail::ReferenceKind translateReferenceKind(kg::model::ReferenceKind kind)
     }
 }
 
-sourcetrail::DefinitionKind translateDefinitionKind(kg::model::DefinitionKind kind)
+sourcetrail::DefinitionKind translateDefinitionKind(symhow::model::DefinitionKind kind)
 {
-    return kind == kg::model::DefinitionKind::Explicit ? sourcetrail::DefinitionKind::EXPLICIT : sourcetrail::DefinitionKind::IMPLICIT;
+    return kind == symhow::model::DefinitionKind::Explicit ? sourcetrail::DefinitionKind::EXPLICIT : sourcetrail::DefinitionKind::IMPLICIT;
 }
 
-int resolveLocal(const std::vector<int>& arr, kg::model::LocalId id)
+int resolveLocal(const std::vector<int>& arr, symhow::model::LocalId id)
 {
-    return (id != kg::model::kNoLocal && id < arr.size()) ? arr[id] : 0;
+    return (id != symhow::model::kNoLocal && id < arr.size()) ? arr[id] : 0;
 }
 
 std::string joinIds(const std::unordered_set<int>& ids)
@@ -156,9 +156,9 @@ bool SrctrldbBackend::begin(const std::string& dbPath, std::string* err)
     // open across a consume() call).
     try
     {
-        m_sideDb = std::make_unique<kg::db::WritableDb>(dbPath, /*foreignKeys=*/false);
+        m_sideDb = std::make_unique<symhow::db::WritableDb>(dbPath, /*foreignKeys=*/false);
         m_sideDb->query("SELECT 1 FROM file LIMIT 1", [&](sqlite3_stmt*) { m_hasExistingFiles = true; });
-        m_sideDb->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='kg_file_fingerprint'",
+        m_sideDb->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='symhow_file_fingerprint'",
             [&](sqlite3_stmt*) { m_hasExistingFingerprints = true; });
     }
     catch (const std::exception& e)
@@ -205,7 +205,7 @@ int SrctrldbBackend::ensureFileNodeByPath(const std::string& path, const std::st
         m_fileNodeIdByPath.emplace(path, id);
         if (id != 0)
         {
-            m_normalizedFileNodeId[kg::common::paths::normalize(path)] = id;
+            m_normalizedFileNodeId[symhow::common::paths::normalize(path)] = id;
         }
     }
     if (id != 0)
@@ -220,7 +220,7 @@ int SrctrldbBackend::ensureFileNodeByPath(const std::string& path, const std::st
     return id;
 }
 
-int SrctrldbBackend::ensureFileNode(const kg::model::FileFact& fact)
+int SrctrldbBackend::ensureFileNode(const symhow::model::FileFact& fact)
 {
     const int id = ensureFileNodeByPath(fact.path, fact.language, fact.indexed);
     if (id != 0 && fact.indexed)
@@ -233,7 +233,7 @@ int SrctrldbBackend::ensureFileNode(const kg::model::FileFact& fact)
             // facts. Only a newly materialized file, or a surviving file
             // with an identical prior hash, can get a trusted fingerprint.
             const std::string sql = m_hasExistingFingerprints
-                ? "SELECT fp.sha256 FROM file f LEFT JOIN kg_file_fingerprint fp ON fp.file_node_id=f.id WHERE f.id=?1"
+                ? "SELECT fp.sha256 FROM file f LEFT JOIN symhow_file_fingerprint fp ON fp.file_node_id=f.id WHERE f.id=?1"
                 : "SELECT NULL FROM file WHERE id=?1";
             m_sideDb->query(sql,
                 [&](sqlite3_stmt* stmt) { sqlite3_bind_int(stmt, 1, id); },
@@ -257,7 +257,7 @@ int SrctrldbBackend::ensureFileNode(const kg::model::FileFact& fact)
     return id;
 }
 
-int SrctrldbBackend::resolveTuFileReal(const kg::model::TuFactBatch& batch, const std::vector<int>& fileReal)
+int SrctrldbBackend::resolveTuFileReal(const symhow::model::TuFactBatch& batch, const std::vector<int>& fileReal)
 {
     // batch.stats.tuFile is the CDB entry's `file` field (post-remap,
     // already normalized by IndexDriver before being stashed here), while
@@ -268,10 +268,10 @@ int SrctrldbBackend::resolveTuFileReal(const kg::model::TuFactBatch& batch, cons
     // resolved the very same file for this batch -- so look for a batch
     // FileFact whose normalized path matches first, and only fall back to
     // minting a new one.
-    const std::string normalizedTuFile = kg::common::paths::normalize(batch.stats.tuFile);
+    const std::string normalizedTuFile = symhow::common::paths::normalize(batch.stats.tuFile);
     for (std::size_t i = 0; i < batch.files.size(); ++i)
     {
-        if (kg::common::paths::normalize(batch.files[i].path) == normalizedTuFile)
+        if (symhow::common::paths::normalize(batch.files[i].path) == normalizedTuFile)
         {
             return fileReal[i];
         }
@@ -279,11 +279,11 @@ int SrctrldbBackend::resolveTuFileReal(const kg::model::TuFactBatch& batch, cons
     return ensureFileNodeByPath(normalizedTuFile, "cpp", /*indexed=*/true);
 }
 
-void SrctrldbBackend::bufferKindDef(int nodeId, kg::model::SymbolKind kind, kg::model::DefinitionKind definition)
+void SrctrldbBackend::bufferKindDef(int nodeId, symhow::model::SymbolKind kind, symhow::model::DefinitionKind definition)
 {
     BufferedKindDef& buffered = m_pendingKindDef[nodeId];
-    const int newRank = kg::model::kindRank(kind);
-    const int curRank = kg::model::kindRank(buffered.kind);
+    const int newRank = symhow::model::kindRank(kind);
+    const int curRank = symhow::model::kindRank(buffered.kind);
     bool takeKind = newRank > curRank;
     if (!takeKind && newRank == curRank)
     {
@@ -293,8 +293,8 @@ void SrctrldbBackend::bufferKindDef(int nodeId, kg::model::SymbolKind kind, kg::
         // "first observed wins". Two equal-rank kinds that disagree (e.g.
         // CLASS vs STRUCT for a merged/collapsed name, or FUNCTION vs
         // METHOD) used to keep whichever TU's observation happened to reach
-        // this node first -- which differs between a single full `kg index`
-        // session and a multi-session resume/`kg update` that re-observes
+        // this node first -- which differs between a single full `symhow index`
+        // session and a multi-session resume/`symhow update` that re-observes
         // the same node in a different TU order. Comparing the deterministic
         // kindOrder(kind) = (kindRank(kind), nodeKindInt(kind)) pair instead
         // makes the buffered (and, transitively, the persisted) kind a pure
@@ -314,9 +314,9 @@ void SrctrldbBackend::bufferKindDef(int nodeId, kg::model::SymbolKind kind, kg::
     }
 }
 
-int SrctrldbBackend::ensureSymbolNode(const kg::model::SymbolFact& fact)
+int SrctrldbBackend::ensureSymbolNode(const symhow::model::SymbolFact& fact)
 {
-    if (fact.kind == kg::model::SymbolKind::File)
+    if (fact.kind == symhow::model::SymbolKind::File)
     {
         // File "symbols" reuse the exact same node id as the corresponding
         // FileFact's own node (there is no separate sourcetrail::SymbolKind
@@ -362,7 +362,7 @@ int SrctrldbBackend::ensureSymbolNode(const kg::model::SymbolFact& fact)
         {
             std::fprintf(
                 stderr,
-                "kg index: warning: symbol name collision -- keys '%s' and '%s' both serialize to '%s'; merged into node %d\n",
+                "symhow index: warning: symbol name collision -- keys '%s' and '%s' both serialize to '%s'; merged into node %d\n",
                 nameIt->second.c_str(),
                 fact.key.c_str(),
                 serialized.c_str(),
@@ -393,7 +393,7 @@ int SrctrldbBackend::ensureLocalSymbolNode(const std::string& name)
     return id;
 }
 
-int SrctrldbBackend::ensureReference(int ctxReal, int targetReal, kg::model::ReferenceKind kind)
+int SrctrldbBackend::ensureReference(int ctxReal, int targetReal, symhow::model::ReferenceKind kind)
 {
     const RefTripleKey key{ctxReal, targetReal, static_cast<int>(kind)};
     auto it = m_refByTriple.find(key);
@@ -407,7 +407,7 @@ int SrctrldbBackend::ensureReference(int ctxReal, int targetReal, kg::model::Ref
     return id;
 }
 
-bool SrctrldbBackend::consume(const kg::model::TuFactBatch& batch, std::string* err)
+bool SrctrldbBackend::consume(const symhow::model::TuFactBatch& batch, std::string* err)
 {
     if (!m_writer)
     {
@@ -431,7 +431,7 @@ bool SrctrldbBackend::consume(const kg::model::TuFactBatch& batch, std::string* 
         const int symId = symReal[i];
         if (symId != 0)
         {
-            for (const kg::model::LocalId declFile : batch.symbols[i].declFiles)
+            for (const symhow::model::LocalId declFile : batch.symbols[i].declFiles)
             {
                 const int fileId = resolveLocal(fileReal, declFile);
                 if (fileId != 0)
@@ -452,15 +452,15 @@ bool SrctrldbBackend::consume(const kg::model::TuFactBatch& batch, std::string* 
     {
         bool solved;
         int realId;
-        kg::model::ReferenceKind kind;
+        symhow::model::ReferenceKind kind;
         int ctxReal;
     };
     std::vector<RefState> refStates(batch.references.size());
     for (std::size_t i = 0; i < batch.references.size(); ++i)
     {
-        const kg::model::ReferenceFact& rf = batch.references[i];
+        const symhow::model::ReferenceFact& rf = batch.references[i];
         const int ctxReal = resolveLocal(symReal, rf.context);
-        if (rf.target != kg::model::kNoLocal)
+        if (rf.target != symhow::model::kNoLocal)
         {
             const int tgtReal = resolveLocal(symReal, rf.target);
             refStates[i] = RefState{true, ensureReference(ctxReal, tgtReal, rf.kind), rf.kind, ctxReal};
@@ -475,7 +475,7 @@ bool SrctrldbBackend::consume(const kg::model::TuFactBatch& batch, std::string* 
         }
     }
 
-    for (const kg::model::OccurrenceFact& occ : batch.occurrences)
+    for (const symhow::model::OccurrenceFact& occ : batch.occurrences)
     {
         const sourcetrail::SourceRange sr{
             resolveLocal(fileReal, occ.range.file),
@@ -486,21 +486,21 @@ bool SrctrldbBackend::consume(const kg::model::TuFactBatch& batch, std::string* 
 
         switch (occ.cls)
         {
-            case kg::model::ElementClass::Symbol:
+            case symhow::model::ElementClass::Symbol:
             {
                 const int id = resolveLocal(symReal, occ.element);
                 switch (occ.kind)
                 {
-                    case kg::model::LocationKind::Token:
+                    case symhow::model::LocationKind::Token:
                         m_writer->recordSymbolLocation(id, sr);
                         break;
-                    case kg::model::LocationKind::Scope:
+                    case symhow::model::LocationKind::Scope:
                         m_writer->recordSymbolScopeLocation(id, sr);
                         break;
-                    case kg::model::LocationKind::Signature:
+                    case symhow::model::LocationKind::Signature:
                         m_writer->recordSymbolSignatureLocation(id, sr);
                         break;
-                    case kg::model::LocationKind::Qualifier:
+                    case symhow::model::LocationKind::Qualifier:
                         m_writer->recordQualifierLocation(id, sr);
                         break;
                     default:
@@ -508,13 +508,13 @@ bool SrctrldbBackend::consume(const kg::model::TuFactBatch& batch, std::string* 
                 }
                 break;
             }
-            case kg::model::ElementClass::LocalSymbol:
+            case symhow::model::ElementClass::LocalSymbol:
             {
                 const int id = resolveLocal(localReal, occ.element);
                 m_writer->recordLocalSymbolLocation(id, sr);
                 break;
             }
-            case kg::model::ElementClass::Reference:
+            case symhow::model::ElementClass::Reference:
             {
                 if (occ.element >= refStates.size())
                 {
@@ -538,7 +538,7 @@ bool SrctrldbBackend::consume(const kg::model::TuFactBatch& batch, std::string* 
     }
 
     int tuFileReal = 0;
-    for (const kg::model::ErrorFact& e : batch.errors)
+    for (const symhow::model::ErrorFact& e : batch.errors)
     {
         sourcetrail::SourceRange sr{0, 1, 1, 1, 1};
         if (e.hasRange)
@@ -568,9 +568,9 @@ bool SrctrldbBackend::consume(const kg::model::TuFactBatch& batch, std::string* 
     return true;
 }
 
-void SrctrldbBackend::flushPending(kg::db::WritableDb& db, const std::vector<PendingTuRow>& tuRows)
+void SrctrldbBackend::flushPending(symhow::db::WritableDb& db, const std::vector<PendingTuRow>& tuRows)
 {
-    db.exec(kKgFileFingerprintDdl);
+    db.exec(kSymhowFileFingerprintDdl);
     // Non-indexed files touched since the last flush: the vendored writer
     // always creates a `file` row as indexed=1/complete=1 (recordFile()
     // has no concept of "non-indexed"), so every file this pass recorded
@@ -585,33 +585,33 @@ void SrctrldbBackend::flushPending(kg::db::WritableDb& db, const std::vector<Pen
         const std::string idList = joinIds(m_nonIndexedFileIds);
         db.exec("UPDATE file SET indexed = 0, complete = 0 WHERE id IN (" + idList + ");");
         db.exec("DELETE FROM filecontent WHERE id IN (" + idList + ");");
-        db.exec("DELETE FROM kg_file_fingerprint WHERE file_node_id IN (" + idList + ");");
+        db.exec("DELETE FROM symhow_file_fingerprint WHERE file_node_id IN (" + idList + ");");
         m_nonIndexedFileIds.clear();
     }
 
-    // --- kg-private side tables (Phase 1: incremental-update groundwork) ---
+    // --- symhow-private side tables (Phase 1: incremental-update groundwork) ---
     // IF NOT EXISTS: cheap and idempotent, so safe to redo on every
     // checkpoint (in case this is the very first flush of the session).
     db.exec(
-        "CREATE TABLE IF NOT EXISTS kg_symbol_def("
+        "CREATE TABLE IF NOT EXISTS symhow_symbol_def("
         "node_id INTEGER NOT NULL, "
         "file_node_id INTEGER NOT NULL, "
         "PRIMARY KEY(node_id, file_node_id)"
         ") WITHOUT ROWID;");
-    db.exec(kKgTuDdl);
+    db.exec(kSymhowTuDdl);
 
     // Persist only this checkpoint's delta, from the bytes libclang parsed,
     // never by re-reading disk after parsing (especially important for -j).
-    // Fingerprints and kg_tu status land in the same checkpoint transaction.
+    // Fingerprints and symhow_tu status land in the same checkpoint transaction.
     for (int id : m_pendingFileFingerprints)
     {
         const std::string& hash = m_fileFingerprints.at(id);
-        db.execBound("DELETE FROM kg_file_fingerprint WHERE file_node_id=?1",
+        db.execBound("DELETE FROM symhow_file_fingerprint WHERE file_node_id=?1",
             [&](sqlite3_stmt* stmt) { sqlite3_bind_int(stmt, 1, id); });
         if (!hash.empty())
         {
             db.execBound(
-                "INSERT INTO kg_file_fingerprint(file_node_id, sha256) "
+                "INSERT INTO symhow_file_fingerprint(file_node_id, sha256) "
                 "SELECT id, ?2 FROM file WHERE id=?1 AND indexed=1 AND complete=1",
                 [&](sqlite3_stmt* stmt) {
                     sqlite3_bind_int(stmt, 1, id);
@@ -621,11 +621,11 @@ void SrctrldbBackend::flushPending(kg::db::WritableDb& db, const std::vector<Pen
     }
     m_pendingFileFingerprints.clear();
 
-    // kg_touched: every node id THIS indexing pass created or looked up
+    // symhow_touched: every node id THIS indexing pass created or looked up
     // (symbols via m_byKey, files via m_fileNodeIdByPath). Describes the
-    // most recent pass -- for a full `kg index` that is simply "every node
-    // in the database", for a partial re-index (`kg update`, or resuming an
-    // interrupted `kg index` via `kg update`) it is exactly the set of
+    // most recent pass -- for a full `symhow index` that is simply "every node
+    // in the database", for a partial re-index (`symhow update`, or resuming an
+    // interrupted `symhow index` via `symhow update`) it is exactly the set of
     // nodes the re-indexed TUs still produce. Invalidator's post-index
     // sweep needs that distinction: a node with no occurrence and no
     // non-MEMBER edge is indistinguishable from a legitimate implicit-
@@ -636,18 +636,18 @@ void SrctrldbBackend::flushPending(kg::db::WritableDb& db, const std::vector<Pen
     //
     // DROP+recreate happens exactly ONCE per session (the first flush --
     // checkpoint() or finish(), whichever runs first), not on every
-    // checkpoint: kg_touched must describe the WHOLE session's output (every
+    // checkpoint: symhow_touched must describe the WHOLE session's output (every
     // checkpoint's nodes), not just the latest chunk's -- dropping it on
     // every checkpoint would un-protect nodes from earlier, already-
     // committed chunks of the SAME run.
-    if (!m_kgTouchedInitialized)
+    if (!m_symhowTouchedInitialized)
     {
-        db.exec("DROP TABLE IF EXISTS kg_touched;");
-        db.exec("CREATE TABLE kg_touched(node_id INTEGER PRIMARY KEY) WITHOUT ROWID;");
-        m_kgTouchedInitialized = true;
+        db.exec("DROP TABLE IF EXISTS symhow_touched;");
+        db.exec("CREATE TABLE symhow_touched(node_id INTEGER PRIMARY KEY) WITHOUT ROWID;");
+        m_symhowTouchedInitialized = true;
     }
     {
-        static const char* kInsertTouchedSql = "INSERT OR IGNORE INTO kg_touched(node_id) VALUES(?1)";
+        static const char* kInsertTouchedSql = "INSERT OR IGNORE INTO symhow_touched(node_id) VALUES(?1)";
         for (int nodeId : m_touchedSinceFlush)
         {
             if (nodeId == 0)
@@ -670,8 +670,8 @@ void SrctrldbBackend::flushPending(kg::db::WritableDb& db, const std::vector<Pen
         for (;;)
         {
             db.exec(
-                "INSERT OR IGNORE INTO kg_touched(node_id) SELECT e.source_node_id FROM edge e "
-                "JOIN kg_touched t ON t.node_id = e.target_node_id WHERE e.type = 1;");
+                "INSERT OR IGNORE INTO symhow_touched(node_id) SELECT e.source_node_id FROM edge e "
+                "JOIN symhow_touched t ON t.node_id = e.target_node_id WHERE e.type = 1;");
             if (db.changes() <= 0)
             {
                 break;
@@ -689,7 +689,7 @@ void SrctrldbBackend::flushPending(kg::db::WritableDb& db, const std::vector<Pen
             // not, the node is NOT this pass's output and must stay
             // collectable like any other.
             db.exec(
-                "INSERT OR IGNORE INTO kg_touched(node_id) SELECT id FROM node "
+                "INSERT OR IGNORE INTO symhow_touched(node_id) SELECT id FROM node "
                 "WHERE serialized_name = char(9) || 'munsolved symbol' || char(9) || 's' || char(9) || 'p';");
         }
     }
@@ -724,10 +724,10 @@ void SrctrldbBackend::flushPending(kg::db::WritableDb& db, const std::vector<Pen
     // "first real kind wins"): libstdc++'s `std::pair` is reached both as a
     // ClassTemplate (-> CLASS, rank 2) and as a StructDecl (-> STRUCT, rank
     // 2), so which TU happened to observe it FIRST decided node.type -- and
-    // "first" differs between a single full `kg index` session and a
-    // multi-session resume/`kg update` that re-observes the same node in a
-    // different TU order (caught by `kg dbdiff` between a fresh 200-TU
-    // index and a 26+174-TU `kg update` resume on the cucs corpus).
+    // "first" differs between a single full `symhow index` session and a
+    // multi-session resume/`symhow update` that re-observes the same node in a
+    // different TU order (caught by `symhow dbdiff` between a fresh 200-TU
+    // index and a 26+174-TU `symhow update` resume on the cucs corpus).
     // Comparing `type < ?1` (the numeric NodeKind int) on a rank tie
     // instead makes the final answer a pure function of the SET of
     // observed kinds across the whole run, independent of which session or
@@ -757,7 +757,7 @@ void SrctrldbBackend::flushPending(kg::db::WritableDb& db, const std::vector<Pen
         // keeps a real kind from ever being downgraded back to TYPE/UNKNOWN.
         {
             const int newNodeKindInt = sourcetrail::nodeKindToInt(sourcetrail::symbolKindToNodeKind(translateSymbolKind(kd.kind)));
-            const int newRank = kg::model::kindRank(kd.kind);
+            const int newRank = symhow::model::kindRank(kd.kind);
             db.execBound(
                 kUpdateNodeTypeSql,
                 [&](sqlite3_stmt* stmt) {
@@ -769,7 +769,7 @@ void SrctrldbBackend::flushPending(kg::db::WritableDb& db, const std::vector<Pen
                 });
         }
 
-        if (kd.definition != kg::model::DefinitionKind::None)
+        if (kd.definition != symhow::model::DefinitionKind::None)
         {
             const int dkInt = sourcetrail::definitionKindToInt(translateDefinitionKind(kd.definition));
             db.execBound(
@@ -782,7 +782,7 @@ void SrctrldbBackend::flushPending(kg::db::WritableDb& db, const std::vector<Pen
     }
     m_pendingKindDef.clear();
 
-    static const char* kInsertSymbolDefSql = "INSERT OR IGNORE INTO kg_symbol_def(node_id, file_node_id) VALUES(?1, ?2)";
+    static const char* kInsertSymbolDefSql = "INSERT OR IGNORE INTO symhow_symbol_def(node_id, file_node_id) VALUES(?1, ?2)";
     for (const auto& [nodeId, fileId] : m_pendingSymbolDef)
     {
         db.execBound(
@@ -794,7 +794,7 @@ void SrctrldbBackend::flushPending(kg::db::WritableDb& db, const std::vector<Pen
     }
     m_pendingSymbolDef.clear();
 
-    // --- kg_tu: one upsert per PATH whose LAST entry was consumed since
+    // --- symhow_tu: one upsert per PATH whose LAST entry was consumed since
     // the last flush ----------------------------------------------------
     // `tuRows` only ever contains one row per path that actually completed
     // (IndexDriver only pushes a PendingTuRow once a path's last CDB entry,
@@ -802,15 +802,15 @@ void SrctrldbBackend::flushPending(kg::db::WritableDb& db, const std::vector<Pen
     // so an interrupted run that stopped mid-path never reaches this UPSERT
     // for that path at all -- see PendingTuRow's doc comment and
     // docs/KNOWN_LIMITATIONS.md's "Phase 9" section. Still idempotent
-    // (ON CONFLICT DO UPDATE) since a `kg update` re-index of an
+    // (ON CONFLICT DO UPDATE) since a `symhow update` re-index of an
     // already-indexed path legitimately reaches this UPSERT again.
     static const char* kUpsertTuSql =
-        "INSERT INTO kg_tu(path, args_hash, file_node_id, status, entry_count) VALUES(?1, ?2, ?3, ?4, ?5) "
+        "INSERT INTO symhow_tu(path, args_hash, file_node_id, status, entry_count) VALUES(?1, ?2, ?3, ?4, ?5) "
         "ON CONFLICT(path) DO UPDATE SET args_hash = excluded.args_hash, file_node_id = excluded.file_node_id, "
         "status = excluded.status, entry_count = excluded.entry_count";
     for (const PendingTuRow& row : tuRows)
     {
-        const std::string normalizedPath = kg::common::paths::normalize(row.path);
+        const std::string normalizedPath = symhow::common::paths::normalize(row.path);
         const auto it = m_normalizedFileNodeId.find(normalizedPath);
         db.execBound(
             kUpsertTuSql,
@@ -845,7 +845,7 @@ bool SrctrldbBackend::commitAndFlush(const std::vector<PendingTuRow>& tuRows, st
     // NOTE: kind/definition-kind are NO LONGER pushed through the vendored
     // writer here (recordSymbolKind unconditionally overwrites node.type;
     // recordSymbolDefinitionKind is first-write-wins via INSERT OR IGNORE --
-    // neither behavior is safe for a future incremental `kg update` that
+    // neither behavior is safe for a future incremental `symhow update` that
     // re-consumes a symbol observed differently across runs). Instead
     // they're applied via flushPending()/our own WritableDb, with an
     // explicit never-downgrade guard on node.type and a max()-upgrade on
@@ -903,21 +903,21 @@ bool SrctrldbBackend::finishInterrupted(const std::vector<PendingTuRow>& tuRows,
     m_writer.reset();
     m_sideDb.reset();
     // Deliberately: no reader indices, no ANALYZE/VACUUM, and
-    // kg_index_in_progress is left set -- finish() (via a later `kg update`)
+    // symhow_index_in_progress is left set -- finish() (via a later `symhow update`)
     // does all of that.
     return true;
 }
 
-bool SrctrldbBackend::finish(kg::model::IndexSummary& summary, std::string* err)
+bool SrctrldbBackend::finish(symhow::model::IndexSummary& summary, std::string* err)
 {
     // By the time finish() runs, the caller has already checkpoint()ed
     // everything (the LAST checkpoint() call, covering whatever wasn't
     // flushed yet, is the caller's job -- for commitEvery=0 that's the
     // ONLY checkpoint() call, covering the entire run): every buffer here
-    // is empty and every kg_tu row already written. finish() just needs to
+    // is empty and every symhow_tu row already written. finish() just needs to
     // close out the writer's (now-empty) transaction and do the one-time,
     // end-of-run-only work: reader indices, non-indexed-file cleanup,
-    // ANALYZE/VACUUM, and clearing kg_index_in_progress.
+    // ANALYZE/VACUUM, and clearing symhow_index_in_progress.
     if (!m_writer)
     {
         if (err != nullptr)
@@ -946,12 +946,12 @@ bool SrctrldbBackend::finish(kg::model::IndexSummary& summary, std::string* err)
     m_writer.reset();
 
     // Post-write correction + reader indices, via our own raw sqlite3
-    // handle (kg::db::WritableDb) -- never patch the vendored writer to do
+    // handle (symhow::db::WritableDb) -- never patch the vendored writer to do
     // this instead. Reuses m_sideDb (already open) rather than a fresh
     // connection.
     try
     {
-        kg::db::WritableDb& db = *m_sideDb;
+        symhow::db::WritableDb& db = *m_sideDb;
         db.begin();
 
         // Any non-indexed files from THIS (final) checkpoint's own
@@ -969,18 +969,18 @@ bool SrctrldbBackend::finish(kg::model::IndexSummary& summary, std::string* err)
             m_nonIndexedFileIds.clear();
         }
 
-        kg::db::deleteMeta(db, "kg_index_in_progress");
+        symhow::db::deleteMeta(db, "symhow_index_in_progress");
 
         static const char* kIndexStatements[] = {
-            "CREATE INDEX IF NOT EXISTS kg_edge_source_idx ON edge(source_node_id);",
-            "CREATE INDEX IF NOT EXISTS kg_edge_target_idx ON edge(target_node_id);",
-            "CREATE INDEX IF NOT EXISTS kg_edge_type_idx ON edge(type);",
-            "CREATE INDEX IF NOT EXISTS kg_node_type_idx ON node(type);",
-            "CREATE INDEX IF NOT EXISTS kg_srcloc_file_idx ON source_location(file_node_id);",
-            "CREATE INDEX IF NOT EXISTS kg_occurrence_elem_idx ON occurrence(element_id);",
-            "CREATE INDEX IF NOT EXISTS kg_occurrence_loc_idx ON occurrence(source_location_id);",
-            "CREATE INDEX IF NOT EXISTS kg_file_path_idx ON file(path);",
-            "CREATE INDEX IF NOT EXISTS kg_symbol_defkind_idx ON symbol(definition_kind);",
+            "CREATE INDEX IF NOT EXISTS symhow_edge_source_idx ON edge(source_node_id);",
+            "CREATE INDEX IF NOT EXISTS symhow_edge_target_idx ON edge(target_node_id);",
+            "CREATE INDEX IF NOT EXISTS symhow_edge_type_idx ON edge(type);",
+            "CREATE INDEX IF NOT EXISTS symhow_node_type_idx ON node(type);",
+            "CREATE INDEX IF NOT EXISTS symhow_srcloc_file_idx ON source_location(file_node_id);",
+            "CREATE INDEX IF NOT EXISTS symhow_occurrence_elem_idx ON occurrence(element_id);",
+            "CREATE INDEX IF NOT EXISTS symhow_occurrence_loc_idx ON occurrence(source_location_id);",
+            "CREATE INDEX IF NOT EXISTS symhow_file_path_idx ON file(path);",
+            "CREATE INDEX IF NOT EXISTS symhow_symbol_defkind_idx ON symbol(definition_kind);",
         };
         for (const char* stmt : kIndexStatements)
         {
@@ -991,7 +991,7 @@ bool SrctrldbBackend::finish(kg::model::IndexSummary& summary, std::string* err)
 
         // ANALYZE/VACUUM are best-effort maintenance, not correctness --
         // a fully-written, already-committed database must not be treated
-        // as a failed `kg index` run just because one of these throws (e.g.
+        // as a failed `symhow index` run just because one of these throws (e.g.
         // VACUUM needing free disk space it doesn't have). Downgrade each to
         // an independent stderr warning instead, restoring the previous
         // ignore-result behavior.
@@ -1001,7 +1001,7 @@ bool SrctrldbBackend::finish(kg::model::IndexSummary& summary, std::string* err)
         }
         catch (const std::exception& e)
         {
-            std::fprintf(stderr, "kg index: warning: ANALYZE failed: %s\n", e.what());
+            std::fprintf(stderr, "symhow index: warning: ANALYZE failed: %s\n", e.what());
         }
         if (!m_noVacuum && m_anyNonIndexedFiles)
         {
@@ -1011,7 +1011,7 @@ bool SrctrldbBackend::finish(kg::model::IndexSummary& summary, std::string* err)
             }
             catch (const std::exception& e)
             {
-                std::fprintf(stderr, "kg index: warning: VACUUM failed: %s\n", e.what());
+                std::fprintf(stderr, "symhow index: warning: VACUUM failed: %s\n", e.what());
             }
         }
     }
@@ -1034,4 +1034,4 @@ bool SrctrldbBackend::finish(kg::model::IndexSummary& summary, std::string* err)
     return true;
 }
 
-}  // namespace kg::index
+}  // namespace symhow::index

@@ -1,4 +1,4 @@
-#include "kg/update/UpdateDriver.h"
+#include "symhow/update/UpdateDriver.h"
 
 #include <algorithm>
 #include <chrono>
@@ -13,20 +13,20 @@
 
 #include <nlohmann/json.hpp>
 
-#include "kg/common/ContentHash.h"
-#include "kg/db/Database.h"
-#include "kg/db/Meta.h"
-#include "kg/db/WritableDb.h"
-#include "kg/index/IndexDriver.h"
-#include "kg/index/Provenance.h"
-#include "kg/model/IndexBackend.h"
-#include "kg/notes/Sync.h"
-#include "kg/update/FileMatcher.h"
-#include "kg/update/Git.h"
-#include "kg/update/GitDiff.h"
-#include "kg/update/Invalidator.h"
+#include "symhow/common/ContentHash.h"
+#include "symhow/db/Database.h"
+#include "symhow/db/Meta.h"
+#include "symhow/db/WritableDb.h"
+#include "symhow/index/IndexDriver.h"
+#include "symhow/index/Provenance.h"
+#include "symhow/model/IndexBackend.h"
+#include "symhow/notes/Sync.h"
+#include "symhow/update/FileMatcher.h"
+#include "symhow/update/Git.h"
+#include "symhow/update/GitDiff.h"
+#include "symhow/update/Invalidator.h"
 
-namespace kg::update
+namespace symhow::update
 {
 
 namespace
@@ -49,7 +49,7 @@ std::string utcTimestampNow()
 }
 
 // Best-effort: returns the current dirty-paths list (mirrors
-// kg::cli::buildProvenance's `kg index` behavior), or the previous value if
+// symhow::cli::buildProvenance's `symhow index` behavior), or the previous value if
 // git status can't be run.
 std::vector<std::string> currentDirtyPaths(const std::string& repoRoot, const std::vector<std::string>& fallback)
 {
@@ -65,15 +65,15 @@ std::vector<std::string> currentDirtyPaths(const std::string& repoRoot, const st
     return parseStatusPorcelainZ(*status, repoRoot);
 }
 
-// Builds the `kg.update-summary/1` envelope for the "error" case ("--json"
+// Builds the `symhow.update-summary/1` envelope for the "error" case ("--json"
 // still needs to emit SOMETHING structured on refusals/hard errors, not
 // just silence -- see docs/JSON_SCHEMA.md). Never used for a successful
 // run (see buildSummaryJson() below for that).
 nlohmann::json buildErrorJson(const UpdateRunOptions& options, const std::string& message, int exitCode)
 {
     nlohmann::json j;
-    j["kg_version"] = options.kgVersion;
-    j["schema"] = "kg.update-summary/1";
+    j["symhow_version"] = options.symhowVersion;
+    j["schema"] = "symhow.update-summary/1";
     j["database"] = options.dbPath;
     j["error"] = message;
     j["exit_code"] = exitCode;
@@ -82,7 +82,7 @@ nlohmann::json buildErrorJson(const UpdateRunOptions& options, const std::string
 
 void reportRefused(const UpdateRunOptions& options, const std::string& message)
 {
-    std::fprintf(stderr, "kg update: refused: %s\n", message.c_str());
+    std::fprintf(stderr, "symhow update: refused: %s\n", message.c_str());
     if (options.json)
     {
         std::printf("%s\n", buildErrorJson(options, message, 2).dump().c_str());
@@ -91,22 +91,22 @@ void reportRefused(const UpdateRunOptions& options, const std::string& message)
 
 void reportError(const UpdateRunOptions& options, const std::string& message)
 {
-    std::fprintf(stderr, "kg update: error: %s\n", message.c_str());
+    std::fprintf(stderr, "symhow update: error: %s\n", message.c_str());
     if (options.json)
     {
         std::printf("%s\n", buildErrorJson(options, message, 1).dump().c_str());
     }
 }
 
-// Builds the full `kg.update-summary/1` envelope for a successful (rc 0 or
+// Builds the full `symhow.update-summary/1` envelope for a successful (rc 0 or
 // 5) run, dry-run included, straight from `summary`'s already-populated
 // fields -- shared by the "nothing to do" (exit 5), --dry-run (exit 0), and
 // real-update (exit 0) JSON output paths so all three stay in sync.
 nlohmann::json buildSummaryJson(const UpdateRunOptions& options, const UpdateSummary& s)
 {
     nlohmann::json j;
-    j["kg_version"] = options.kgVersion;
-    j["schema"] = "kg.update-summary/1";
+    j["symhow_version"] = options.symhowVersion;
+    j["schema"] = "symhow.update-summary/1";
     j["database"] = s.database;
     j["dry_run"] = s.dryRun;
     j["in_place"] = s.inPlace;
@@ -165,9 +165,9 @@ nlohmann::json buildSummaryJson(const UpdateRunOptions& options, const UpdateSum
     return j;
 }
 
-// RAII guard for `<db>.kg-lock`, held for the whole runUpdate() call
+// RAII guard for `<db>.symhow-lock`, held for the whole runUpdate() call
 // (including the exit-5 "nothing to do" provenance refresh) so two
-// concurrent `kg update` invocations against the same database can't race
+// concurrent `symhow update` invocations against the same database can't race
 // each other. Uses open(O_CREAT|O_EXCL) -- atomic create-if-absent, same
 // trick `flock`-less tools have used forever -- rather than a real flock()
 // so a stale lock from a crashed process is trivially diagnosable (it's
@@ -178,17 +178,17 @@ public:
     ~UpdateLock() { release(); }
 
     // Returns true (and holds the lock until this object is destroyed, or
-    // release() is called) if `dbPath + ".kg-lock"` didn't already exist;
+    // release() is called) if `dbPath + ".symhow-lock"` didn't already exist;
     // false (with `*err` set) if it did.
     bool acquire(const std::string& dbPath, std::string* err)
     {
-        path_ = dbPath + ".kg-lock";
+        path_ = dbPath + ".symhow-lock";
         const int fd = ::open(path_.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0644);
         if (fd < 0)
         {
             if (err != nullptr)
             {
-                *err = "another kg update is running (or crashed; remove " + path_ + " if stale)";
+                *err = "another symhow update is running (or crashed; remove " + path_ + " if stale)";
             }
             path_.clear();
             return false;
@@ -226,9 +226,9 @@ std::string projSidecarFor(const std::string& path)
 
 struct EffectiveOptions
 {
-    kg::index::CompileDbOptions dbOptions;
-    kg::index::SanitizerOptions sanitizerOptions;
-    kg::index::SystemFileRows systemFileRows = kg::index::SystemFileRows::Direct;
+    symhow::index::CompileDbOptions dbOptions;
+    symhow::index::SanitizerOptions sanitizerOptions;
+    symhow::index::SystemFileRows systemFileRows = symhow::index::SystemFileRows::Direct;
 };
 
 }  // namespace
@@ -237,7 +237,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
 {
     const auto runStart = std::chrono::steady_clock::now();
     // One cache shared by planning, matching and selection; never across runs.
-    kg::common::paths::NormalizationCache normalizePath;
+    symhow::common::paths::NormalizationCache normalizePath;
     UpdateSummary summary;
     summary.database = options.dbPath;
     summary.dryRun = options.dryRun;
@@ -246,9 +246,9 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     // --- 0. concurrency guard + hot-journal check -----------------------------
     // Held for the ENTIRE function (RAII -- released on every return path,
     // including every early refusal/error below and the exit-5 "nothing to
-    // do" path), so two concurrent `kg update` runs against the same
+    // do" path), so two concurrent `symhow update` runs against the same
     // database can't race each other (e.g. both deciding it's safe to set
-    // kg_update_in_progress, or both copying the same working-copy name).
+    // symhow_update_in_progress, or both copying the same working-copy name).
     UpdateLock lock;
     {
         std::string lockErr;
@@ -260,7 +260,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     }
 
     // A `-journal`/`-wal` file next to the original means a previous
-    // process (sqlite itself, or a previous `kg update`/`kg index`) may
+    // process (sqlite itself, or a previous `symhow update`/`symhow index`) may
     // have crashed mid-write -- copying (or, for --in-place, writing
     // directly into) a database with a hot journal risks propagating an
     // inconsistent snapshot. Refuse rather than guess.
@@ -275,37 +275,37 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     }
 
     // --- 1. open read-only, read provenance, run refusal checks ------------
-    std::optional<kg::index::Provenance> prov;
+    std::optional<symhow::index::Provenance> prov;
     bool resumingInterruptedIndex = false;
     try
     {
-        kg::db::Database db(options.dbPath, options.verbose);
-        prov = kg::index::readProvenance(db.handle());
+        symhow::db::Database db(options.dbPath, options.verbose);
+        prov = symhow::index::readProvenance(db.handle());
         if (prov.has_value())
         {
-            const std::optional<std::string> inProgress = kg::db::getMeta(db.handle(), "kg_update_in_progress");
+            const std::optional<std::string> inProgress = symhow::db::getMeta(db.handle(), "symhow_update_in_progress");
             if (inProgress.has_value() && *inProgress == "1")
             {
                 reportRefused(
                     options,
-                    "an update is already in progress on this database (kg_update_in_progress is set) -- if a "
-                    "previous `kg update --in-place` was interrupted, re-index from scratch to recover");
+                    "an update is already in progress on this database (symhow_update_in_progress is set) -- if a "
+                    "previous `symhow update --in-place` was interrupted, re-index from scratch to recover");
                 return 2;
             }
 
-            // Phase 8: a database left with kg_index_in_progress="1" is an
-            // INTERRUPTED `kg index` run, not a corrupt/mid-write one (its
+            // Phase 8: a database left with symhow_index_in_progress="1" is an
+            // INTERRUPTED `symhow index` run, not a corrupt/mid-write one (its
             // provenance and every completed checkpoint's facts are
             // durable) -- resume it instead of refusing. See the retry-set
             // computation below (step "Phase 8 resume") for how the
             // never-indexed suffix gets picked up.
-            const std::optional<std::string> indexInProgress = kg::db::getMeta(db.handle(), "kg_index_in_progress");
+            const std::optional<std::string> indexInProgress = symhow::db::getMeta(db.handle(), "symhow_index_in_progress");
             if (indexInProgress.has_value() && *indexInProgress == "1")
             {
                 resumingInterruptedIndex = true;
                 if (!options.json)
                 {
-                    std::fprintf(stderr, "kg update: resuming interrupted index (kg_index_in_progress was set)\n");
+                    std::fprintf(stderr, "symhow update: resuming interrupted index (symhow_index_in_progress was set)\n");
                 }
             }
         }
@@ -318,34 +318,34 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
 
     if (!prov.has_value())
     {
-        reportRefused(options, "no provenance found (not written by this version of kg, or by the real Sourcetrail indexer)");
+        reportRefused(options, "no provenance found (not written by this version of symhow, or by the real Sourcetrail indexer)");
         return 2;
     }
-    if (prov->walkerVersion != kg::index::kWalkerVersion)
+    if (prov->walkerVersion != symhow::index::kWalkerVersion)
     {
         reportRefused(
             options,
-            "database was written by walker version " + std::to_string(prov->walkerVersion) + ", this kg is walker version " +
-            std::to_string(kg::index::kWalkerVersion) + " -- re-index from scratch");
+            "database was written by walker version " + std::to_string(prov->walkerVersion) + ", this symhow is walker version " +
+            std::to_string(symhow::index::kWalkerVersion) + " -- re-index from scratch");
         return 2;
     }
-    if (prov->systemFileRows == kg::index::SystemFileRows::All)
+    if (prov->systemFileRows == symhow::index::SystemFileRows::All)
     {
-        reportRefused(options, "database was indexed with --system-file-rows=all, which `kg update` doesn't support incrementally");
+        reportRefused(options, "database was indexed with --system-file-rows=all, which `symhow update` doesn't support incrementally");
         return 2;
     }
 
     const std::string repoRoot = !options.repoRoot.empty() ? options.repoRoot : prov->repoRoot;
     if (repoRoot.empty() && options.explicitFiles.empty())
     {
-        reportRefused(options, "no repo root available (neither --repo nor a stored kg_repo_root) and no --files given");
+        reportRefused(options, "no repo root available (neither --repo nor a stored symhow_repo_root) and no --files given");
         return 2;
     }
 
     const std::string cdbPath = !options.cdbPath.empty() ? options.cdbPath : prov->cdbPath;
     if (cdbPath.empty())
     {
-        reportRefused(options, "no compile_commands.json path available (neither -c nor a stored kg_cdb_path)");
+        reportRefused(options, "no compile_commands.json path available (neither -c nor a stored symhow_cdb_path)");
         return 2;
     }
 
@@ -403,8 +403,8 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     {
         std::fprintf(
             stderr,
-            "kg update: warning: CLI overrides change include/exclude globs, cuda mode, or system-file-rows -- the "
-            "resulting database will diverge from a fresh `kg index` with these options\n");
+            "symhow update: warning: CLI overrides change include/exclude globs, cuda mode, or system-file-rows -- the "
+            "resulting database will diverge from a fresh `symhow index` with these options\n");
     }
 
     // --- 2. compute changes --------------------------------------------------
@@ -427,7 +427,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
         const std::string baseline = !options.fromRev.empty() ? options.fromRev : prov->repoCommit;
         if (baseline.empty())
         {
-            reportRefused(options, "no baseline commit available (neither --from nor a stored kg_repo_commit)");
+            reportRefused(options, "no baseline commit available (neither --from nor a stored symhow_repo_commit)");
             return 2;
         }
         const bool toGiven = !options.toRev.empty();
@@ -479,11 +479,11 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     summary.fromRev = !options.explicitFiles.empty() ? std::string() : (!options.fromRev.empty() ? options.fromRev : prov->repoCommit);
     summary.toRev = newBaseline;
 
-    // --- load CDB, existing kg_tu rows ---------------------------------------
-    std::vector<kg::index::CompileEntry> cdb;
+    // --- load CDB, existing symhow_tu rows ---------------------------------------
+    std::vector<symhow::index::CompileEntry> cdb;
     try
     {
-        cdb = kg::index::load(cdbPath, eff.dbOptions);
+        cdb = symhow::index::load(cdbPath, eff.dbOptions);
     }
     catch (const std::exception& e)
     {
@@ -506,18 +506,18 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
 
     try
     {
-        kg::db::Database db(options.dbPath, 0);
-        bool haveKgTu = false;
-        db.run("SELECT 1 FROM sqlite_master WHERE type='table' AND name='kg_tu'", [&](sqlite3_stmt*) { haveKgTu = true; });
-        if (haveKgTu)
+        symhow::db::Database db(options.dbPath, 0);
+        bool haveSymhowTu = false;
+        db.run("SELECT 1 FROM sqlite_master WHERE type='table' AND name='symhow_tu'", [&](sqlite3_stmt*) { haveSymhowTu = true; });
+        if (haveSymhowTu)
         {
-            // Phase 4: kg_tu gained a `status` column (see Provenance.h's
-            // kKgTuDdl) that replaces the old (Phase 3) "no outgoing
+            // Phase 4: symhow_tu gained a `status` column (see Provenance.h's
+            // kSymhowTuDdl) that replaces the old (Phase 3) "no outgoing
             // INCLUDE edge" retry heuristic with a precise per-TU outcome.
-            // Later, kg_tu gained an `entry_count` column (the duplicate-
+            // Later, symhow_tu gained an `entry_count` column (the duplicate-
             // CDB-entry fix -- args_hash became a COMBINED, per-path hash
             // instead of a single entry's, see CompileDb.h's
-            // pathArgsHashes()) -- a kg_tu table that predates either
+            // pathArgsHashes()) -- a symhow_tu table that predates either
             // column (PRAGMA table_info doesn't list it) is legacy: refuse,
             // same as any other provenance-shape mismatch -- there is no
             // way to retry-classify/flag-compare it correctly (in
@@ -525,7 +525,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
             // hash, not the combined one this code now compares against).
             bool haveStatusColumn = false;
             bool haveEntryCountColumn = false;
-            db.run("PRAGMA table_info(kg_tu)", [&](sqlite3_stmt* stmt) {
+            db.run("PRAGMA table_info(symhow_tu)", [&](sqlite3_stmt* stmt) {
                 const char* colName = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
                 if (colName == nullptr)
                 {
@@ -545,19 +545,19 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
             {
                 reportRefused(
                     options,
-                    "database's kg_tu table predates per-TU status tracking (kg_tu.status) -- re-index from scratch");
+                    "database's symhow_tu table predates per-TU status tracking (symhow_tu.status) -- re-index from scratch");
                 return 2;
             }
             if (!haveEntryCountColumn)
             {
                 reportRefused(
                     options,
-                    "database's kg_tu table predates duplicate-CDB-entry tracking (kg_tu.entry_count) -- re-index "
+                    "database's symhow_tu table predates duplicate-CDB-entry tracking (symhow_tu.entry_count) -- re-index "
                     "from scratch");
                 return 2;
             }
 
-            db.run("SELECT path, args_hash, file_node_id, status FROM kg_tu", [&](sqlite3_stmt* stmt) {
+            db.run("SELECT path, args_hash, file_node_id, status FROM symhow_tu", [&](sqlite3_stmt* stmt) {
                 TuRow row;
                 const char* p = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
                 row.path = p != nullptr ? p : "";
@@ -588,11 +588,11 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     }
 
     // Flag-change detection: a PATH's combined args hash (see
-    // kg::index::pathArgsHashes()'s doc comment) differs from its kg_tu
-    // row -> Modified. A kg_tu row whose path is absent from the CDB ->
+    // symhow::index::pathArgsHashes()'s doc comment) differs from its symhow_tu
+    // row -> Modified. A symhow_tu row whose path is absent from the CDB ->
     // Deleted. Compared per PATH, not per CDB entry: a real CDB can list
     // the same source file more than once (several targets/configs with
-    // different flags), and kg_tu keeps exactly one row per path -- so
+    // different flags), and symhow_tu keeps exactly one row per path -- so
     // there is exactly one hash to compare against, computed once up front
     // from EVERY entry of that path together (not whichever entry happens
     // to be iterated), and both entries flag (or don't flag) together
@@ -611,9 +611,9 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     {
         try
         {
-            kg::db::Database db(options.dbPath, 0);
+            symhow::db::Database db(options.dbPath, 0);
             bool haveFingerprints = false;
-            db.run("SELECT 1 FROM sqlite_master WHERE type='table' AND name='kg_file_fingerprint'",
+            db.run("SELECT 1 FROM sqlite_master WHERE type='table' AND name='symhow_file_fingerprint'",
                 [&](sqlite3_stmt*) { haveFingerprints = true; });
             if (haveFingerprints)
             {
@@ -635,7 +635,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
                         continue;
                     }
                     db.run(
-                        "SELECT fp.sha256 FROM kg_file_fingerprint fp JOIN file f ON f.id=fp.file_node_id "
+                        "SELECT fp.sha256 FROM symhow_file_fingerprint fp JOIN file f ON f.id=fp.file_node_id "
                         "WHERE f.id=?1 AND f.indexed=1 AND f.complete=1",
                         [&](sqlite3_stmt* stmt) { sqlite3_bind_int64(stmt, 1, id); },
                         [&](sqlite3_stmt* stmt) {
@@ -678,7 +678,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
                     auto disk = diskHashes.find(norm);
                     if (disk == diskHashes.end())
                     {
-                        disk = diskHashes.emplace(norm, kg::common::fileContentHash(change.newPath)).first;
+                        disk = diskHashes.emplace(norm, symhow::common::fileContentHash(change.newPath)).first;
                     }
                     return disk->second.has_value() && *disk->second == indexed->second;
                 }), changes.end());
@@ -691,7 +691,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
         }
     }
 
-    const std::unordered_map<std::string, kg::index::PathArgsInfo> cdbPathHashes = kg::index::pathArgsHashes(cdb);
+    const std::unordered_map<std::string, symhow::index::PathArgsInfo> cdbPathHashes = symhow::index::pathArgsHashes(cdb);
     std::unordered_set<std::string> cdbNormPaths;
     std::unordered_set<std::string> flaggedNormPaths;
     uint32_t flagChangedCount = 0;
@@ -730,7 +730,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
         }
     }
 
-    // Retry set (Phase 4): CDB entries whose kg_tu.status from the previous
+    // Retry set (Phase 4): CDB entries whose symhow_tu.status from the previous
     // run is anything other than "ok" -- precise per-TU tracking, replacing
     // the old (Phase 3) "no outgoing INCLUDE edge" over-approximation (see
     // docs/KNOWN_LIMITATIONS.md's Phase 4 section).
@@ -749,16 +749,16 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
         }
     }
 
-    // Phase 8 resume: when resuming an interrupted `kg index`, the retry set
-    // must ALSO cover every CDB entry with NO kg_tu row at all -- not just
+    // Phase 8 resume: when resuming an interrupted `symhow index`, the retry set
+    // must ALSO cover every CDB entry with NO symhow_tu row at all -- not just
     // ones a `git diff` happened to flag as Added (match.newTus, below, is
     // git-diff-driven only). This is the "untracked suffix" the interrupted
-    // run never got to: since checkpoints commit kg_tu rows for a
-    // contiguous CDB prefix (the parallel reorder buffer guarantees kg_tu
+    // run never got to: since checkpoints commit symhow_tu rows for a
+    // contiguous CDB prefix (the parallel reorder buffer guarantees symhow_tu
     // rows land in CDB order regardless of -j), every CDB entry past the
     // last checkpoint -- and any entry whose file happens to have a `file`
     // row already (e.g. reached as a header by an earlier, completed TU)
-    // but was never itself indexed as a TU -- has no kg_tu row and lands
+    // but was never itself indexed as a TU -- has no symhow_tu row and lands
     // here.
     if (resumingInterruptedIndex)
     {
@@ -774,7 +774,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
 
     // De-duplicate `changes`: a file that's both git-diff-detected AND
     // flag/CDB-derived (e.g. a deleted TU is simultaneously a real `git
-    // diff` Deleted entry AND a "kg_tu row has no CDB entry anymore"
+    // diff` Deleted entry AND a "symhow_tu row has no CDB entry anymore"
     // synthetic Deleted entry above; likewise a TU whose content changed
     // in the same commit its compile flags changed would otherwise get a
     // git-diff Modified entry AND a flag-changed Modified entry) would
@@ -797,7 +797,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
         changes = std::move(deduped);
     }
 
-    // files.renamed (kg.update-summary/1): count of Renamed entries git diff
+    // files.renamed (symhow.update-summary/1): count of Renamed entries git diff
     // detected (GitDiff::parseNameStatusZ's `R<score>` entries) -- was
     // previously hardcoded to 0 in the JSON output below (a real gap, not
     // just cosmetic: the scenario test's `git mv` step needs a real count).
@@ -827,7 +827,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     {
         for (const auto& u : match.unmatched)
         {
-            std::fprintf(stderr, "kg update: unmatched: %s\n", u.c_str());
+            std::fprintf(stderr, "symhow update: unmatched: %s\n", u.c_str());
         }
     }
 
@@ -836,7 +836,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     // candidate below is resolved back to its precise file.path spelling
     // via a normalized-path lookup before being added. This also matters
     // for a git-changed HEADER: matchChanged() only classifies against
-    // kg_tu/CDB (TUs), so a changed header with no CDB entry of its own
+    // symhow_tu/CDB (TUs), so a changed header with no CDB entry of its own
     // always lands in `unmatched` -- but it's still a real `file.path` row,
     // and the whole point of the reverse-INCLUDE closure (computeClearSet
     // step 1) is to discover which TUs include it, so it MUST still be fed
@@ -886,7 +886,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
 
     // --- 4. nothing to do? ----------------------------------------------------
     // deletedSeed (not match.deleted!) is the right emptiness check here:
-    // match.deleted only covers changed paths that already had a kg_tu row
+    // match.deleted only covers changed paths that already had a symhow_tu row
     // (an indexed TU), so a DELETED HEADER (never a TU itself, only ever
     // classified via the dbPathByNorm/changes loop above into
     // deletedSeedSet) would be invisible to match.deleted alone -- making
@@ -903,21 +903,21 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
         {
             try
             {
-                kg::db::WritableDb w(options.dbPath, false);
+                symhow::db::WritableDb w(options.dbPath, false);
                 w.begin();
                 if (!repoRoot.empty())
                 {
-                    kg::db::setMeta(w, "kg_repo_commit", newBaseline);
-                    kg::db::setMeta(w, "kg_dirty_paths", nlohmann::json(currentDirtyPaths(repoRoot, dirtyPaths)).dump());
-                    kg::db::setMeta(w, "kg_last_update_at", utcTimestampNow());
+                    symhow::db::setMeta(w, "symhow_repo_commit", newBaseline);
+                    symhow::db::setMeta(w, "symhow_dirty_paths", nlohmann::json(currentDirtyPaths(repoRoot, dirtyPaths)).dump());
+                    symhow::db::setMeta(w, "symhow_last_update_at", utcTimestampNow());
                 }
                 if (resumingInterruptedIndex)
                 {
-                    // Every TU already has a kg_tu row (the interrupted run
+                    // Every TU already has a symhow_tu row (the interrupted run
                     // must have reached the very last checkpoint before
                     // being interrupted) -- there's genuinely nothing left
                     // to index, so just clear the flag.
-                    kg::db::deleteMeta(w, "kg_index_in_progress");
+                    symhow::db::deleteMeta(w, "symhow_index_in_progress");
                 }
                 w.commit();
             }
@@ -929,7 +929,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
         summary.elapsedMs = millisSince(runStart);
         if (!options.json)
         {
-            std::fprintf(stderr, "kg update: nothing to do\n");
+            std::fprintf(stderr, "symhow update: nothing to do\n");
         }
         else
         {
@@ -964,18 +964,18 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     }
     else if (!options.dryRun)
     {
-        // NEVER write kg_update_in_progress on a --dry-run -- the whole
+        // NEVER write symhow_update_in_progress on a --dry-run -- the whole
         // point of --in-place --dry-run is to be side-effect-free. Setting
         // this flag here and only clearing it after a real re-index (step
         // 9, far below, which a dry-run's early return skips entirely)
-        // used to brick the database: every later `kg update` would see
+        // used to brick the database: every later `symhow update` would see
         // the stale flag and refuse forever, with no real update ever
         // having modified anything.
         try
         {
-            kg::db::WritableDb w(options.dbPath, false);
+            symhow::db::WritableDb w(options.dbPath, false);
             w.begin();
-            kg::db::setMeta(w, "kg_update_in_progress", "1");
+            symhow::db::setMeta(w, "symhow_update_in_progress", "1");
             w.commit();
         }
         catch (const std::exception& e)
@@ -998,7 +998,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     ClearPlan plan;
     try
     {
-        kg::db::WritableDb w(work, true);
+        symhow::db::WritableDb w(work, true);
         std::vector<std::string> tuPathsForClosure;
         tuPathsForClosure.reserve(cdb.size());
         for (const auto& e : cdb)
@@ -1043,8 +1043,8 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
         reindexNorm.insert(normalizePath(p));
     }
 
-    std::vector<kg::index::CompileEntry> presetEntries = selectEntries(cdb, reindexNorm, normalizePath);
-    std::vector<kg::index::CompileEntry> filteredEntries;
+    std::vector<symhow::index::CompileEntry> presetEntries = selectEntries(cdb, reindexNorm, normalizePath);
+    std::vector<symhow::index::CompileEntry> filteredEntries;
     filteredEntries.reserve(presetEntries.size());
     uint32_t skippedMissing = 0;
     for (auto& entry : presetEntries)
@@ -1054,7 +1054,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
             ++skippedMissing;
             if (options.verbose > 0)
             {
-                std::fprintf(stderr, "kg update: warning: skipping missing file '%s'\n", entry.file.c_str());
+                std::fprintf(stderr, "symhow update: warning: skipping missing file '%s'\n", entry.file.c_str());
             }
             continue;
         }
@@ -1070,7 +1070,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     {
         std::fprintf(
             stderr,
-            "kg update: dry-run: would clear %zu files (%u seed, %u via includes, %u pruned headers); would "
+            "symhow update: dry-run: would clear %zu files (%u seed, %u via includes, %u pruned headers); would "
             "re-index %u TUs (%u new, %u retried, %u skipped-missing)\n",
             plan.clearedFileIds.size(),
             plan.seedFiles,
@@ -1108,7 +1108,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     GcStats gc;
     try
     {
-        kg::db::WritableDb w(work, true);
+        symhow::db::WritableDb w(work, true);
         gc = invalidate(w, plan);
     }
     catch (const std::exception& e)
@@ -1119,11 +1119,11 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     }
 
     // --- 7. re-index ----------------------------------------------------------
-    kg::model::IndexSummary idxSummary;
+    symhow::model::IndexSummary idxSummary;
     const auto indexStart = std::chrono::steady_clock::now();
     if (!filteredEntries.empty())
     {
-        kg::index::IndexRunOptions runOpts;
+        symhow::index::IndexRunOptions runOpts;
         runOpts.compileCommandsPath = cdbPath;
         runOpts.outputPath = work;
         runOpts.appendToExisting = true;
@@ -1133,14 +1133,14 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
         runOpts.noVacuum = options.noVacuum;
         runOpts.verbose = options.verbose > 0;
         runOpts.parallel = options.parallel;
-        runOpts.kgVersion = options.kgVersion;
+        runOpts.symhowVersion = options.symhowVersion;
         runOpts.dbOptions = eff.dbOptions;
         runOpts.sanitizerOptions = eff.sanitizerOptions;
         runOpts.systemFileRows = eff.systemFileRows;
 
-        kg::index::Provenance updated = *prov;
-        updated.kgVersion = options.kgVersion;
-        updated.walkerVersion = kg::index::kWalkerVersion;
+        symhow::index::Provenance updated = *prov;
+        updated.symhowVersion = options.symhowVersion;
+        updated.walkerVersion = symhow::index::kWalkerVersion;
         updated.cdbPath = std::filesystem::absolute(cdbPath).lexically_normal().string();
         updated.dbOptions = eff.dbOptions;
         updated.sanitizerOptions = eff.sanitizerOptions;
@@ -1151,7 +1151,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
         updated.lastUpdateAtUtc = utcTimestampNow();
         runOpts.provenance = updated;
 
-        const int rc = kg::index::runIndex(runOpts, &idxSummary);
+        const int rc = symhow::index::runIndex(runOpts, &idxSummary);
         if (rc == 1)
         {
             reportError(options, "re-indexing failed");
@@ -1163,7 +1163,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
             {
                 std::fprintf(
                     stderr,
-                    "kg update: the database was modified in place and left with kg_update_in_progress set -- "
+                    "symhow update: the database was modified in place and left with symhow_update_in_progress set -- "
                     "re-index from scratch to recover\n");
             }
             return 1;
@@ -1182,19 +1182,19 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     else
     {
         // Nothing to re-index (everything cleared was a pure deletion) --
-        // still refresh provenance so kg_repo_commit/dirty paths/
+        // still refresh provenance so symhow_repo_commit/dirty paths/
         // last-update-at stay current.
         try
         {
-            kg::db::WritableDb w(work, false);
+            symhow::db::WritableDb w(work, false);
             w.begin();
-            kg::index::Provenance updated = *prov;
-            updated.kgVersion = options.kgVersion;
+            symhow::index::Provenance updated = *prov;
+            updated.symhowVersion = options.symhowVersion;
             updated.repoRoot = repoRoot;
             updated.repoCommit = newBaseline;
             updated.dirtyPaths = currentDirtyPaths(repoRoot, dirtyPaths);
             updated.lastUpdateAtUtc = utcTimestampNow();
-            kg::index::writeProvenance(w, updated);
+            symhow::index::writeProvenance(w, updated);
             w.commit();
         }
         catch (const std::exception& e)
@@ -1209,7 +1209,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     // --- 8. post-index sweep ---------------------------------------------------
     try
     {
-        kg::db::WritableDb w2(work, true);
+        symhow::db::WritableDb w2(work, true);
         const GcStats sweep = sweepOrphans(w2);
         gc.edges += sweep.edges;
         gc.locations += sweep.locations;
@@ -1222,25 +1222,25 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     }
     catch (const std::exception& e)
     {
-        std::fprintf(stderr, "kg update: warning: post-index sweep failed: %s\n", e.what());
+        std::fprintf(stderr, "symhow update: warning: post-index sweep failed: %s\n", e.what());
     }
     summary.gc = gc;
 
     // --- 8.5. notes sync (Phase 3 of docs/NOTES_DESIGN.md) ---------------------
     // Best-effort: resolve a notes dir exactly like Cli.cpp's
-    // resolveNotesDirDefault() (meta.kg_notes_dir, else <repo root>/notes if
+    // resolveNotesDirDefault() (meta.symhow_notes_dir, else <repo root>/notes if
     // it exists), and if one exists on disk, re-run syncNotes() against the
-    // just-re-indexed working copy so `kg_note.stale` reflects the new code
+    // just-re-indexed working copy so `symhow_note.stale` reflects the new code
     // before this update is handed back to the caller. Runs BEFORE the
-    // kg_index_in_progress clear/rename below so it's part of the same
+    // symhow_index_in_progress clear/rename below so it's part of the same
     // working-copy state that becomes the final database. Never fails the
     // update -- any exception here is reported and swallowed.
     try
     {
         std::string notesDir;
         {
-            kg::db::Database rdb(work);
-            const std::optional<std::string> stored = kg::db::getMeta(rdb.handle(), "kg_notes_dir");
+            symhow::db::Database rdb(work);
+            const std::optional<std::string> stored = symhow::db::getMeta(rdb.handle(), "symhow_notes_dir");
             if (stored.has_value() && !stored->empty())
             {
                 notesDir = *stored;
@@ -1257,15 +1257,15 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
 
         if (!notesDir.empty() && std::filesystem::is_directory(notesDir))
         {
-            // Pre-sync stale set, straight from whatever the previous `kg
-            // notes sync` left in `kg_note` -- re-indexing itself never
+            // Pre-sync stale set, straight from whatever the previous `symhow
+            // notes sync` left in `symhow_note` -- re-indexing itself never
             // touches this cache, so it's still exactly last sync's result.
             std::unordered_set<std::string> preStale;
             {
-                kg::db::Database rdb(work);
+                symhow::db::Database rdb(work);
                 try
                 {
-                    rdb.run("SELECT serialized_name FROM kg_note WHERE stale = 1", [&](sqlite3_stmt* stmt) {
+                    rdb.run("SELECT serialized_name FROM symhow_note WHERE stale = 1", [&](sqlite3_stmt* stmt) {
                         const unsigned char* t = sqlite3_column_text(stmt, 0);
                         if (t != nullptr)
                         {
@@ -1275,16 +1275,16 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
                 }
                 catch (const std::exception&)
                 {
-                    // kg_note doesn't exist yet (never synced) -- preStale stays empty.
+                    // symhow_note doesn't exist yet (never synced) -- preStale stays empty.
                 }
             }
 
-            const kg::notes::SyncResult syncResult = kg::notes::syncNotes(work, notesDir, false);
+            const symhow::notes::SyncResult syncResult = symhow::notes::syncNotes(work, notesDir, false);
 
             std::unordered_set<std::string> postStale;
             {
-                kg::db::Database rdb(work);
-                rdb.run("SELECT serialized_name FROM kg_note WHERE stale = 1", [&](sqlite3_stmt* stmt) {
+                symhow::db::Database rdb(work);
+                rdb.run("SELECT serialized_name FROM symhow_note WHERE stale = 1", [&](sqlite3_stmt* stmt) {
                     const unsigned char* t = sqlite3_column_text(stmt, 0);
                     if (t != nullptr)
                     {
@@ -1320,26 +1320,26 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     }
     catch (const std::exception& e)
     {
-        std::fprintf(stderr, "kg update: warning: post-update notes sync failed: %s\n", e.what());
+        std::fprintf(stderr, "symhow update: warning: post-update notes sync failed: %s\n", e.what());
     }
 
-    // Phase 8: clear kg_index_in_progress on `work` -- before the rename/
+    // Phase 8: clear symhow_index_in_progress on `work` -- before the rename/
     // in-place-commit step below, so it's gone from whichever path
     // ultimately becomes `options.dbPath`. Idempotent (no-op if absent), so
     // safe to run unconditionally rather than gating on
     // resumingInterruptedIndex (a belt-and-suspenders cleanup: e.g. a copy
-    // made via `cp` of an in-progress db that `kg index` itself never got a
+    // made via `cp` of an in-progress db that `symhow index` itself never got a
     // chance to clear).
     try
     {
-        kg::db::WritableDb wflag(work, false);
+        symhow::db::WritableDb wflag(work, false);
         wflag.begin();
-        kg::db::deleteMeta(wflag, "kg_index_in_progress");
+        symhow::db::deleteMeta(wflag, "symhow_index_in_progress");
         wflag.commit();
     }
     catch (const std::exception& e)
     {
-        std::fprintf(stderr, "kg update: warning: failed to clear kg_index_in_progress: %s\n", e.what());
+        std::fprintf(stderr, "symhow update: warning: failed to clear symhow_index_in_progress: %s\n", e.what());
     }
 
     // --- 9. commit --------------------------------------------------------------
@@ -1360,16 +1360,16 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     {
         try
         {
-            kg::db::WritableDb w(options.dbPath, false);
+            symhow::db::WritableDb w(options.dbPath, false);
             w.begin();
-            kg::db::deleteMeta(w, "kg_update_in_progress");
+            symhow::db::deleteMeta(w, "symhow_update_in_progress");
             w.commit();
         }
         catch (const std::exception& e)
         {
             std::fprintf(
                 stderr,
-                "kg update: warning: failed to clear kg_update_in_progress after a successful update: %s\n",
+                "symhow update: warning: failed to clear symhow_update_in_progress after a successful update: %s\n",
                 e.what());
         }
     }
@@ -1380,7 +1380,7 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     {
         std::fprintf(
             stderr,
-            "kg update: cleared %zu files (%u via includes, %u pruned headers); re-indexed %u TUs (%u new, %u "
+            "symhow update: cleared %zu files (%u via includes, %u pruned headers); re-indexed %u TUs (%u new, %u "
             "retried, %u skipped-missing); gc: %lld nodes, %lld edges, %lld locations, %lld symbols reset; %llu "
             "ms\n",
             plan.clearedFileIds.size(),
@@ -1408,4 +1408,4 @@ int runUpdate(const UpdateRunOptions& options, UpdateSummary* out)
     return 0;
 }
 
-}  // namespace kg::update
+}  // namespace symhow::update

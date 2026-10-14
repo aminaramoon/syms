@@ -2,10 +2,10 @@
 
 #include <algorithm>
 
-#include "kg/query/FuzzyMatcher.h"
+#include "symhow/query/FuzzyMatcher.h"
 
-using kg::query::FuzzyHit;
-using kg::query::fuzzyMatch;
+using symhow::query::FuzzyHit;
+using symhow::query::fuzzyMatch;
 
 namespace
 {

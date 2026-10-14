@@ -1,4 +1,4 @@
-#include "kg/out/Out.h"
+#include "symhow/out/Out.h"
 
-// Phase 1 placeholder translation unit; keeps kg_out a non-empty static
+// Phase 1 placeholder translation unit; keeps symhow_out a non-empty static
 // library. Real JSON output formatting lands in a later phase.

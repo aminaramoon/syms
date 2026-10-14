@@ -1,4 +1,4 @@
-#include "kg/index/IndexDriver.h"
+#include "symhow/index/IndexDriver.h"
 
 #include <algorithm>
 #include <atomic>
@@ -19,21 +19,21 @@
 
 #include <sqlite3.h>
 
-#include "kg/common/Paths.h"
-#include "kg/db/Database.h"
-#include "kg/db/Meta.h"
-#include "kg/db/WritableDb.h"
-#include "kg/index/AstWalker.h"
-#include "kg/index/ClangUtil.h"
-#include "kg/index/CudaSupport.h"
-#include "kg/index/Progress.h"
-#include "kg/index/Provenance.h"
-#include "kg/index/SrctrldbBackend.h"
-#include "kg/index/TuParser.h"
-#include "kg/model/FactSink.h"
-#include "kg/model/IndexBackend.h"
+#include "symhow/common/Paths.h"
+#include "symhow/db/Database.h"
+#include "symhow/db/Meta.h"
+#include "symhow/db/WritableDb.h"
+#include "symhow/index/AstWalker.h"
+#include "symhow/index/ClangUtil.h"
+#include "symhow/index/CudaSupport.h"
+#include "symhow/index/Progress.h"
+#include "symhow/index/Provenance.h"
+#include "symhow/index/SrctrldbBackend.h"
+#include "symhow/index/TuParser.h"
+#include "symhow/model/FactSink.h"
+#include "symhow/model/IndexBackend.h"
 
-namespace kg::index
+namespace symhow::index
 {
 
 namespace
@@ -75,14 +75,14 @@ uint64_t millisSince(std::chrono::steady_clock::time_point start)
 }
 
 // Writes `prov` into `outputPath`'s `meta` table (plus
-// `kg_index_in_progress="1"`), in its own tiny transaction on a SEPARATE
+// `symhow_index_in_progress="1"`), in its own tiny transaction on a SEPARATE
 // short-lived WritableDb connection -- called right after
 // SrctrldbBackend::begin() (which opens the file and creates the schema,
 // but doesn't start the writer's transaction), BEFORE any TU is consumed.
-// This is what makes provenance (and the in-progress marker `kg update`
+// This is what makes provenance (and the in-progress marker `symhow update`
 // keys its "resume" behavior off) durable even if the run is interrupted
 // before a single TU finishes. No-op if `prov` isn't set (some low-level
-// callers, e.g. unit tests, run without provenance at all -- kg_tu rows are
+// callers, e.g. unit tests, run without provenance at all -- symhow_tu rows are
 // still written per-checkpoint regardless, see SrctrldbBackend::checkpoint).
 void writeProvenanceEarly(const std::string& outputPath, const std::optional<Provenance>& prov)
 {
@@ -90,25 +90,25 @@ void writeProvenanceEarly(const std::string& outputPath, const std::optional<Pro
     {
         return;
     }
-    kg::db::WritableDb db(outputPath, /*foreignKeys=*/false);
+    symhow::db::WritableDb db(outputPath, /*foreignKeys=*/false);
     db.begin();
     writeProvenance(db, *prov);
-    kg::db::setMeta(db, "kg_index_in_progress", "1");
+    symhow::db::setMeta(db, "symhow_index_in_progress", "1");
     db.commit();
 }
 
 // Records a single-file, single-error "couldn't even try" batch (used for
 // exceptions from sanitize(), a --cuda-mode skip, or clang_parseTranslationUnit2
 // producing no usable TU at all).
-kg::model::TuFactBatch minimalFailureBatch(const std::string& path, const std::string& message, bool fatal)
+symhow::model::TuFactBatch minimalFailureBatch(const std::string& path, const std::string& message, bool fatal)
 {
-    kg::model::BatchSink sink;
-    kg::model::FileFact ff;
+    symhow::model::BatchSink sink;
+    symhow::model::FileFact ff;
     ff.path = path;
     ff.language = "cpp";
     ff.indexed = true;
-    const kg::model::LocalId fid = sink.file(std::move(ff));
-    kg::model::SourceRange r;
+    const symhow::model::LocalId fid = sink.file(std::move(ff));
+    symhow::model::SourceRange r;
     r.file = fid;
     r.startLine = r.endLine = 1;
     r.startCol = r.endCol = 1;
@@ -116,18 +116,18 @@ kg::model::TuFactBatch minimalFailureBatch(const std::string& path, const std::s
     return sink.take();
 }
 
-void appendDiagnostics(const ParsedTU& parsed, FileRegistry& files, kg::model::FactSink& sink, bool& anyFatal)
+void appendDiagnostics(const ParsedTU& parsed, FileRegistry& files, symhow::model::FactSink& sink, bool& anyFatal)
 {
     for (const auto& d : parsed.diagnostics)
     {
-        kg::model::LocalId fileId = kg::model::kNoLocal;
+        symhow::model::LocalId fileId = symhow::model::kNoLocal;
         if (d.hasLocation && !d.file.empty())
         {
             CXFile file = clang_getFile(parsed.tu.get(), d.file.c_str());
             if (file != nullptr)
             {
                 const FileRegistry::Info& info = files.infoFor(parsed.tu.get(), file);
-                kg::model::FileFact ff;
+                symhow::model::FileFact ff;
                 ff.path = info.path;
                 ff.language = "cpp";
                 ff.indexed = info.indexed;
@@ -136,11 +136,11 @@ void appendDiagnostics(const ParsedTU& parsed, FileRegistry& files, kg::model::F
                 fileId = sink.file(std::move(ff));
             }
         }
-        kg::model::SourceRange range;
+        symhow::model::SourceRange range;
         range.file = fileId;
         range.startLine = range.endLine = d.line;
         range.startCol = range.endCol = d.col;
-        sink.error(d.message, d.fatal, fileId != kg::model::kNoLocal ? &range : nullptr);
+        sink.error(d.message, d.fatal, fileId != symhow::model::kNoLocal ? &range : nullptr);
         if (d.fatal)
         {
             anyFatal = true;
@@ -150,7 +150,7 @@ void appendDiagnostics(const ParsedTU& parsed, FileRegistry& files, kg::model::F
 
 struct RungResult
 {
-    kg::model::TuFactBatch batch;
+    symhow::model::TuFactBatch batch;
     bool contentOk = false;
     uint64_t parseMs = 0;
     uint64_t walkMs = 0;
@@ -175,19 +175,19 @@ RungResult tryRung(const CompileEntry& entry, SanitizerOptions sanitizerOptions,
     }
     catch (const std::exception& e)
     {
-        result.batch = minimalFailureBatch(entry.file, std::string("kg: failed to sanitize compiler arguments: ") + e.what(), true);
+        result.batch = minimalFailureBatch(entry.file, std::string("symhow: failed to sanitize compiler arguments: ") + e.what(), true);
         result.contentOk = false;
         return result;
     }
 
     if (sanResult.skipped)
     {
-        result.batch = minimalFailureBatch(entry.file, "kg: translation unit skipped (--cuda-mode skip)", false);
+        result.batch = minimalFailureBatch(entry.file, "symhow: translation unit skipped (--cuda-mode skip)", false);
         result.contentOk = false;
         return result;
     }
 
-    kg::model::BatchSink sink;
+    symhow::model::BatchSink sink;
     FileRegistry files(fileRegOptions);
 
     const auto parseStart = std::chrono::steady_clock::now();
@@ -199,7 +199,7 @@ RungResult tryRung(const CompileEntry& entry, SanitizerOptions sanitizerOptions,
     if (!parsed.ok)
     {
         result.batch = minimalFailureBatch(
-            entry.file, "kg: clang_parseTranslationUnit2 failed to produce a usable translation unit", true);
+            entry.file, "symhow: clang_parseTranslationUnit2 failed to produce a usable translation unit", true);
         result.contentOk = false;
         return result;
     }
@@ -214,16 +214,16 @@ RungResult tryRung(const CompileEntry& entry, SanitizerOptions sanitizerOptions,
     if (!sink.batch().hasContent())
     {
         const std::string mainPath = clangutil::toString(clang_getTranslationUnitSpelling(parsed.tu.get()));
-        kg::model::FileFact ff;
+        symhow::model::FileFact ff;
         ff.path = mainPath.empty() ? entry.file : mainPath;
         ff.language = "cpp";
         ff.indexed = true;
-        const kg::model::LocalId fid = sink.file(std::move(ff));
+        const symhow::model::LocalId fid = sink.file(std::move(ff));
         if (sink.batch().errors.empty())
         {
             std::ostringstream oss;
-            oss << "kg: translation unit produced no content (" << (parsed.diagErrors + parsed.diagFatal) << " error diagnostics)";
-            kg::model::SourceRange r;
+            oss << "symhow: translation unit produced no content (" << (parsed.diagErrors + parsed.diagFatal) << " error diagnostics)";
+            symhow::model::SourceRange r;
             r.file = fid;
             r.startLine = r.endLine = 1;
             r.startCol = r.endCol = 1;
@@ -244,10 +244,10 @@ RungResult tryRung(const CompileEntry& entry, SanitizerOptions sanitizerOptions,
 // deliberately NOT part of this function.
 struct TuOutcome
 {
-    kg::model::TuFactBatch batch;
+    symhow::model::TuFactBatch batch;
     uint32_t rungIndex = 0;
     bool hasContent = false;
-    std::string status;  // persisted kg_tu.status: "ok" / "partial" / "failed"
+    std::string status;  // persisted symhow_tu.status: "ok" / "partial" / "failed"
     double extractSeconds = 0.0;
 };
 
@@ -284,7 +284,7 @@ TuOutcome processEntry(const CompileEntry& entry, const IndexRunOptions& options
             {
                 best.batch = minimalFailureBatch(
                     entry.file,
-                    "kg: all CUDA rungs (full, nowrapper, host-only) failed to produce content for this translation unit",
+                    "symhow: all CUDA rungs (full, nowrapper, host-only) failed to produce content for this translation unit",
                     true);
                 best.contentOk = false;
                 rungIndex = 4;
@@ -298,7 +298,7 @@ TuOutcome processEntry(const CompileEntry& entry, const IndexRunOptions& options
             rungIndex = 0;
         }
 
-        best.batch.stats.tuFile = kg::common::paths::normalize(entry.file);
+        best.batch.stats.tuFile = symhow::common::paths::normalize(entry.file);
         best.batch.stats.parsedRungIndex = rungIndex;
         best.batch.stats.parsedOk = best.contentOk;
         best.batch.stats.parseMs = best.parseMs;
@@ -309,7 +309,7 @@ TuOutcome processEntry(const CompileEntry& entry, const IndexRunOptions& options
         out.hasContent = best.batch.hasContent();
         out.rungIndex = rungIndex;
 
-        // Per-TU status persisted into kg_tu.status (see Provenance.h) --
+        // Per-TU status persisted into symhow_tu.status (see Provenance.h) --
         // "failed" (no content), "partial" (content but a fatal diagnostic,
         // or a CUDA run that only succeeded on a degraded fallback rung),
         // "ok" otherwise. rungIndex is only meaningful for the CUDA
@@ -337,16 +337,16 @@ TuOutcome processEntry(const CompileEntry& entry, const IndexRunOptions& options
         // internally, but a worker thread must NEVER let an exception
         // escape and terminate the process (see Feature 2's thread-safety
         // requirements) -- so this is a last-resort net, not the normal path.
-        out.batch = minimalFailureBatch(entry.file, std::string("kg: unexpected exception during extraction: ") + e.what(), true);
-        out.batch.stats.tuFile = kg::common::paths::normalize(entry.file);
+        out.batch = minimalFailureBatch(entry.file, std::string("symhow: unexpected exception during extraction: ") + e.what(), true);
+        out.batch.stats.tuFile = symhow::common::paths::normalize(entry.file);
         out.hasContent = false;
         out.status = "failed";
         out.rungIndex = 0;
     }
     catch (...)
     {
-        out.batch = minimalFailureBatch(entry.file, "kg: unknown exception during extraction", true);
-        out.batch.stats.tuFile = kg::common::paths::normalize(entry.file);
+        out.batch = minimalFailureBatch(entry.file, "symhow: unknown exception during extraction", true);
+        out.batch.stats.tuFile = symhow::common::paths::normalize(entry.file);
         out.hasContent = false;
         out.status = "failed";
         out.rungIndex = 0;
@@ -363,8 +363,8 @@ TuOutcome processEntry(const CompileEntry& entry, const IndexRunOptions& options
 // otherwise (the TU parsed but produced no symbols/references, e.g. a
 // pure-declaration header with nothing indexable). Never used for anything
 // persisted -- TuOutcome::status (ok/partial/failed) is what lands in
-// kg_tu.status.
-// Ranks kg_tu.status for the worst-of-N-entries merge a multi-entry path
+// symhow_tu.status.
+// Ranks symhow_tu.status for the worst-of-N-entries merge a multi-entry path
 // needs (see PendingTuRow's doc comment): "failed" is worse than "partial"
 // is worse than "ok". Unrecognized strings are never produced by
 // processEntry() and rank as "ok" (0) defensively.
@@ -437,11 +437,11 @@ public:
         ++m_done;
         if (m_quietLevel == 0)
         {
-            const std::string path = kg::index::progress::relativeToRoot(absPath, m_repoRoot);
+            const std::string path = symhow::index::progress::relativeToRoot(absPath, m_repoRoot);
             std::fprintf(
                 stderr,
                 "%s\n",
-                kg::index::progress::formatProgressLine(m_done, m_total, seconds, displayStatusFor(outcome), path).c_str());
+                symhow::index::progress::formatProgressLine(m_done, m_total, seconds, displayStatusFor(outcome), path).c_str());
             std::fflush(stderr);
         }
         maybeSummary(/*force=*/m_done >= m_total);
@@ -457,7 +457,7 @@ private:
         if (m_quietLevel >= 2)
         {
             // -qq: no periodic summary at all -- only the unconditional
-            // final "kg index: N/N TUs produced content..." line (printed
+            // final "symhow index: N/N TUs produced content..." line (printed
             // separately, unconditionally, by runIndex()) survives.
             return;
         }
@@ -496,7 +496,7 @@ private:
         std::fprintf(
             stderr,
             "%s\n",
-            kg::index::progress::formatRunningSummary(m_done, m_total, tusPerMin, elapsedSeconds, etaSeconds).c_str());
+            symhow::index::progress::formatRunningSummary(m_done, m_total, tusPerMin, elapsedSeconds, etaSeconds).c_str());
         std::fflush(stderr);
 
         m_lastSummary = now;
@@ -514,7 +514,7 @@ private:
 
 }  // namespace
 
-int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut)
+int runIndex(const IndexRunOptions& options, symhow::model::IndexSummary* summaryOut)
 {
     installInterruptHandlers();
 
@@ -522,34 +522,34 @@ int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut
     {
         if (!options.force)
         {
-            // An existing output left with kg_index_in_progress="1" is an
-            // interrupted `kg index` run, not just "a database that happens
-            // to be there" -- point at the actual recovery path (`kg
+            // An existing output left with symhow_index_in_progress="1" is an
+            // interrupted `symhow index` run, not just "a database that happens
+            // to be there" -- point at the actual recovery path (`symhow
             // update`) rather than only offering --force (which discards
             // all the already-completed work).
             bool inProgress = false;
             try
             {
-                kg::db::Database existing(options.outputPath);
-                inProgress = kg::db::getMeta(existing.handle(), "kg_index_in_progress").value_or("") == "1";
+                symhow::db::Database existing(options.outputPath);
+                inProgress = symhow::db::getMeta(existing.handle(), "symhow_index_in_progress").value_or("") == "1";
             }
             catch (const std::exception&)
             {
-                // Not a readable kg-schema db (or no such meta row) --
+                // Not a readable symhow-schema db (or no such meta row) --
                 // treat as the ordinary "already exists" case below.
             }
             if (inProgress)
             {
                 std::fprintf(
                     stderr,
-                    "kg index: output '%s' contains an interrupted index run -- finish it with `kg update -d %s`, "
+                    "symhow index: output '%s' contains an interrupted index run -- finish it with `symhow update -d %s`, "
                     "or pass --force to discard it and start over\n",
                     options.outputPath.c_str(),
                     options.outputPath.c_str());
                 return 2;
             }
             std::fprintf(
-                stderr, "kg index: output '%s' already exists (use --force to overwrite)\n", options.outputPath.c_str());
+                stderr, "symhow index: output '%s' already exists (use --force to overwrite)\n", options.outputPath.c_str());
             return 1;
         }
         std::error_code ec;
@@ -573,7 +573,7 @@ int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut
         }
         catch (const std::exception& e)
         {
-            std::fprintf(stderr, "kg index: %s\n", e.what());
+            std::fprintf(stderr, "symhow index: %s\n", e.what());
             return 1;
         }
     }
@@ -585,14 +585,14 @@ int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut
 
     // Real compile_commands.json files can list the same `file` path more
     // than once (e.g. compiled for several targets with different flags) --
-    // kg_tu is keyed by path, so every entry of a duplicated path must
+    // symhow_tu is keyed by path, so every entry of a duplicated path must
     // agree on one combined, order-independent args_hash/entry_count
-    // (kg::index::pathArgsHashes(), see its doc comment) rather than
+    // (symhow::index::pathArgsHashes(), see its doc comment) rather than
     // whichever entry happened to be consumed (and therefore UPSERTed)
-    // last -- that used to make `kg update` see a false "flag changed" on
+    // last -- that used to make `symhow update` see a false "flag changed" on
     // EVERY run for any duplicated path. Computed once, up front, over the
     // final `entries` list (post limit/--stop-after doesn't apply here --
-    // this covers the CDB as loaded, matching what `kg update` will
+    // this covers the CDB as loaded, matching what `symhow update` will
     // independently recompute from the same CDB).
     const std::unordered_map<std::string, PathArgsInfo> pathHashes = pathArgsHashes(entries);
 
@@ -603,11 +603,11 @@ int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut
     std::string err;
     if (!backend.begin(options.outputPath, &err))
     {
-        std::fprintf(stderr, "kg index: failed to open output database '%s': %s\n", options.outputPath.c_str(), err.c_str());
+        std::fprintf(stderr, "symhow index: failed to open output database '%s': %s\n", options.outputPath.c_str(), err.c_str());
         return 1;
     }
 
-    // Provenance (+ kg_index_in_progress="1") up front: written via its own
+    // Provenance (+ symhow_index_in_progress="1") up front: written via its own
     // tiny WritableDb transaction, BEFORE the writer's first
     // beginTransaction() -- so it's durable even if this run is interrupted
     // before a single TU is consumed. See writeProvenanceEarly()'s comment.
@@ -617,13 +617,13 @@ int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut
     }
     catch (const std::exception& e)
     {
-        std::fprintf(stderr, "kg index: failed to write provenance: %s\n", e.what());
+        std::fprintf(stderr, "symhow index: failed to write provenance: %s\n", e.what());
         return 1;
     }
 
     if (!backend.startTransaction(&err))
     {
-        std::fprintf(stderr, "kg index: failed to start writer transaction: %s\n", err.c_str());
+        std::fprintf(stderr, "symhow index: failed to start writer transaction: %s\n", err.c_str());
         return 1;
     }
 
@@ -650,7 +650,7 @@ int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut
     uint32_t sinceCheckpoint = 0;
     bool checkpointFailed = false;
 
-    // Worst-so-far kg_tu.status per path, across every entry of that path
+    // Worst-so-far symhow_tu.status per path, across every entry of that path
     // consumed so far THIS session -- by the time a path's LAST entry (in
     // CDB order) is consumed, this is the worst status of all its entries
     // (see PendingTuRow's doc comment). Persists across checkpoints (unlike
@@ -661,16 +661,16 @@ int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut
 
     // Entries of each path still to be consumed THIS session, initialized
     // from pathHashes' entryCount and decremented by consumeOutcome() below
-    // -- the `kg_tu` row for a path is only ever UPSERTed once its count
+    // -- the `symhow_tu` row for a path is only ever UPSERTed once its count
     // hits 0, i.e. once its LAST entry (in CDB order -- consumeOutcome is
     // called strictly in that order, both in the sequential path and via
     // the parallel reorder buffer) has actually been consumed. This is
     // deliberate, not an optimization: writing the row as soon as ANY entry
     // of a multi-entry path was consumed (the earlier design) meant an
     // interrupted run that stopped strictly BETWEEN two entries of the same
-    // duplicated path left a `kg_tu` row behind that claimed the path was
-    // fully accounted for -- `kg update`'s Phase 8 resume logic keys off
-    // "no `kg_tu` row at all" to find never-indexed CDB entries, so it would
+    // duplicated path left a `symhow_tu` row behind that claimed the path was
+    // fully accounted for -- `symhow update`'s Phase 8 resume logic keys off
+    // "no `symhow_tu` row at all" to find never-indexed CDB entries, so it would
     // silently skip re-indexing the still-unconsumed sibling entry forever.
     // Gating the UPSERT on "last entry consumed" makes an interrupted,
     // split-duplicated-path run leave NO row for that path at all -- resume
@@ -695,7 +695,7 @@ int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut
         std::string cpErr;
         if (!backend.checkpoint(chunkTuRows, &cpErr))
         {
-            std::fprintf(stderr, "kg index: checkpoint failed: %s\n", cpErr.c_str());
+            std::fprintf(stderr, "symhow index: checkpoint failed: %s\n", cpErr.c_str());
             checkpointFailed = true;
         }
         chunkTuRows.clear();
@@ -704,7 +704,7 @@ int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut
 
     // Consumes one TU's already-produced outcome: updates the running
     // counts, feeds the batch to the single SrctrldbBackend writer, buffers
-    // its kg_tu row for the next checkpoint, and reports progress.
+    // its symhow_tu row for the next checkpoint, and reports progress.
     // Deliberately the ONLY place that touches `backend`/the counters/
     // `reporter` -- called exactly once per entry, strictly in CDB order,
     // from a single thread (the main thread in the sequential path;
@@ -725,13 +725,13 @@ int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut
         std::string consumeErr;
         if (!backend.consume(outcome.batch, &consumeErr))
         {
-            std::fprintf(stderr, "kg index: failed to write facts for '%s': %s\n", entry.file.c_str(), consumeErr.c_str());
+            std::fprintf(stderr, "symhow index: failed to write facts for '%s': %s\n", entry.file.c_str(), consumeErr.c_str());
         }
         const double consumeSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - consumeStart).count();
 
         // Combined, order-independent per-path hash/entry_count (see
         // pathArgsHashes()'s doc comment) -- not computeArgsHash(entry), so
-        // whichever entry ends up UPSERTing `kg_tu` writes the SAME
+        // whichever entry ends up UPSERTing `symhow_tu` writes the SAME
         // args_hash regardless of which of the path's entries that is.
         // status is the worst seen so far for this path, across every one
         // of its entries consumed to date. The row itself is only pushed
@@ -796,7 +796,7 @@ int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut
         // self-contained processEntry() extraction for each. The MAIN
         // thread is the sole consumer: it drains results[0], results[1],
         // ... strictly in order (a "reorder buffer"), so every observable
-        // side effect of indexing -- node ids, kg_tu rows, collision-merge
+        // side effect of indexing -- node ids, symhow_tu rows, collision-merge
         // outcomes, progress lines -- is byte-for-byte identical to the
         // sequential path above, regardless of `numThreads`. Workers are
         // blocked from racing more than `2*numThreads` entries ahead of the
@@ -908,7 +908,7 @@ int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut
 
     if (checkpointFailed)
     {
-        std::fprintf(stderr, "kg index: aborting after checkpoint failure\n");
+        std::fprintf(stderr, "symhow index: aborting after checkpoint failure\n");
         return 1;
     }
 
@@ -917,12 +917,12 @@ int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut
         std::string interruptErr;
         if (!backend.finishInterrupted(chunkTuRows, &interruptErr))
         {
-            std::fprintf(stderr, "kg index: failed to checkpoint on interrupt: %s\n", interruptErr.c_str());
+            std::fprintf(stderr, "symhow index: failed to checkpoint on interrupt: %s\n", interruptErr.c_str());
             return 1;
         }
         std::fprintf(
             stderr,
-            "kg index: interrupted after %u/%u TUs -- completed work is saved; resume with: kg update -d %s\n",
+            "symhow index: interrupted after %u/%u TUs -- completed work is saved; resume with: symhow update -d %s\n",
             tusAttempted,
             tusTotal,
             options.outputPath.c_str());
@@ -938,16 +938,16 @@ int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut
         std::string cpErr;
         if (!backend.checkpoint(chunkTuRows, &cpErr))
         {
-            std::fprintf(stderr, "kg index: final checkpoint failed: %s\n", cpErr.c_str());
+            std::fprintf(stderr, "symhow index: final checkpoint failed: %s\n", cpErr.c_str());
             return 1;
         }
         chunkTuRows.clear();
     }
 
-    kg::model::IndexSummary summary;
+    symhow::model::IndexSummary summary;
     if (!backend.finish(summary, &err))
     {
-        std::fprintf(stderr, "kg index: failed to finalize output database: %s\n", err.c_str());
+        std::fprintf(stderr, "symhow index: failed to finalize output database: %s\n", err.c_str());
         return 1;
     }
 
@@ -960,7 +960,7 @@ int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut
 
     std::fprintf(
         stderr,
-        "kg index: %u/%u TUs produced content (%u failed), %u symbols, %u references, %u files, %u errors, %u name "
+        "symhow index: %u/%u TUs produced content (%u failed), %u symbols, %u references, %u files, %u errors, %u name "
         "collisions, %llu ms\n",
         summary.tusWithContent,
         summary.tusTotal,
@@ -974,14 +974,14 @@ int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut
 
     if (options.jsonSummary)
     {
-        // kg.index-summary/1 -- see docs/JSON_SCHEMA.md. Reshapes the same
+        // symhow.index-summary/1 -- see docs/JSON_SCHEMA.md. Reshapes the same
         // IndexSummary data Phase 3 already printed (just as a flat,
         // ad-hoc-keyed object) into the Phase 5 envelope convention shared
-        // by every other `kg`/`kg query` JSON schema (kg_version + schema +
+        // by every other `symhow`/`symhow query` JSON schema (symhow_version + schema +
         // ...); the underlying indexing logic above is untouched.
         nlohmann::json j;
-        j["kg_version"] = options.kgVersion;
-        j["schema"] = "kg.index-summary/1";
+        j["symhow_version"] = options.symhowVersion;
+        j["schema"] = "symhow.index-summary/1";
         j["database"] = options.outputPath;
         j["counts"] = {
             {"tus_total", summary.tusTotal},
@@ -1007,4 +1007,4 @@ int runIndex(const IndexRunOptions& options, kg::model::IndexSummary* summaryOut
     return summary.tusWithContent > 0 ? 0 : 5;
 }
 
-}  // namespace kg::index
+}  // namespace symhow::index

@@ -1,8 +1,8 @@
-#include "kg/index/CudaSupport.h"
+#include "symhow/index/CudaSupport.h"
 
 #include <stdexcept>
 
-namespace kg::index::cuda
+namespace symhow::index::cuda
 {
 
 CudaMode parseCudaMode(const std::string& value)
@@ -92,4 +92,4 @@ std::vector<std::string> synthesize(CudaMode mode, const CudaSynthesisInput& inp
     return {};
 }
 
-}  // namespace kg::index::cuda
+}  // namespace symhow::index::cuda

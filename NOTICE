@@ -1,5 +1,5 @@
-kg
-Copyright (c) 2026 kg contributors
+symhow
+Copyright (c) 2026 symhow contributors
 
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 
@@ -12,7 +12,7 @@ library from SourcetrailDB:
 
     SourcetrailDB
     https://github.com/CoatiSoftware/SourcetrailDB
-    Copyright 2018 Coati Software KG
+    Copyright 2018 Coati Software SYMHOW
     Licensed under the Apache License, Version 2.0
 
 The vendored source lives under third_party/sourcetraildb/ (include/, src/,
@@ -34,7 +34,7 @@ project's flox environment:
 Implementation provenance
 ================================================================================
 
-kg's own indexing and query-engine logic (everything outside of
+symhow's own indexing and query-engine logic (everything outside of
 third_party/) is an original, independently authored implementation. It was designed
 and written based on publicly available documentation (the libclang C API,
 the SQLite documentation, the Sourcetrail/SourcetrailDB project's published
@@ -43,4 +43,4 @@ SourcetrailDB writer library vendored above) and independent analysis of
 the externally observable behavior of Sourcetrail (the Sourcetrail
 application itself is GPLv3-licensed). Upstream changes may be inspected
 during compatibility and performance reviews, but no source code from
-Sourcetrail (the GPLv3 application) is copied or incorporated into kg.
+Sourcetrail (the GPLv3 application) is copied or incorporated into symhow.

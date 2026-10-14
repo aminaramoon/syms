@@ -1,5 +1,5 @@
-// Exercises kg::update::{takeSnapshot,diffSnapshots} (and the hidden
-// `kg dbdiff` CLI command built on top of them) against the two hermetic
+// Exercises symhow::update::{takeSnapshot,diffSnapshots} (and the hidden
+// `symhow dbdiff` CLI command built on top of them) against the two hermetic
 // fixture databases the rest of the suite already builds -- see
 // test/CMakeLists.txt's "snapshot." registration (needs BOTH FixtureDb and
 // FixtureCudaDb, unlike every other [fixture]-tagged test group).
@@ -10,24 +10,24 @@
 #include <fstream>
 #include <sstream>
 
-#include "kg/notes/Scaffold.h"
-#include "kg/notes/Sync.h"
-#include "kg/query/QueryEngine.h"
-#include "kg/update/Snapshot.h"
+#include "symhow/notes/Scaffold.h"
+#include "symhow/notes/Sync.h"
+#include "symhow/query/QueryEngine.h"
+#include "symhow/update/Snapshot.h"
 
-#ifdef KG_BINARY
-#include "kg/common/Process.h"
+#ifdef SYMHOW_BINARY
+#include "symhow/common/Process.h"
 #endif
 
-using kg::update::diffSnapshots;
-using kg::update::takeSnapshot;
+using symhow::update::diffSnapshots;
+using symhow::update::takeSnapshot;
 
 namespace
 {
 std::string fixtureDbPath()
 {
-#ifdef KG_FIXTURE_DB
-    return KG_FIXTURE_DB;
+#ifdef SYMHOW_FIXTURE_DB
+    return SYMHOW_FIXTURE_DB;
 #else
     return "fixture.srctrldb";
 #endif
@@ -35,8 +35,8 @@ std::string fixtureDbPath()
 
 std::string cudaFixtureDbPath()
 {
-#ifdef KG_CUDA_FIXTURE_DB
-    return KG_CUDA_FIXTURE_DB;
+#ifdef SYMHOW_CUDA_FIXTURE_DB
+    return SYMHOW_CUDA_FIXTURE_DB;
 #else
     return "cuda_fixture.srctrldb";
 #endif
@@ -92,11 +92,11 @@ TEST_CASE("snapshot: diffSnapshots reports a multiset count mismatch, not a sile
     // reported as a count mismatch, not treated as "present on both, so
     // equal" (which a plain std::set would do, since it collapses
     // duplicates).
-    kg::update::Snapshot a;
+    symhow::update::Snapshot a;
     a.localSymbols["dup"] = 2;
     a.localSymbols["only_a"] = 1;
 
-    kg::update::Snapshot b;
+    symhow::update::Snapshot b;
     b.localSymbols["dup"] = 1;
     b.localSymbols["only_b"] = 1;
 
@@ -145,33 +145,33 @@ TEST_CASE("snapshot: diffSnapshots reports a multiset count mismatch, not a sile
 
 TEST_CASE("snapshot: diffSnapshots(a, a) with duplicated keys (equal counts) is empty", "[snapshot]")
 {
-    kg::update::Snapshot a;
+    symhow::update::Snapshot a;
     a.nodes["dup|4096"] = 3;
     const auto diff = diffSnapshots(a, a);
     REQUIRE(diff.onlyInA.empty());
     REQUIRE(diff.onlyInB.empty());
 }
 
-#ifdef KG_BINARY
-TEST_CASE("snapshot: `kg dbdiff` CLI smoke -- equal databases exit 0, different exit 3", "[fixture][snapshot]")
+#ifdef SYMHOW_BINARY
+TEST_CASE("snapshot: `symhow dbdiff` CLI smoke -- equal databases exit 0, different exit 3", "[fixture][snapshot]")
 {
     {
-        const auto result = kg::common::process::run({KG_BINARY, "dbdiff", fixtureDbPath(), fixtureDbPath()});
+        const auto result = symhow::common::process::run({SYMHOW_BINARY, "dbdiff", fixtureDbPath(), fixtureDbPath()});
         REQUIRE(result.exitCode == 0);
     }
     {
-        const auto result = kg::common::process::run({KG_BINARY, "dbdiff", fixtureDbPath(), cudaFixtureDbPath()});
+        const auto result = symhow::common::process::run({SYMHOW_BINARY, "dbdiff", fixtureDbPath(), cudaFixtureDbPath()});
         REQUIRE(result.exitCode == 3);
         REQUIRE_FALSE(result.out.empty());
     }
     {
-        const auto result = kg::common::process::run({KG_BINARY, "dbdiff", fixtureDbPath(), "/nonexistent.srctrldb"});
+        const auto result = symhow::common::process::run({SYMHOW_BINARY, "dbdiff", fixtureDbPath(), "/nonexistent.srctrldb"});
         REQUIRE(result.exitCode == 4);
     }
     {
-        const auto result = kg::common::process::run({KG_BINARY, "dbdiff", fixtureDbPath(), cudaFixtureDbPath(), "--json"});
+        const auto result = symhow::common::process::run({SYMHOW_BINARY, "dbdiff", fixtureDbPath(), cudaFixtureDbPath(), "--json"});
         REQUIRE(result.exitCode == 3);
-        REQUIRE(result.out.find("\"schema\":\"kg.dbdiff/1\"") != std::string::npos);
+        REQUIRE(result.out.find("\"schema\":\"symhow.dbdiff/1\"") != std::string::npos);
         REQUIRE(result.out.find("\"equal\":false") != std::string::npos);
     }
 }
@@ -179,11 +179,11 @@ TEST_CASE("snapshot: `kg dbdiff` CLI smoke -- equal databases exit 0, different 
 
 TEST_CASE("snapshot: --ignore shared-header-locations drops ONLY shared-header locations", "[fixture][snapshot]")
 {
-    const kg::update::Snapshot full = takeSnapshot(fixtureDbPath());
+    const symhow::update::Snapshot full = takeSnapshot(fixtureDbPath());
 
-    kg::update::SnapshotOptions options;
+    symhow::update::SnapshotOptions options;
     options.ignoreSharedHeaderLocations = true;
-    const kg::update::Snapshot filtered = takeSnapshot(fixtureDbPath(), options);
+    const symhow::update::Snapshot filtered = takeSnapshot(fixtureDbPath(), options);
 
     // Every OTHER category is untouched -- the option is not a general
     // "compare less" knob (see docs/KNOWN_LIMITATIONS.md's Phase 5 section).
@@ -229,7 +229,7 @@ void writeFileText(const std::string& path, const std::string& content)
 }
 }  // namespace
 
-// Phase 4 of docs/NOTES_DESIGN.md: `kg dbdiff` learns a `note`/`note_problem`
+// Phase 4 of docs/NOTES_DESIGN.md: `symhow dbdiff` learns a `note`/`note_problem`
 // category. Two DATABASE COPIES synced from the SAME notes dir must produce
 // an EMPTY note diff (notes are keyed by serialized_name, not by sqlite id
 // or filesystem path -- see Snapshot.h's Phase 4 comment) even though the
@@ -238,7 +238,7 @@ void writeFileText(const std::string& path, const std::string& content)
 TEST_CASE("snapshot: dbdiff --only note is empty for two DB copies synced from the same notes dir, sees staleness", "[fixture][snapshot]")
 {
     namespace fs = std::filesystem;
-    const fs::path tmpRoot = fs::temp_directory_path() / fs::path("kg_dbdiff_notes_test");
+    const fs::path tmpRoot = fs::temp_directory_path() / fs::path("symhow_dbdiff_notes_test");
     fs::remove_all(tmpRoot);
     fs::create_directories(tmpRoot);
 
@@ -253,12 +253,12 @@ TEST_CASE("snapshot: dbdiff --only note is empty for two DB copies synced from t
     // symbol table (both dbA/dbB were copied from the identical fixture, so
     // their symbol tables -- and hence the scaffolded notes -- agree).
     {
-        kg::db::Database db(dbA);
-        const std::vector<kg::notes::SymbolRow> rows = kg::notes::listSymbols(db, 0, {});
+        symhow::db::Database db(dbA);
+        const std::vector<symhow::notes::SymbolRow> rows = symhow::notes::listSymbols(db, 0, {});
         REQUIRE_FALSE(rows.empty());
-        kg::notes::ScaffoldOptions opts;
+        symhow::notes::ScaffoldOptions opts;
         opts.notesDir = notesDir;
-        kg::notes::scaffoldNotes(db, rows, opts);
+        symhow::notes::scaffoldNotes(db, rows, opts);
     }
 
     // Fill in one block's brief so `filled` differs meaningfully between an
@@ -281,18 +281,18 @@ TEST_CASE("snapshot: dbdiff --only note is empty for two DB copies synced from t
     }
     REQUIRE(filledOne);
 
-    kg::notes::syncNotes(dbA, notesDir, false);
-    kg::notes::syncNotes(dbB, notesDir, false);
+    symhow::notes::syncNotes(dbA, notesDir, false);
+    symhow::notes::syncNotes(dbB, notesDir, false);
 
-    const kg::update::Snapshot snapA = takeSnapshot(dbA);
-    const kg::update::Snapshot snapB = takeSnapshot(dbB);
+    const symhow::update::Snapshot snapA = takeSnapshot(dbA);
+    const symhow::update::Snapshot snapB = takeSnapshot(dbB);
     REQUIRE_FALSE(snapA.notes.empty());
 
-    const kg::update::SnapshotDiff onlyNoteDiff = diffSnapshots(snapA, snapB, {"note"});
+    const symhow::update::SnapshotDiff onlyNoteDiff = diffSnapshots(snapA, snapB, {"note"});
     REQUIRE(onlyNoteDiff.onlyInA.empty());
     REQUIRE(onlyNoteDiff.onlyInB.empty());
 
-    // Now make dbA's cache disagree: hand-edit the `kg-hash` anchor on the
+    // Now make dbA's cache disagree: hand-edit the `symhow-hash` anchor on the
     // filled block to something wrong, so re-syncing dbA (only) reports it
     // stale while dbB's cache still says fresh.
     bool rewroteHash = false;
@@ -303,10 +303,10 @@ TEST_CASE("snapshot: dbdiff --only note is empty for two DB copies synced from t
             continue;
         }
         std::string content = readFileText(entry.path().string());
-        const std::string::size_type pos = content.find("kg-hash: ");
+        const std::string::size_type pos = content.find("symhow-hash: ");
         if (pos != std::string::npos)
         {
-            const std::string::size_type hashStart = pos + std::string("kg-hash: ").size();
+            const std::string::size_type hashStart = pos + std::string("symhow-hash: ").size();
             content.replace(hashStart, 16, "0000000000000000");
             writeFileText(entry.path().string(), content);
             rewroteHash = true;
@@ -314,20 +314,20 @@ TEST_CASE("snapshot: dbdiff --only note is empty for two DB copies synced from t
     }
     REQUIRE(rewroteHash);
 
-    kg::notes::syncNotes(dbA, notesDir, false);
+    symhow::notes::syncNotes(dbA, notesDir, false);
     // dbB is deliberately NOT re-synced -- it still reflects the old (fresh)
     // markdown it last saw, exactly like a worktree that hasn't pulled the
     // edit yet.
 
-    const kg::update::Snapshot snapA2 = takeSnapshot(dbA);
-    const kg::update::SnapshotDiff staleDiff = diffSnapshots(snapA2, snapB, {"note"});
+    const symhow::update::Snapshot snapA2 = takeSnapshot(dbA);
+    const symhow::update::SnapshotDiff staleDiff = diffSnapshots(snapA2, snapB, {"note"});
     REQUIRE_FALSE(staleDiff.onlyInA.empty());
     REQUIRE_FALSE(staleDiff.onlyInB.empty());
 
     // Every other category is completely untouched by this whole exercise
     // (dbA/dbB's node/edge/etc rows never changed) -- proves --only note
     // really does restrict the diff to just the note category.
-    const kg::update::SnapshotDiff fullDiff = diffSnapshots(snapA2, snapB);
+    const symhow::update::SnapshotDiff fullDiff = diffSnapshots(snapA2, snapB);
     std::size_t nonNoteEntries = 0;
     for (const std::string& s : fullDiff.onlyInA)
     {

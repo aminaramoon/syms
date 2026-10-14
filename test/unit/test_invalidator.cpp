@@ -1,4 +1,4 @@
-// Exercises kg::update::{computeClearSet,invalidate} against a COPY of the
+// Exercises symhow::update::{computeClearSet,invalidate} against a COPY of the
 // real synthetic fixture database (build/fixture.srctrldb) -- see
 // test/CMakeLists.txt's "fixture_query." registration (FIXTURES_REQUIRED
 // FixtureDb) for how that database is produced. Each test case works
@@ -13,23 +13,23 @@
 
 #include <sqlite3.h>
 
-#include "kg/common/Paths.h"
-#include "kg/db/Database.h"
-#include "kg/db/WritableDb.h"
-#include "kg/update/Invalidator.h"
+#include "symhow/common/Paths.h"
+#include "symhow/db/Database.h"
+#include "symhow/db/WritableDb.h"
+#include "symhow/update/Invalidator.h"
 
-using kg::db::Database;
-using kg::db::WritableDb;
-using kg::update::ClearPlan;
-using kg::update::GcStats;
+using symhow::db::Database;
+using symhow::db::WritableDb;
+using symhow::update::ClearPlan;
+using symhow::update::GcStats;
 
 namespace
 {
 
 std::string fixtureDbPath()
 {
-#ifdef KG_FIXTURE_DB
-    return KG_FIXTURE_DB;
+#ifdef SYMHOW_FIXTURE_DB
+    return SYMHOW_FIXTURE_DB;
 #else
     return "fixture.srctrldb";
 #endif
@@ -37,8 +37,8 @@ std::string fixtureDbPath()
 
 std::string sourceDir()
 {
-#ifdef KG_TEST_SOURCE_DIR
-    return KG_TEST_SOURCE_DIR;
+#ifdef SYMHOW_TEST_SOURCE_DIR
+    return SYMHOW_TEST_SOURCE_DIR;
 #else
     return ".";
 #endif
@@ -49,20 +49,20 @@ std::string sourceDir()
 // copy.
 std::string copyFixture(const std::string& tag)
 {
-    const std::string path = (std::filesystem::temp_directory_path() / ("kg_test_invalidator_" + tag + ".srctrldb")).string();
+    const std::string path = (std::filesystem::temp_directory_path() / ("symhow_test_invalidator_" + tag + ".srctrldb")).string();
     std::filesystem::remove(path);
     std::filesystem::copy_file(fixtureDbPath(), path);
     return path;
 }
 
-// Every kg_tu.path in `dbPath` -- the exact set of TU paths the fixture was
+// Every symhow_tu.path in `dbPath` -- the exact set of TU paths the fixture was
 // indexed from, used as computeClearSet's `tuPaths` argument (see
 // Invalidator.h: never prune a file that's still a TU itself).
 std::vector<std::string> allTuPaths(const std::string& dbPath)
 {
     Database db(dbPath);
     std::vector<std::string> paths;
-    db.run("SELECT path FROM kg_tu", [&](sqlite3_stmt* stmt) {
+    db.run("SELECT path FROM symhow_tu", [&](sqlite3_stmt* stmt) {
         const char* p = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
         if (p != nullptr)
         {
@@ -81,7 +81,7 @@ std::vector<std::string> allTuPaths(const std::string& dbPath)
 std::string resolveFixturePath(const std::string& dbPath, const std::string& relativeToSynthetic)
 {
     const std::string wanted =
-        kg::common::paths::normalize((std::filesystem::path(sourceDir()) / "fixtures" / "synthetic" / relativeToSynthetic).string());
+        symhow::common::paths::normalize((std::filesystem::path(sourceDir()) / "fixtures" / "synthetic" / relativeToSynthetic).string());
 
     Database db(dbPath);
     std::string found;
@@ -91,7 +91,7 @@ std::string resolveFixturePath(const std::string& dbPath, const std::string& rel
             return;
         }
         const char* p = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-        if (p != nullptr && kg::common::paths::normalize(p) == wanted)
+        if (p != nullptr && symhow::common::paths::normalize(p) == wanted)
         {
             found = p;
         }
@@ -119,7 +119,7 @@ TEST_CASE("invalidator: computeClearSet(chain.cpp) is exactly that one file (no 
     const std::string chainPath = resolveFixturePath(path, "src/chain.cpp");
 
     WritableDb db(path, true);
-    const ClearPlan plan = kg::update::computeClearSet(db, {chainPath}, {}, tuPaths);
+    const ClearPlan plan = symhow::update::computeClearSet(db, {chainPath}, {}, tuPaths);
 
     REQUIRE(plan.clearedFileIds.size() == 1);
     REQUIRE(plan.clearedPaths.size() == 1);
@@ -137,7 +137,7 @@ TEST_CASE(
     const std::string shapesPath = resolveFixturePath(path, "include/shapes.hpp");
 
     WritableDb db(path, true);
-    const ClearPlan plan = kg::update::computeClearSet(db, {shapesPath}, {}, tuPaths);
+    const ClearPlan plan = symhow::update::computeClearSet(db, {shapesPath}, {}, tuPaths);
 
     const std::unordered_set<std::string> names = baseNames(plan.clearedPaths);
     REQUIRE(names.count("shapes.hpp") == 1);
@@ -178,9 +178,9 @@ TEST_CASE("invalidator: invalidate(chain.cpp plan) clears its facts, leaves unto
     ClearPlan plan;
     {
         WritableDb db(path, true);
-        plan = kg::update::computeClearSet(db, {chainPath}, {}, tuPaths);
+        plan = symhow::update::computeClearSet(db, {chainPath}, {}, tuPaths);
         REQUIRE(plan.clearedFileIds.size() == 1);
-        gc = kg::update::invalidate(db, plan);
+        gc = symhow::update::invalidate(db, plan);
     }
 
     REQUIRE(gc.files == 1);
@@ -222,11 +222,11 @@ TEST_CASE("invalidator: invalidate(chain.cpp plan) clears its facts, leaves unto
 }
 
 TEST_CASE(
-    "invalidator: invalidate(shapes.hpp plan) leaves zero dangling kg_symbol_def/kg_tu rows",
+    "invalidator: invalidate(shapes.hpp plan) leaves zero dangling symhow_symbol_def/symhow_tu rows",
     "[fixture][invalidator]")
 {
     // shapes.hpp's closure clears ns.cpp/overloads.cpp too (via the
-    // reverse-INCLUDE closure), which used to leave kg_symbol_def rows
+    // reverse-INCLUDE closure), which used to leave symhow_symbol_def rows
     // pointing at now-dead node_id/file_node_id values behind (no FK on
     // that table) -- a landmine for id-reuse on the NEXT invalidate() run.
     const std::string path = copyFixture("shapes_dangling");
@@ -236,22 +236,22 @@ TEST_CASE(
     ClearPlan plan;
     {
         WritableDb db(path, true);
-        plan = kg::update::computeClearSet(db, {shapesPath}, {}, tuPaths);
+        plan = symhow::update::computeClearSet(db, {shapesPath}, {}, tuPaths);
         REQUIRE(plan.clearedFileIds.size() > 1);
-        kg::update::invalidate(db, plan);
+        symhow::update::invalidate(db, plan);
     }
 
     Database after(path);
 
     int64_t danglingSymbolDef = -1;
     after.run(
-        "SELECT COUNT(*) FROM kg_symbol_def WHERE node_id NOT IN (SELECT id FROM node) OR file_node_id NOT IN (SELECT id FROM file)",
+        "SELECT COUNT(*) FROM symhow_symbol_def WHERE node_id NOT IN (SELECT id FROM node) OR file_node_id NOT IN (SELECT id FROM file)",
         [&](sqlite3_stmt* stmt) { danglingSymbolDef = sqlite3_column_int64(stmt, 0); });
     REQUIRE(danglingSymbolDef == 0);
 
     int64_t danglingTu = -1;
     after.run(
-        "SELECT COUNT(*) FROM kg_tu WHERE file_node_id IS NOT NULL AND file_node_id NOT IN (SELECT id FROM file)",
+        "SELECT COUNT(*) FROM symhow_tu WHERE file_node_id IS NOT NULL AND file_node_id NOT IN (SELECT id FROM file)",
         [&](sqlite3_stmt* stmt) { danglingTu = sqlite3_column_int64(stmt, 0); });
     REQUIRE(danglingTu == 0);
 }
@@ -260,7 +260,7 @@ TEST_CASE("invalidator: sweepOrphans on a pristine fixture copy is a no-op (noth
 {
     const std::string path = copyFixture("sweep_noop");
     WritableDb db(path, true);
-    const GcStats gc = kg::update::sweepOrphans(db);
+    const GcStats gc = symhow::update::sweepOrphans(db);
     REQUIRE(gc.nodes == 0);
     REQUIRE(gc.localSymbols == 0);
     REQUIRE(gc.errors == 0);

@@ -1,4 +1,4 @@
-#include "kg/query/SymbolResolver.h"
+#include "symhow/query/SymbolResolver.h"
 
 #include <sqlite3.h>
 
@@ -6,10 +6,10 @@
 #include <cctype>
 #include <charconv>
 
-#include "kg/db/Enums.h"
-#include "kg/db/NameDecode.h"
+#include "symhow/db/Enums.h"
+#include "symhow/db/NameDecode.h"
 
-namespace kg::query
+namespace symhow::query
 {
 
 namespace
@@ -88,7 +88,7 @@ ResolveResult finalize(std::vector<ResolvedSymbol> candidates)
 
 }  // namespace
 
-ResolveResult resolveSymbol(kg::db::Database& db, const std::string& spec, const std::vector<int>* kindFilter, const std::string* signatureFilter)
+ResolveResult resolveSymbol(symhow::db::Database& db, const std::string& spec, const std::vector<int>* kindFilter, const std::string* signatureFilter)
 {
     if (!spec.empty() && spec.front() == '#')
     {
@@ -130,7 +130,7 @@ ResolveResult resolveSymbol(kg::db::Database& db, const std::string& spec, const
                 }
             }
 
-            const kg::db::DecodedName decoded = kg::db::decodeSerializedName(sname);
+            const symhow::db::DecodedName decoded = symhow::db::decodeSerializedName(sname);
             const std::string qualified = decoded.qualifiedName();
             const std::string display = decoded.displayName();
             const std::string path = decoded.namePath();
@@ -153,14 +153,14 @@ ResolveResult resolveSymbol(kg::db::Database& db, const std::string& spec, const
     return finalize(std::move(candidates));
 }
 
-ResolveResult resolveFilePath(kg::db::Database& db, const std::string& spec)
+ResolveResult resolveFilePath(symhow::db::Database& db, const std::string& spec)
 {
     std::vector<ResolvedSymbol> exact;
     db.run(
         "SELECT id, path FROM file WHERE path = ?",
         [&](sqlite3_stmt* stmt) { sqlite3_bind_text(stmt, 1, spec.c_str(), -1, SQLITE_TRANSIENT); },
         [&](sqlite3_stmt* stmt) {
-            exact.push_back(ResolvedSymbol{sqlite3_column_int64(stmt, 0), kg::db::NodeKind::FILE, columnText(stmt, 1)});
+            exact.push_back(ResolvedSymbol{sqlite3_column_int64(stmt, 0), symhow::db::NodeKind::FILE, columnText(stmt, 1)});
         });
     if (!exact.empty())
     {
@@ -172,9 +172,9 @@ ResolveResult resolveFilePath(kg::db::Database& db, const std::string& spec)
         "SELECT id, path FROM file WHERE path LIKE '%' || ?",
         [&](sqlite3_stmt* stmt) { sqlite3_bind_text(stmt, 1, spec.c_str(), -1, SQLITE_TRANSIENT); },
         [&](sqlite3_stmt* stmt) {
-            suffix.push_back(ResolvedSymbol{sqlite3_column_int64(stmt, 0), kg::db::NodeKind::FILE, columnText(stmt, 1)});
+            suffix.push_back(ResolvedSymbol{sqlite3_column_int64(stmt, 0), symhow::db::NodeKind::FILE, columnText(stmt, 1)});
         });
     return finalize(std::move(suffix));
 }
 
-}  // namespace kg::query
+}  // namespace symhow::query

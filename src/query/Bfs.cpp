@@ -1,4 +1,4 @@
-#include "kg/query/Bfs.h"
+#include "symhow/query/Bfs.h"
 
 #include <sqlite3.h>
 
@@ -6,9 +6,9 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include "kg/db/Enums.h"
+#include "symhow/db/Enums.h"
 
-namespace kg::query
+namespace symhow::query
 {
 
 namespace
@@ -68,7 +68,7 @@ void sortEdges(std::vector<BfsEdge>& edges)
 
 }  // namespace
 
-BfsResult runBfs(kg::db::Database& db, const BfsParams& params)
+BfsResult runBfs(symhow::db::Database& db, const BfsParams& params)
 {
     BfsResult result;
     if (params.seeds.empty())
@@ -145,7 +145,7 @@ BfsResult runBfs(kg::db::Database& db, const BfsParams& params)
                 {
                     filtered.insert(id);
                 }
-                else if (kg::db::isNamespaceLikeNodeKind(kind))
+                else if (symhow::db::isNamespaceLikeNodeKind(kind))
                 {
                     filtered.insert(id);
                     suppressedFromRender.insert(id);
@@ -213,4 +213,4 @@ BfsResult runBfs(kg::db::Database& db, const BfsParams& params)
     return result;
 }
 
-}  // namespace kg::query
+}  // namespace symhow::query

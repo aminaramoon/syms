@@ -21,7 +21,7 @@
 #
 # Honors (in priority order): environment variables set by the flox
 # activation hook (LIBCLANG_INCLUDE_DIR / LIBCLANG_LIBRARY_DIR /
-# KG_RESOURCE_DIR), then $ENV{FLOX_ENV}, then normal system search paths.
+# SYMHOW_RESOURCE_DIR), then $ENV{FLOX_ENV}, then normal system search paths.
 
 find_path(LibClang_INCLUDE_DIR
     NAMES clang-c/Index.h
@@ -51,32 +51,32 @@ find_library(LibClang_LIBRARY
 # too deep, so `<stddef.h>` couldn't be found from e.g. libstdc++'s
 # <cwchar>, even though the file existed on disk one directory up).
 #
-# Prefer the value precomputed by the flox activation hook (KG_RESOURCE_DIR,
+# Prefer the value precomputed by the flox activation hook (SYMHOW_RESOURCE_DIR,
 # also expected to be the parent dir); otherwise probe
 # $FLOX_ENV/lib/clang/<major> and pick the highest numeric <major> whose
 # include/ subdirectory actually contains stddef.h.
 
-if(DEFINED ENV{KG_RESOURCE_DIR} AND EXISTS "$ENV{KG_RESOURCE_DIR}/include/stddef.h")
-    set(_kg_resource_dir "$ENV{KG_RESOURCE_DIR}")
+if(DEFINED ENV{SYMHOW_RESOURCE_DIR} AND EXISTS "$ENV{SYMHOW_RESOURCE_DIR}/include/stddef.h")
+    set(_symhow_resource_dir "$ENV{SYMHOW_RESOURCE_DIR}")
 else()
-    set(_kg_resource_dir "")
-    set(_kg_best_major -1)
-    file(GLOB _kg_rd_candidates "$ENV{FLOX_ENV}/lib/clang/*")
-    foreach(_kg_cand ${_kg_rd_candidates})
-        if(IS_DIRECTORY "${_kg_cand}" AND EXISTS "${_kg_cand}/include/stddef.h")
-            get_filename_component(_kg_cand_name "${_kg_cand}" NAME)
-            if(_kg_cand_name MATCHES "^[0-9]+$" AND _kg_cand_name GREATER _kg_best_major)
-                set(_kg_best_major "${_kg_cand_name}")
-                set(_kg_resource_dir "${_kg_cand}")
+    set(_symhow_resource_dir "")
+    set(_symhow_best_major -1)
+    file(GLOB _symhow_rd_candidates "$ENV{FLOX_ENV}/lib/clang/*")
+    foreach(_symhow_cand ${_symhow_rd_candidates})
+        if(IS_DIRECTORY "${_symhow_cand}" AND EXISTS "${_symhow_cand}/include/stddef.h")
+            get_filename_component(_symhow_cand_name "${_symhow_cand}" NAME)
+            if(_symhow_cand_name MATCHES "^[0-9]+$" AND _symhow_cand_name GREATER _symhow_best_major)
+                set(_symhow_best_major "${_symhow_cand_name}")
+                set(_symhow_resource_dir "${_symhow_cand}")
             endif()
         endif()
     endforeach()
-    unset(_kg_best_major)
-    unset(_kg_rd_candidates)
+    unset(_symhow_best_major)
+    unset(_symhow_rd_candidates)
 endif()
 
-set(LibClang_RESOURCE_DIR "${_kg_resource_dir}" CACHE PATH "clang resource dir matching libclang (pass directly to -resource-dir; its include/ subdir contains stddef.h etc.)")
-unset(_kg_resource_dir)
+set(LibClang_RESOURCE_DIR "${_symhow_resource_dir}" CACHE PATH "clang resource dir matching libclang (pass directly to -resource-dir; its include/ subdir contains stddef.h etc.)")
+unset(_symhow_resource_dir)
 
 # --- Version discovery -------------------------------------------------
 # libclang's C API version macros (CINDEX_VERSION_MAJOR/MINOR) don't track
@@ -86,15 +86,15 @@ unset(_kg_resource_dir)
 # "21.1.8".
 set(LibClang_VERSION "unknown")
 if(LibClang_LIBRARY)
-    get_filename_component(_kg_libclang_realpath "${LibClang_LIBRARY}" REALPATH)
-    if(_kg_libclang_realpath MATCHES "libclang(-cpp)?\\.so\\.([0-9]+\\.[0-9]+\\.[0-9]+)")
+    get_filename_component(_symhow_libclang_realpath "${LibClang_LIBRARY}" REALPATH)
+    if(_symhow_libclang_realpath MATCHES "libclang(-cpp)?\\.so\\.([0-9]+\\.[0-9]+\\.[0-9]+)")
         set(LibClang_VERSION "${CMAKE_MATCH_2}")
-    elseif(_kg_libclang_realpath MATCHES "libclang(-cpp)?\\.so\\.([0-9]+\\.[0-9]+)")
+    elseif(_symhow_libclang_realpath MATCHES "libclang(-cpp)?\\.so\\.([0-9]+\\.[0-9]+)")
         set(LibClang_VERSION "${CMAKE_MATCH_2}")
-    elseif(_kg_libclang_realpath MATCHES "libclang(-cpp)?\\.so\\.([0-9]+)")
+    elseif(_symhow_libclang_realpath MATCHES "libclang(-cpp)?\\.so\\.([0-9]+)")
         set(LibClang_VERSION "${CMAKE_MATCH_2}")
     endif()
-    unset(_kg_libclang_realpath)
+    unset(_symhow_libclang_realpath)
 endif()
 set(LibClang_VERSION "${LibClang_VERSION}" CACHE STRING "Detected libclang version (best-effort, parsed from shared library filename)")
 

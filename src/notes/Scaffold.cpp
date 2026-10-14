@@ -1,4 +1,4 @@
-#include "kg/notes/Scaffold.h"
+#include "symhow/notes/Scaffold.h"
 
 #include <sqlite3.h>
 
@@ -8,15 +8,15 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include "kg/common/Glob.h"
-#include "kg/db/Enums.h"
-#include "kg/db/Meta.h"
-#include "kg/db/NameDecode.h"
-#include "kg/notes/BodyHash.h"
-#include "kg/notes/Markdown.h"
-#include "kg/notes/Sync.h"
+#include "symhow/common/Glob.h"
+#include "symhow/db/Enums.h"
+#include "symhow/db/Meta.h"
+#include "symhow/db/NameDecode.h"
+#include "symhow/notes/BodyHash.h"
+#include "symhow/notes/Markdown.h"
+#include "symhow/notes/Sync.h"
 
-namespace kg::notes
+namespace symhow::notes
 {
 
 namespace
@@ -43,7 +43,7 @@ std::string relativeToRepo(const std::string& filePath, const std::string& repoR
 
 }  // namespace
 
-SymbolRow rowForNode(kg::db::Database& db, kg::query::QueryEngine& engine, int64_t nodeId, const std::string& repoRoot, const std::string& commit)
+SymbolRow rowForNode(symhow::db::Database& db, symhow::query::QueryEngine& engine, int64_t nodeId, const std::string& repoRoot, const std::string& commit)
 {
     SymbolRow row;
 
@@ -60,17 +60,17 @@ SymbolRow rowForNode(kg::db::Database& db, kg::query::QueryEngine& engine, int64
         return row;
     }
 
-    const kg::query::DefinitionResult def = engine.definition({nodeId});
+    const symhow::query::DefinitionResult def = engine.definition({nodeId});
     if (def.locations.empty())
     {
         return row;
     }
-    const kg::query::FileLocation& loc = def.locations.front();
+    const symhow::query::FileLocation& loc = def.locations.front();
 
     row.sourcePath = relativeToRepo(loc.filePath, repoRoot);
     row.definitionLine = loc.startLine;
-    row.qualifiedName = kg::db::decodeSerializedName(serializedName).namePath();
-    row.signature = kg::db::decodeSerializedName(serializedName).signature();
+    row.qualifiedName = symhow::db::decodeSerializedName(serializedName).namePath();
+    row.signature = symhow::db::decodeSerializedName(serializedName).signature();
     row.bodyHash = bodyHashForNode(db, nodeId);
     row.commit = commit;
     row.nodeId = nodeId;
@@ -78,14 +78,14 @@ SymbolRow rowForNode(kg::db::Database& db, kg::query::QueryEngine& engine, int64
     return row;
 }
 
-std::vector<SymbolRow> listSymbols(kg::db::Database& db, int kindMask, const std::vector<std::string>& fileGlobs)
+std::vector<SymbolRow> listSymbols(symhow::db::Database& db, int kindMask, const std::vector<std::string>& fileGlobs)
 {
-    kg::query::QueryEngine engine(db);
+    symhow::query::QueryEngine engine(db);
 
-    const std::string repoRoot = kg::db::getMeta(db.handle(), "kg_repo_root").value_or("");
+    const std::string repoRoot = symhow::db::getMeta(db.handle(), "symhow_repo_root").value_or("");
     const std::string commit = currentCommit(db);
 
-    const int mask = kindMask != 0 ? kindMask : (kg::db::NodeKind::FUNCTION | kg::db::NodeKind::METHOD);
+    const int mask = kindMask != 0 ? kindMask : (symhow::db::NodeKind::FUNCTION | symhow::db::NodeKind::METHOD);
 
     std::vector<SymbolRow> rows;
     db.run(
@@ -107,7 +107,7 @@ std::vector<SymbolRow> listSymbols(kg::db::Database& db, int kindMask, const std
         {
             for (const std::string& glob : fileGlobs)
             {
-                if (kg::common::glob::match(glob, r.sourcePath))
+                if (symhow::common::glob::match(glob, r.sourcePath))
                 {
                     filtered.push_back(std::move(r));
                     break;
@@ -125,7 +125,7 @@ std::vector<SymbolRow> listSymbols(kg::db::Database& db, int kindMask, const std
     return rows;
 }
 
-ScaffoldResult scaffoldNotes(kg::db::Database& db, const std::vector<SymbolRow>& rowsIn, const ScaffoldOptions& options)
+ScaffoldResult scaffoldNotes(symhow::db::Database& db, const std::vector<SymbolRow>& rowsIn, const ScaffoldOptions& options)
 {
     ScaffoldResult result;
 
@@ -243,4 +243,4 @@ ScaffoldResult scaffoldNotes(kg::db::Database& db, const std::vector<SymbolRow>&
     return result;
 }
 
-}  // namespace kg::notes
+}  // namespace symhow::notes

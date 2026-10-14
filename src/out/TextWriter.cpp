@@ -1,12 +1,12 @@
-#include "kg/out/TextWriter.h"
+#include "symhow/out/TextWriter.h"
 
 #include <iomanip>
 #include <sstream>
 
-#include "kg/db/Enums.h"
-#include "kg/db/NameDecode.h"
+#include "symhow/db/Enums.h"
+#include "symhow/db/NameDecode.h"
 
-namespace kg::out
+namespace symhow::out
 {
 
 namespace
@@ -14,14 +14,14 @@ namespace
 
 std::string displayNameOf(const std::string& serializedName)
 {
-    return kg::db::decodeSerializedName(serializedName).displayName();
+    return symhow::db::decodeSerializedName(serializedName).displayName();
 }
 
 }  // namespace
 
 void writeBfsResult(
     std::ostream& out,
-    const kg::query::BfsResult& result,
+    const symhow::query::BfsResult& result,
     const std::unordered_map<int64_t, std::string>& locations,
     bool showEdgeList,
     const std::unordered_map<int64_t, NodeNoteText>* notes,
@@ -31,10 +31,10 @@ void writeBfsResult(
     {
         out << "(no nodes)\n";
     }
-    for (const kg::query::BfsNode& node : result.nodes)
+    for (const symhow::query::BfsNode& node : result.nodes)
     {
         const std::string indent(static_cast<std::size_t>(node.depth) * 2, ' ');
-        out << indent << "[" << kg::db::nodeKindToString(node.kind) << "] " << displayNameOf(node.serializedName) << " (#" << node.id << ")";
+        out << indent << "[" << symhow::db::nodeKindToString(node.kind) << "] " << displayNameOf(node.serializedName) << " (#" << node.id << ")";
         const auto it = locations.find(node.id);
         if (it != locations.end() && !it->second.empty())
         {
@@ -78,27 +78,27 @@ void writeBfsResult(
     }
     if (showEdgeList)
     {
-        for (const kg::query::BfsEdge& edge : result.edges)
+        for (const symhow::query::BfsEdge& edge : result.edges)
         {
-            out << "  #" << edge.source << " --[" << kg::db::edgeKindToString(edge.kind) << "]--> #" << edge.target << "\n";
+            out << "  #" << edge.source << " --[" << symhow::db::edgeKindToString(edge.kind) << "]--> #" << edge.target << "\n";
         }
     }
 }
 
-void writeReferences(std::ostream& out, const kg::query::ReferencesResult& result)
+void writeReferences(std::ostream& out, const symhow::query::ReferencesResult& result)
 {
     if (result.hits.empty())
     {
         out << "(no references)\n";
         return;
     }
-    for (const kg::query::ReferenceHit& hit : result.hits)
+    for (const symhow::query::ReferenceHit& hit : result.hits)
     {
         out << hit.location.filePath << ":" << hit.location.startLine << ":" << hit.location.startColumn << "  ["
-            << kg::db::locationKindToString(hit.location.locationKind) << "]  ";
+            << symhow::db::locationKindToString(hit.location.locationKind) << "]  ";
         if (hit.hasEdge)
         {
-            out << kg::db::edgeKindToString(hit.edgeKind) << "  #" << hit.contextNodeId << " -> #" << hit.targetNodeId;
+            out << symhow::db::edgeKindToString(hit.edgeKind) << "  #" << hit.contextNodeId << " -> #" << hit.targetNodeId;
         }
         else
         {
@@ -108,35 +108,35 @@ void writeReferences(std::ostream& out, const kg::query::ReferencesResult& resul
     }
 }
 
-void writeDefinition(std::ostream& out, const kg::query::DefinitionResult& result)
+void writeDefinition(std::ostream& out, const symhow::query::DefinitionResult& result)
 {
     if (result.locations.empty())
     {
         out << "(no definition found)\n";
         return;
     }
-    for (const kg::query::FileLocation& loc : result.locations)
+    for (const symhow::query::FileLocation& loc : result.locations)
     {
         out << loc.filePath << ":" << loc.startLine << ":" << loc.startColumn << "-" << loc.endLine << ":" << loc.endColumn << "  ["
-            << kg::db::locationKindToString(loc.locationKind) << "]\n";
+            << symhow::db::locationKindToString(loc.locationKind) << "]\n";
     }
 }
 
-void writeSearchHits(std::ostream& out, const std::vector<kg::query::SearchHit>& hits)
+void writeSearchHits(std::ostream& out, const std::vector<symhow::query::SearchHit>& hits)
 {
     if (hits.empty())
     {
         out << "(no matches)\n";
         return;
     }
-    for (const kg::query::SearchHit& hit : hits)
+    for (const symhow::query::SearchHit& hit : hits)
     {
-        out << std::setw(4) << hit.score << "  [" << kg::db::nodeKindToString(hit.kind) << "]  " << hit.displayName << "  (" << hit.qualifiedName
+        out << std::setw(4) << hit.score << "  [" << symhow::db::nodeKindToString(hit.kind) << "]  " << hit.displayName << "  (" << hit.qualifiedName
             << ")" << (hit.indexed ? "" : "  [not indexed]") << "\n";
     }
 }
 
-void writeFileResult(std::ostream& out, const kg::query::FileResult& result)
+void writeFileResult(std::ostream& out, const symhow::query::FileResult& result)
 {
     out << "path: " << result.path << "\n";
     out << "id: " << result.fileId << "\n";
@@ -153,12 +153,12 @@ void writeFileResult(std::ostream& out, const kg::query::FileResult& result)
     if (!result.occurrences.empty())
     {
         out << "--- occurrences (" << result.occurrences.size() << ") ---\n";
-        for (const kg::query::FileOccurrence& occ : result.occurrences)
+        for (const symhow::query::FileOccurrence& occ : result.occurrences)
         {
             out << occ.location.startLine << ":" << occ.location.startColumn << "  ";
             if (occ.elementKind != 0)
             {
-                out << "[" << kg::db::nodeKindToString(occ.elementKind) << "] " << occ.elementName;
+                out << "[" << symhow::db::nodeKindToString(occ.elementKind) << "] " << occ.elementName;
             }
             else
             {
@@ -169,7 +169,7 @@ void writeFileResult(std::ostream& out, const kg::query::FileResult& result)
     }
 }
 
-void writeStats(std::ostream& out, const kg::query::StatsResult& result)
+void writeStats(std::ostream& out, const symhow::query::StatsResult& result)
 {
     out << "storage_version: " << result.storageVersion << "\n";
     out << "nodes: " << result.nodeCount << "\n";
@@ -182,20 +182,20 @@ void writeStats(std::ostream& out, const kg::query::StatsResult& result)
     out << "errors: " << result.errorCount << "\n";
 
     out << "--- nodes by kind ---\n";
-    for (const kg::query::KindCount& kc : result.nodesByKind)
+    for (const symhow::query::KindCount& kc : result.nodesByKind)
     {
-        out << "  " << kg::db::nodeKindToString(kc.kind) << ": " << kc.count << "\n";
+        out << "  " << symhow::db::nodeKindToString(kc.kind) << ": " << kc.count << "\n";
     }
     out << "--- edges by kind ---\n";
-    for (const kg::query::KindCount& kc : result.edgesByKind)
+    for (const symhow::query::KindCount& kc : result.edgesByKind)
     {
-        out << "  " << kg::db::edgeKindToString(kc.kind) << ": " << kc.count << "\n";
+        out << "  " << symhow::db::edgeKindToString(kc.kind) << ": " << kc.count << "\n";
     }
 
     if (!result.errors.empty())
     {
         out << "--- errors (" << result.errors.size() << " shown) ---\n";
-        for (const kg::query::StatsErrorRow& e : result.errors)
+        for (const symhow::query::StatsErrorRow& e : result.errors)
         {
             out << "  #" << e.id << (e.fatal ? " [FATAL] " : " ") << e.translationUnit << ": " << e.message << "\n";
         }
@@ -215,4 +215,4 @@ void writeCandidateTable(std::ostream& out, const std::vector<CandidateRow>& row
     }
 }
 
-}  // namespace kg::out
+}  // namespace symhow::out

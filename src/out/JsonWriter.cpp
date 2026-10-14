@@ -1,14 +1,14 @@
-#include "kg/out/JsonWriter.h"
+#include "symhow/out/JsonWriter.h"
 
 #include <sqlite3.h>
 
 #include <algorithm>
 #include <filesystem>
 
-#include "kg/db/Enums.h"
-#include "kg/db/NameDecode.h"
+#include "symhow/db/Enums.h"
+#include "symhow/db/NameDecode.h"
 
-namespace kg::out::json
+namespace symhow::out::json
 {
 
 namespace
@@ -46,18 +46,18 @@ std::vector<int> decomposeEdgeKindMask(int mask)
     // comment on this function in JsonWriter.h for why it's re-listed here
     // rather than shared from Enums.cpp.
     static constexpr int kAllBits[] = {
-        kg::db::EdgeKind::MEMBER,
-        kg::db::EdgeKind::TYPE_USAGE,
-        kg::db::EdgeKind::USAGE,
-        kg::db::EdgeKind::CALL,
-        kg::db::EdgeKind::INHERITANCE,
-        kg::db::EdgeKind::OVERRIDE,
-        kg::db::EdgeKind::TYPE_ARGUMENT,
-        kg::db::EdgeKind::TEMPLATE_SPECIALIZATION,
-        kg::db::EdgeKind::INCLUDE,
-        kg::db::EdgeKind::IMPORT,
-        kg::db::EdgeKind::MACRO_USAGE,
-        kg::db::EdgeKind::ANNOTATION_USAGE,
+        symhow::db::EdgeKind::MEMBER,
+        symhow::db::EdgeKind::TYPE_USAGE,
+        symhow::db::EdgeKind::USAGE,
+        symhow::db::EdgeKind::CALL,
+        symhow::db::EdgeKind::INHERITANCE,
+        symhow::db::EdgeKind::OVERRIDE,
+        symhow::db::EdgeKind::TYPE_ARGUMENT,
+        symhow::db::EdgeKind::TEMPLATE_SPECIALIZATION,
+        symhow::db::EdgeKind::INCLUDE,
+        symhow::db::EdgeKind::IMPORT,
+        symhow::db::EdgeKind::MACRO_USAGE,
+        symhow::db::EdgeKind::ANNOTATION_USAGE,
     };
     std::vector<int> out;
     for (int bit : kAllBits)
@@ -70,14 +70,14 @@ std::vector<int> decomposeEdgeKindMask(int mask)
     return out;
 }
 
-JsonWriter::JsonWriter(kg::db::Database& db, kg::query::QueryEngine& engine, std::string kgVersion)
-    : m_db(db), m_engine(engine), m_kgVersion(std::move(kgVersion))
+JsonWriter::JsonWriter(symhow::db::Database& db, symhow::query::QueryEngine& engine, std::string symhowVersion)
+    : m_db(db), m_engine(engine), m_symhowVersion(std::move(symhowVersion))
 {
 }
 
-std::unordered_map<int64_t, kg::query::FileLocation> JsonWriter::loadBestLocations(const std::vector<int64_t>& idsIn) const
+std::unordered_map<int64_t, symhow::query::FileLocation> JsonWriter::loadBestLocations(const std::vector<int64_t>& idsIn) const
 {
-    std::unordered_map<int64_t, kg::query::FileLocation> out;
+    std::unordered_map<int64_t, symhow::query::FileLocation> out;
     const std::vector<int64_t> ids = dedupPreserveOrder(idsIn);
     if (ids.empty())
     {
@@ -86,8 +86,8 @@ std::unordered_map<int64_t, kg::query::FileLocation> JsonWriter::loadBestLocatio
 
     // Same SCOPE-preferred-over-TOKEN selection as QueryEngine::definition(),
     // batched across every id at once instead of one query per id.
-    std::unordered_map<int64_t, std::vector<kg::query::FileLocation>> scopeLocs;
-    std::unordered_map<int64_t, std::vector<kg::query::FileLocation>> tokenLocs;
+    std::unordered_map<int64_t, std::vector<symhow::query::FileLocation>> scopeLocs;
+    std::unordered_map<int64_t, std::vector<symhow::query::FileLocation>> tokenLocs;
 
     m_db.runChunkedIn(
         "SELECT o.element_id, l.file_node_id, l.start_line, l.start_column, l.end_line, l.end_column, l.type "
@@ -96,7 +96,7 @@ std::unordered_map<int64_t, kg::query::FileLocation> JsonWriter::loadBestLocatio
         ids,
         [&](sqlite3_stmt* stmt) {
             const int64_t id = sqlite3_column_int64(stmt, 0);
-            kg::query::FileLocation loc;
+            symhow::query::FileLocation loc;
             loc.fileId = sqlite3_column_int64(stmt, 1);
             loc.filePath = m_engine.fileMap().count(loc.fileId) != 0 ? m_engine.fileMap().at(loc.fileId) : std::string();
             loc.startLine = sqlite3_column_int(stmt, 2);
@@ -104,7 +104,7 @@ std::unordered_map<int64_t, kg::query::FileLocation> JsonWriter::loadBestLocatio
             loc.endLine = sqlite3_column_int(stmt, 4);
             loc.endColumn = sqlite3_column_int(stmt, 5);
             loc.locationKind = sqlite3_column_int(stmt, 6);
-            if (loc.locationKind == kg::db::LocationKind::SCOPE)
+            if (loc.locationKind == symhow::db::LocationKind::SCOPE)
             {
                 scopeLocs[id].push_back(std::move(loc));
             }
@@ -114,8 +114,8 @@ std::unordered_map<int64_t, kg::query::FileLocation> JsonWriter::loadBestLocatio
             }
         });
 
-    auto sortAndTakeFirst = [](std::vector<kg::query::FileLocation>& v) -> kg::query::FileLocation {
-        std::sort(v.begin(), v.end(), [](const kg::query::FileLocation& a, const kg::query::FileLocation& b) {
+    auto sortAndTakeFirst = [](std::vector<symhow::query::FileLocation>& v) -> symhow::query::FileLocation {
+        std::sort(v.begin(), v.end(), [](const symhow::query::FileLocation& a, const symhow::query::FileLocation& b) {
             if (a.filePath != b.filePath)
             {
                 return a.filePath < b.filePath;
@@ -208,7 +208,7 @@ std::unordered_map<int64_t, JsonWriter::HydratedNode> JsonWriter::hydrateNodes(c
         }
     }
 
-    const std::unordered_map<int64_t, kg::query::FileLocation> locs = loadBestLocations(ids);
+    const std::unordered_map<int64_t, symhow::query::FileLocation> locs = loadBestLocations(ids);
     for (const auto& [id, loc] : locs)
     {
         auto it = out.find(id);
@@ -221,7 +221,7 @@ std::unordered_map<int64_t, JsonWriter::HydratedNode> JsonWriter::hydrateNodes(c
     return out;
 }
 
-nlohmann::json JsonWriter::locationObject(const kg::query::FileLocation& loc)
+nlohmann::json JsonWriter::locationObject(const symhow::query::FileLocation& loc)
 {
     nlohmann::json j;
     j["file"] = loc.filePath;
@@ -229,7 +229,7 @@ nlohmann::json JsonWriter::locationObject(const kg::query::FileLocation& loc)
     j["start_column"] = loc.startColumn;
     j["end_line"] = loc.endLine;
     j["end_column"] = loc.endColumn;
-    j["kind"] = kg::db::locationKindToString(loc.locationKind);
+    j["kind"] = symhow::db::locationKindToString(loc.locationKind);
     return j;
 }
 
@@ -239,15 +239,15 @@ nlohmann::json JsonWriter::nodeObject(
     const std::string& serializedName,
     bool indexed,
     int definitionKind,
-    const std::optional<kg::query::FileLocation>& location,
+    const std::optional<symhow::query::FileLocation>& location,
     std::optional<int> depth,
     bool seed) const
 {
-    const kg::db::DecodedName decoded = kg::db::decodeSerializedName(serializedName);
+    const symhow::db::DecodedName decoded = symhow::db::decodeSerializedName(serializedName);
 
     nlohmann::json j;
     j["id"] = id;
-    j["kind"] = kg::db::nodeKindToString(kind);
+    j["kind"] = symhow::db::nodeKindToString(kind);
     j["name"] = decoded.elements.empty() ? std::string() : decoded.elements.back().name;
     j["qualified_name"] = decoded.namePath();
     j["signature"] = decoded.signature();
@@ -263,7 +263,7 @@ nlohmann::json JsonWriter::nodeObject(
     }
 
     j["indexed"] = indexed;
-    j["definition_kind"] = indexed ? nlohmann::json(kg::db::definitionKindToString(definitionKind)) : nlohmann::json(nullptr);
+    j["definition_kind"] = indexed ? nlohmann::json(symhow::db::definitionKindToString(definitionKind)) : nlohmann::json(nullptr);
 
     if (depth.has_value())
     {
@@ -280,10 +280,10 @@ nlohmann::json JsonWriter::nodeObjectFromHydrated(int64_t id, const HydratedNode
     return nodeObject(id, n.kind, n.serializedName, n.indexed, n.definitionKind, n.location, depth, seed);
 }
 
-nlohmann::json JsonWriter::candidateNodeObject(const kg::query::ResolvedSymbol& c) const
+nlohmann::json JsonWriter::candidateNodeObject(const symhow::query::ResolvedSymbol& c) const
 {
     const std::unordered_map<int64_t, SymbolMeta> meta = loadSymbolMeta({c.id});
-    const std::unordered_map<int64_t, kg::query::FileLocation> loc = loadBestLocations({c.id});
+    const std::unordered_map<int64_t, symhow::query::FileLocation> loc = loadBestLocations({c.id});
 
     bool indexed = false;
     int definitionKind = 0;
@@ -292,7 +292,7 @@ nlohmann::json JsonWriter::candidateNodeObject(const kg::query::ResolvedSymbol& 
         indexed = it->second.indexed;
         definitionKind = it->second.definitionKind;
     }
-    std::optional<kg::query::FileLocation> location;
+    std::optional<symhow::query::FileLocation> location;
     if (const auto it = loc.find(c.id); it != loc.end())
     {
         location = it->second;
@@ -324,17 +324,17 @@ std::vector<int64_t> JsonWriter::dedupSortedByKindName(const std::vector<int64_t
     return ids;
 }
 
-// --- kg.graph/1 --------------------------------------------------------------
+// --- symhow.graph/1 --------------------------------------------------------------
 
 nlohmann::json JsonWriter::graph(
     const QueryContext& ctx,
-    const kg::query::BfsResult& result,
+    const symhow::query::BfsResult& result,
     int64_t elapsedMs,
     const std::unordered_map<std::string, nlohmann::json>* notesBySerializedName) const
 {
     nlohmann::json j;
-    j["kg_version"] = m_kgVersion;
-    j["schema"] = "kg.graph/1";
+    j["symhow_version"] = m_symhowVersion;
+    j["schema"] = "symhow.graph/1";
 
     nlohmann::json q;
     q["verb"] = ctx.verb;
@@ -345,13 +345,13 @@ nlohmann::json JsonWriter::graph(
     nlohmann::json edgeKinds = nlohmann::json::array();
     for (int k : ctx.edgeKinds)
     {
-        edgeKinds.push_back(kg::db::edgeKindToString(k));
+        edgeKinds.push_back(symhow::db::edgeKindToString(k));
     }
     q["edge_kinds"] = edgeKinds;
     nlohmann::json nodeKinds = nlohmann::json::array();
     for (int k : ctx.nodeKinds)
     {
-        nodeKinds.push_back(kg::db::nodeKindToString(k));
+        nodeKinds.push_back(symhow::db::nodeKindToString(k));
     }
     q["node_kinds"] = nodeKinds;
     q["max_nodes"] = ctx.maxNodes;
@@ -360,7 +360,7 @@ nlohmann::json JsonWriter::graph(
     j["truncated"] = result.truncated;
 
     int maxDepth = 0;
-    for (const kg::query::BfsNode& n : result.nodes)
+    for (const symhow::query::BfsNode& n : result.nodes)
     {
         maxDepth = std::max(maxDepth, n.depth);
     }
@@ -373,7 +373,7 @@ nlohmann::json JsonWriter::graph(
 
     std::vector<int64_t> nodeIds;
     nodeIds.reserve(result.nodes.size());
-    for (const kg::query::BfsNode& n : result.nodes)
+    for (const symhow::query::BfsNode& n : result.nodes)
     {
         nodeIds.push_back(n.id);
     }
@@ -381,7 +381,7 @@ nlohmann::json JsonWriter::graph(
     const std::unordered_set<int64_t> seedSet(ctx.symbolIds.begin(), ctx.symbolIds.end());
 
     nlohmann::json nodesJson = nlohmann::json::array();
-    for (const kg::query::BfsNode& n : result.nodes)
+    for (const symhow::query::BfsNode& n : result.nodes)
     {
         const auto it = hydrated.find(n.id);
         nlohmann::json nodeJson;
@@ -413,11 +413,11 @@ nlohmann::json JsonWriter::graph(
 
     std::vector<int64_t> edgeIds;
     edgeIds.reserve(result.edges.size());
-    for (const kg::query::BfsEdge& e : result.edges)
+    for (const symhow::query::BfsEdge& e : result.edges)
     {
         edgeIds.push_back(e.id);
     }
-    std::unordered_map<int64_t, std::vector<kg::query::FileLocation>> edgeLocs;
+    std::unordered_map<int64_t, std::vector<symhow::query::FileLocation>> edgeLocs;
     if (!edgeIds.empty())
     {
         m_db.runChunkedIn(
@@ -427,7 +427,7 @@ nlohmann::json JsonWriter::graph(
             dedupPreserveOrder(edgeIds),
             [&](sqlite3_stmt* stmt) {
                 const int64_t id = sqlite3_column_int64(stmt, 0);
-                kg::query::FileLocation loc;
+                symhow::query::FileLocation loc;
                 loc.fileId = sqlite3_column_int64(stmt, 1);
                 loc.filePath = m_engine.fileMap().count(loc.fileId) != 0 ? m_engine.fileMap().at(loc.fileId) : std::string();
                 loc.startLine = sqlite3_column_int(stmt, 2);
@@ -439,7 +439,7 @@ nlohmann::json JsonWriter::graph(
             });
         for (auto& [id, locs] : edgeLocs)
         {
-            std::sort(locs.begin(), locs.end(), [](const kg::query::FileLocation& a, const kg::query::FileLocation& b) {
+            std::sort(locs.begin(), locs.end(), [](const symhow::query::FileLocation& a, const symhow::query::FileLocation& b) {
                 if (a.filePath != b.filePath)
                 {
                     return a.filePath < b.filePath;
@@ -458,17 +458,17 @@ nlohmann::json JsonWriter::graph(
     }
 
     nlohmann::json edgesJson = nlohmann::json::array();
-    for (const kg::query::BfsEdge& e : result.edges)
+    for (const symhow::query::BfsEdge& e : result.edges)
     {
         nlohmann::json ej;
         ej["id"] = e.id;
-        ej["kind"] = kg::db::edgeKindToString(e.kind);
+        ej["kind"] = symhow::db::edgeKindToString(e.kind);
         ej["source"] = e.source;
         ej["target"] = e.target;
         nlohmann::json locsJson = nlohmann::json::array();
         if (const auto it = edgeLocs.find(e.id); it != edgeLocs.end())
         {
-            for (const kg::query::FileLocation& loc : it->second)
+            for (const symhow::query::FileLocation& loc : it->second)
             {
                 locsJson.push_back(locationObject(loc));
             }
@@ -481,13 +481,13 @@ nlohmann::json JsonWriter::graph(
     return j;
 }
 
-// --- kg.references/1 ----------------------------------------------------------
+// --- symhow.references/1 ----------------------------------------------------------
 
-nlohmann::json JsonWriter::references(const QueryContext& ctx, const kg::query::ReferencesResult& result, int64_t elapsedMs) const
+nlohmann::json JsonWriter::references(const QueryContext& ctx, const symhow::query::ReferencesResult& result, int64_t elapsedMs) const
 {
     nlohmann::json j;
-    j["kg_version"] = m_kgVersion;
-    j["schema"] = "kg.references/1";
+    j["symhow_version"] = m_symhowVersion;
+    j["schema"] = "symhow.references/1";
 
     nlohmann::json q;
     q["verb"] = ctx.verb;
@@ -504,7 +504,7 @@ nlohmann::json JsonWriter::references(const QueryContext& ctx, const kg::query::
     j["stats"] = std::move(stats);
 
     std::vector<int64_t> ids;
-    for (const kg::query::ReferenceHit& h : result.hits)
+    for (const symhow::query::ReferenceHit& h : result.hits)
     {
         ids.push_back(h.targetNodeId);
         ids.push_back(h.hasEdge ? h.contextNodeId : h.targetNodeId);
@@ -521,15 +521,15 @@ nlohmann::json JsonWriter::references(const QueryContext& ctx, const kg::query::
     j["nodes"] = std::move(nodesJson);
 
     nlohmann::json refsJson = nlohmann::json::array();
-    for (const kg::query::ReferenceHit& h : result.hits)
+    for (const symhow::query::ReferenceHit& h : result.hits)
     {
         nlohmann::json rj;
         rj["edge_id"] = h.hasEdge ? nlohmann::json(h.edgeId) : nlohmann::json(nullptr);
-        // "DECLARATION" is a synthetic label kg invents -- it is NOT a real
-        // kg::db::EdgeKind from the schema, just a way to distinguish "this
+        // "DECLARATION" is a synthetic label symhow invents -- it is NOT a real
+        // symhow::db::EdgeKind from the schema, just a way to distinguish "this
         // location IS the symbol's own declaration" from "this location is a
         // reference edge pointing at it". See docs/JSON_SCHEMA.md.
-        rj["edge_kind"] = h.hasEdge ? kg::db::edgeKindToString(h.edgeKind) : std::string("DECLARATION");
+        rj["edge_kind"] = h.hasEdge ? symhow::db::edgeKindToString(h.edgeKind) : std::string("DECLARATION");
         rj["context"] = h.hasEdge ? h.contextNodeId : h.targetNodeId;
         rj["target"] = h.targetNodeId;
         rj["location"] = locationObject(h.location);
@@ -540,13 +540,13 @@ nlohmann::json JsonWriter::references(const QueryContext& ctx, const kg::query::
     return j;
 }
 
-// --- kg.definition/1 ----------------------------------------------------------
+// --- symhow.definition/1 ----------------------------------------------------------
 
-nlohmann::json JsonWriter::definition(const QueryContext& ctx, const kg::query::DefinitionResult& result, int64_t elapsedMs) const
+nlohmann::json JsonWriter::definition(const QueryContext& ctx, const symhow::query::DefinitionResult& result, int64_t elapsedMs) const
 {
     nlohmann::json j;
-    j["kg_version"] = m_kgVersion;
-    j["schema"] = "kg.definition/1";
+    j["symhow_version"] = m_symhowVersion;
+    j["schema"] = "symhow.definition/1";
 
     nlohmann::json q;
     q["verb"] = ctx.verb;
@@ -580,7 +580,7 @@ nlohmann::json JsonWriter::definition(const QueryContext& ctx, const kg::query::
     }
 
     nlohmann::json locsJson = nlohmann::json::array();
-    for (const kg::query::FileLocation& loc : result.locations)
+    for (const symhow::query::FileLocation& loc : result.locations)
     {
         locsJson.push_back(locationObject(loc));
     }
@@ -589,13 +589,13 @@ nlohmann::json JsonWriter::definition(const QueryContext& ctx, const kg::query::
     return j;
 }
 
-// --- kg.search/1 ---------------------------------------------------------------
+// --- symhow.search/1 ---------------------------------------------------------------
 
-nlohmann::json JsonWriter::search(const QueryContext& ctx, const std::vector<kg::query::SearchHit>& hits, int64_t elapsedMs) const
+nlohmann::json JsonWriter::search(const QueryContext& ctx, const std::vector<symhow::query::SearchHit>& hits, int64_t elapsedMs) const
 {
     nlohmann::json j;
-    j["kg_version"] = m_kgVersion;
-    j["schema"] = "kg.search/1";
+    j["symhow_version"] = m_symhowVersion;
+    j["schema"] = "symhow.search/1";
 
     nlohmann::json q;
     q["verb"] = ctx.verb;
@@ -605,7 +605,7 @@ nlohmann::json JsonWriter::search(const QueryContext& ctx, const std::vector<kg:
     nlohmann::json kinds = nlohmann::json::array();
     for (int k : ctx.searchKinds)
     {
-        kinds.push_back(kg::db::nodeKindToString(k));
+        kinds.push_back(symhow::db::nodeKindToString(k));
     }
     q["kinds"] = kinds;
     j["query"] = std::move(q);
@@ -644,14 +644,14 @@ nlohmann::json JsonWriter::search(const QueryContext& ctx, const std::vector<kg:
     j["stats"] = std::move(stats);
 
     std::vector<int64_t> ids;
-    for (const kg::query::SearchHit& h : hits)
+    for (const symhow::query::SearchHit& h : hits)
     {
         ids.push_back(h.nodeId);
     }
     const std::unordered_map<int64_t, HydratedNode> hydrated = hydrateNodes(ids);
 
     nlohmann::json hitsJson = nlohmann::json::array();
-    for (const kg::query::SearchHit& h : hits)
+    for (const symhow::query::SearchHit& h : hits)
     {
         nlohmann::json hj;
         hj["score"] = h.score;
@@ -665,13 +665,13 @@ nlohmann::json JsonWriter::search(const QueryContext& ctx, const std::vector<kg:
     return j;
 }
 
-// --- kg.stats/1 ------------------------------------------------------------------
+// --- symhow.stats/1 ------------------------------------------------------------------
 
-nlohmann::json JsonWriter::stats(const QueryContext& ctx, const kg::query::StatsResult& result) const
+nlohmann::json JsonWriter::stats(const QueryContext& ctx, const symhow::query::StatsResult& result) const
 {
     nlohmann::json j;
-    j["kg_version"] = m_kgVersion;
-    j["schema"] = "kg.stats/1";
+    j["symhow_version"] = m_symhowVersion;
+    j["schema"] = "symhow.stats/1";
 
     nlohmann::json q;
     q["verb"] = ctx.verb;
@@ -690,7 +690,7 @@ nlohmann::json JsonWriter::stats(const QueryContext& ctx, const kg::query::Stats
     database["storage_version"] = result.storageVersion;
     database["path"] = ctx.db;
     database["size_bytes"] = sizeBytes;
-    database["reader_indices_present"] = kg::db::missingIndexNames(m_db).empty();
+    database["reader_indices_present"] = symhow::db::missingIndexNames(m_db).empty();
     j["database"] = std::move(database);
 
     int64_t filesIndexed = 0;
@@ -711,21 +711,21 @@ nlohmann::json JsonWriter::stats(const QueryContext& ctx, const kg::query::Stats
     // Sparse: only kinds with count > 0 (already true of nodesByKind/
     // edgesByKind -- see QueryEngine::stats()'s GROUP BY query).
     nlohmann::json nodeKinds = nlohmann::json::object();
-    for (const kg::query::KindCount& kc : result.nodesByKind)
+    for (const symhow::query::KindCount& kc : result.nodesByKind)
     {
-        nodeKinds[kg::db::nodeKindToString(kc.kind)] = kc.count;
+        nodeKinds[symhow::db::nodeKindToString(kc.kind)] = kc.count;
     }
     j["node_kinds"] = std::move(nodeKinds);
 
     nlohmann::json edgeKinds = nlohmann::json::object();
-    for (const kg::query::KindCount& kc : result.edgesByKind)
+    for (const symhow::query::KindCount& kc : result.edgesByKind)
     {
-        edgeKinds[kg::db::edgeKindToString(kc.kind)] = kc.count;
+        edgeKinds[symhow::db::edgeKindToString(kc.kind)] = kc.count;
     }
     j["edge_kinds"] = std::move(edgeKinds);
 
     nlohmann::json errors = nlohmann::json::array();
-    for (const kg::query::StatsErrorRow& e : result.errors)
+    for (const symhow::query::StatsErrorRow& e : result.errors)
     {
         nlohmann::json ej;
         ej["id"] = e.id;
@@ -739,13 +739,13 @@ nlohmann::json JsonWriter::stats(const QueryContext& ctx, const kg::query::Stats
     return j;
 }
 
-// --- kg.file/1 -------------------------------------------------------------------
+// --- symhow.file/1 -------------------------------------------------------------------
 
-nlohmann::json JsonWriter::file(const QueryContext& ctx, const kg::query::FileResult& result, bool wantContents, bool wantOccurrences) const
+nlohmann::json JsonWriter::file(const QueryContext& ctx, const symhow::query::FileResult& result, bool wantContents, bool wantOccurrences) const
 {
     nlohmann::json j;
-    j["kg_version"] = m_kgVersion;
-    j["schema"] = "kg.file/1";
+    j["symhow_version"] = m_symhowVersion;
+    j["schema"] = "symhow.file/1";
 
     nlohmann::json q;
     q["verb"] = ctx.verb;
@@ -778,7 +778,7 @@ nlohmann::json JsonWriter::file(const QueryContext& ctx, const kg::query::FileRe
         // an EXPLICIT is_local_symbol boolean here instead.
         std::vector<int64_t> nodeElementIds;
         std::vector<int64_t> zeroKindElementIds;
-        for (const kg::query::FileOccurrence& occ : result.occurrences)
+        for (const symhow::query::FileOccurrence& occ : result.occurrences)
         {
             if (occ.elementKind != 0)
             {
@@ -801,7 +801,7 @@ nlohmann::json JsonWriter::file(const QueryContext& ctx, const kg::query::FileRe
         const std::unordered_set<int64_t> localSymbolIds = loadLocalSymbolIds(zeroKindElementIds);
 
         nlohmann::json occArr = nlohmann::json::array();
-        for (const kg::query::FileOccurrence& occ : result.occurrences)
+        for (const symhow::query::FileOccurrence& occ : result.occurrences)
         {
             nlohmann::json oj;
             oj["location"] = locationObject(occ.location);
@@ -811,13 +811,13 @@ nlohmann::json JsonWriter::file(const QueryContext& ctx, const kg::query::FileRe
                 nlohmann::json nodeObj;
                 if (it != hydrated.end())
                 {
-                    const kg::db::DecodedName decoded = kg::db::decodeSerializedName(it->second.serializedName);
-                    nodeObj["kind"] = kg::db::nodeKindToString(it->second.kind);
+                    const symhow::db::DecodedName decoded = symhow::db::decodeSerializedName(it->second.serializedName);
+                    nodeObj["kind"] = symhow::db::nodeKindToString(it->second.kind);
                     nodeObj["qualified_name"] = decoded.namePath();
                 }
                 else
                 {
-                    nodeObj["kind"] = kg::db::nodeKindToString(occ.elementKind);
+                    nodeObj["kind"] = symhow::db::nodeKindToString(occ.elementKind);
                     nodeObj["qualified_name"] = occ.elementName;
                 }
                 oj["node"] = std::move(nodeObj);
@@ -835,13 +835,13 @@ nlohmann::json JsonWriter::file(const QueryContext& ctx, const kg::query::FileRe
     return j;
 }
 
-// --- kg.ambiguous/1 / kg.not-found/1 -------------------------------------------
+// --- symhow.ambiguous/1 / symhow.not-found/1 -------------------------------------------
 
-nlohmann::json JsonWriter::ambiguous(const QueryContext& ctx, const std::vector<kg::query::ResolvedSymbol>& candidates) const
+nlohmann::json JsonWriter::ambiguous(const QueryContext& ctx, const std::vector<symhow::query::ResolvedSymbol>& candidates) const
 {
     nlohmann::json j;
-    j["kg_version"] = m_kgVersion;
-    j["schema"] = "kg.ambiguous/1";
+    j["symhow_version"] = m_symhowVersion;
+    j["schema"] = "symhow.ambiguous/1";
 
     nlohmann::json q;
     q["verb"] = ctx.verb;
@@ -850,7 +850,7 @@ nlohmann::json JsonWriter::ambiguous(const QueryContext& ctx, const std::vector<
     j["query"] = std::move(q);
 
     nlohmann::json arr = nlohmann::json::array();
-    for (const kg::query::ResolvedSymbol& c : candidates)
+    for (const symhow::query::ResolvedSymbol& c : candidates)
     {
         arr.push_back(candidateNodeObject(c));
     }
@@ -859,11 +859,11 @@ nlohmann::json JsonWriter::ambiguous(const QueryContext& ctx, const std::vector<
     return j;
 }
 
-nlohmann::json JsonWriter::notFound(const QueryContext& ctx, const std::vector<kg::query::SearchHit>& hits) const
+nlohmann::json JsonWriter::notFound(const QueryContext& ctx, const std::vector<symhow::query::SearchHit>& hits) const
 {
     nlohmann::json j;
-    j["kg_version"] = m_kgVersion;
-    j["schema"] = "kg.not-found/1";
+    j["symhow_version"] = m_symhowVersion;
+    j["schema"] = "symhow.not-found/1";
 
     nlohmann::json q;
     q["verb"] = ctx.verb;
@@ -872,14 +872,14 @@ nlohmann::json JsonWriter::notFound(const QueryContext& ctx, const std::vector<k
     j["query"] = std::move(q);
 
     std::vector<int64_t> ids;
-    for (const kg::query::SearchHit& h : hits)
+    for (const symhow::query::SearchHit& h : hits)
     {
         ids.push_back(h.nodeId);
     }
     const std::unordered_map<int64_t, HydratedNode> hydrated = hydrateNodes(ids);
 
     nlohmann::json arr = nlohmann::json::array();
-    for (const kg::query::SearchHit& h : hits)
+    for (const symhow::query::SearchHit& h : hits)
     {
         const auto it = hydrated.find(h.nodeId);
         arr.push_back(nodeObjectFromHydrated(h.nodeId, it != hydrated.end() ? it->second : HydratedNode{}, std::nullopt, false));
@@ -889,11 +889,11 @@ nlohmann::json JsonWriter::notFound(const QueryContext& ctx, const std::vector<k
     return j;
 }
 
-nlohmann::json JsonWriter::notFoundFiles(const QueryContext& ctx, const std::vector<kg::query::FuzzyHit>& hits, const std::unordered_map<int64_t, std::string>& fileMap) const
+nlohmann::json JsonWriter::notFoundFiles(const QueryContext& ctx, const std::vector<symhow::query::FuzzyHit>& hits, const std::unordered_map<int64_t, std::string>& fileMap) const
 {
     nlohmann::json j;
-    j["kg_version"] = m_kgVersion;
-    j["schema"] = "kg.not-found/1";
+    j["symhow_version"] = m_symhowVersion;
+    j["schema"] = "symhow.not-found/1";
 
     nlohmann::json q;
     q["verb"] = ctx.verb;
@@ -902,27 +902,27 @@ nlohmann::json JsonWriter::notFoundFiles(const QueryContext& ctx, const std::vec
     j["query"] = std::move(q);
 
     std::vector<int64_t> ids;
-    for (const kg::query::FuzzyHit& h : hits)
+    for (const symhow::query::FuzzyHit& h : hits)
     {
         ids.push_back(h.nodeId);
     }
-    const std::unordered_map<int64_t, kg::query::FileLocation> locs = loadBestLocations(ids);
+    const std::unordered_map<int64_t, symhow::query::FileLocation> locs = loadBestLocations(ids);
 
     nlohmann::json arr = nlohmann::json::array();
-    for (const kg::query::FuzzyHit& h : hits)
+    for (const symhow::query::FuzzyHit& h : hits)
     {
         const auto pathIt = fileMap.find(h.nodeId);
         const std::string path = pathIt != fileMap.end() ? pathIt->second : std::string();
-        std::optional<kg::query::FileLocation> loc;
+        std::optional<symhow::query::FileLocation> loc;
         if (const auto lit = locs.find(h.nodeId); lit != locs.end())
         {
             loc = lit->second;
         }
-        arr.push_back(nodeObject(h.nodeId, kg::db::NodeKind::FILE, path, /*indexed=*/false, /*definitionKind=*/0, loc, std::nullopt, false));
+        arr.push_back(nodeObject(h.nodeId, symhow::db::NodeKind::FILE, path, /*indexed=*/false, /*definitionKind=*/0, loc, std::nullopt, false));
     }
     j["suggestions"] = std::move(arr);
 
     return j;
 }
 
-}  // namespace kg::out::json
+}  // namespace symhow::out::json

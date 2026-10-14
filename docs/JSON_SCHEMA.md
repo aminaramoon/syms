@@ -1,11 +1,11 @@
-# kg JSON output schema
+# symhow JSON output schema
 
-`kg query <verb> ... --json` and `kg index ... --json` print exactly one JSON
+`symhow query <verb> ... --json` and `symhow index ... --json` print exactly one JSON
 object to stdout (never split across lines, never mixed with any other
 stdout output) and set the same process exit code text mode would have used
 (0 ok, 2 ambiguous symbol, 3 not found, 4 db missing/unreadable, etc. -- see
-`kg --help`). This document is the schema reference for that output,
-implemented by `kg::out::json::JsonWriter` (`include/kg/out/JsonWriter.h`,
+`symhow --help`). This document is the schema reference for that output,
+implemented by `symhow::out::json::JsonWriter` (`include/symhow/out/JsonWriter.h`,
 `src/out/JsonWriter.cpp`).
 
 If a verb prints multiple results in text mode (`file` with `--all-matches`
@@ -17,16 +17,16 @@ one per line (NDJSON-style) -- there is no wrapping array.
 Every schema starts with the same two fields:
 
 ```json
-{ "kg_version": "0.1.0", "schema": "kg.graph/1", ... }
+{ "symhow_version": "0.1.0", "schema": "symhow.graph/1", ... }
 ```
 
-- `kg_version` is exactly the version string `kg --version` prints
-  (`KG_VERSION_STRING`), so a consumer can tell which `kg` produced a given
+- `symhow_version` is exactly the version string `symhow --version` prints
+  (`SYMHOW_VERSION_STRING`), so a consumer can tell which `symhow` produced a given
   file without shelling out separately.
-- `schema` is one of the names below, always `"kg.<name>/<integer>"`. The
+- `schema` is one of the names below, always `"symhow.<name>/<integer>"`. The
   integer is a schema version; a future incompatible change to a given
-  schema's shape should bump it (`kg.graph/2`, etc.) rather than silently
-  changing `kg.graph/1` out from under existing consumers.
+  schema's shape should bump it (`symhow.graph/2`, etc.) rather than silently
+  changing `symhow.graph/1` out from under existing consumers.
 
 Most (not all -- see the per-schema notes below) schemas also carry:
 
@@ -51,21 +51,21 @@ same bytes), it just doesn't match the key order shown in the worked
 examples below (those are written in whatever order reads best for a human).
 
 Every array (`nodes`, `edges`, `hits`, `references`, `locations`,
-`occurrences`, ...) preserves the exact order `kg::query::QueryEngine`
+`occurrences`, ...) preserves the exact order `symhow::query::QueryEngine`
 already produces -- `JsonWriter` never re-sorts anything itself. See
 `docs/KNOWN_LIMITATIONS.md`'s Phase 4 section for the authoritative sort
 contract (nodes by `(depth, kind, serializedName, id)`, edges by
 `(kind, source, target, id)`, locations by
 `(filePath, startLine, startColumn, fileId)`, search hits by
 `(-score, textLength, displayName, id)`). Where JsonWriter itself introduces
-a new deduplicated list not covered by that contract (`kg.references/1`'s
+a new deduplicated list not covered by that contract (`symhow.references/1`'s
 `nodes[]`, which flattens/dedups every hit's context+target ids), it applies
 the same `(kind, serializedName, id)` tie-break for consistency.
 
 `stats.elapsed_ms` is the one field that is NOT reproducible across
 process invocations in general (it's a real wall-clock measurement) --
 in practice, against a small database, it is almost always `0`, but a
-byte-for-byte diff of two separately-invoked `kg query ... --json` runs is
+byte-for-byte diff of two separately-invoked `symhow query ... --json` runs is
 only guaranteed to match if both runs measure the same `elapsed_ms`. Code
 that needs strict byte-for-byte reproducibility (e.g. this phase's own
 determinism unit test) calls `JsonWriter` directly with a fixed `elapsedMs`
@@ -73,9 +73,9 @@ argument rather than diffing two CLI invocations.
 
 ### The node object
 
-Every schema that includes an actual graph node (`kg.graph/1`'s `nodes[]`,
-`kg.references/1`'s `nodes[]`, `kg.definition/1`'s `symbol`, `kg.search/1`'s
-`hits[].node`, `kg.ambiguous/1`'s `candidates[]`, `kg.not-found/1`'s
+Every schema that includes an actual graph node (`symhow.graph/1`'s `nodes[]`,
+`symhow.references/1`'s `nodes[]`, `symhow.definition/1`'s `symbol`, `symhow.search/1`'s
+`hits[].node`, `symhow.ambiguous/1`'s `candidates[]`, `symhow.not-found/1`'s
 `suggestions[]`) uses the same object shape:
 
 ```json
@@ -95,7 +95,7 @@ Every schema that includes an actual graph node (`kg.graph/1`'s `nodes[]`,
 }
 ```
 
-Field-by-field, in terms of `kg::db::DecodedName` (`include/kg/db/NameDecode.h`):
+Field-by-field, in terms of `symhow::db::DecodedName` (`include/symhow/db/NameDecode.h`):
 
 - `name` -- the bare leaf element name only (no ancestors, no signature):
   `decoded.elements.back().name`.
@@ -112,7 +112,7 @@ Field-by-field, in terms of `kg::db::DecodedName` (`include/kg/db/NameDecode.h`)
   at all, and if so its `definition_kind` (`"EXPLICIT"`/`"IMPLICIT"`).
   `definition_kind` is JSON `null` (not an absent key) when `indexed` is
   `false`.
-- `depth` / `seed` -- **only present for `kg.graph/1` nodes** (BFS-specific
+- `depth` / `seed` -- **only present for `symhow.graph/1` nodes** (BFS-specific
   concepts); absent everywhere else (not `null` -- the key itself is
   omitted). `depth` is the BFS level (`0` for a seed node -- BFS results
   always include the seed(s) themselves at depth 0, see
@@ -126,8 +126,8 @@ Field-by-field, in terms of `kg::db::DecodedName` (`include/kg/db/NameDecode.h`)
   has no recorded location at all (e.g. an `UNKNOWN`/unsolved-symbol node,
   or a system-header symbol with `--system-file-rows none`).
 
-`kg.ambiguous/1`'s `candidates[]` and `kg.not-found/1`'s `suggestions[]` are
-a deliberate exception: they're built directly from `kg::query::
+`symhow.ambiguous/1`'s `candidates[]` and `symhow.not-found/1`'s `suggestions[]` are
+a deliberate exception: they're built directly from `symhow::query::
 ResolvedSymbol`/`SearchHit`'s own `{id, kind, serializedName}` rather than
 re-querying the `node` table by id (`indexed`/`definition_kind` still come
 from a `symbol` table lookup, `location` still comes from the usual
@@ -135,7 +135,7 @@ occurrence lookup) -- this matters specifically for **file-path** ambiguity
 (the `file` verb): `ResolvedSymbol::serializedName` there holds the file's
 raw `path`, not a real `serialized_name` (see `SymbolResolver.h`), and
 re-fetching the actual `node` row for that id could show something
-different. `kg.file/1`'s per-occurrence `node` field is intentionally
+different. `symhow.file/1`'s per-occurrence `node` field is intentionally
 **minimal** (`{"kind": ..., "qualified_name": ...}` only) rather than the
 full shape above -- see that section below.
 
@@ -146,20 +146,20 @@ full shape above -- see that section below.
   "end_line": 90, "end_column": 26, "kind": "TOKEN" }
 ```
 
-`kind` is a `kg::db::LocationKind` string (`TOKEN`, `SCOPE`, `LOCAL_SYMBOL`,
+`kind` is a `symhow::db::LocationKind` string (`TOKEN`, `SCOPE`, `LOCAL_SYMBOL`,
 `UNSOLVED`, ...). Used for a node's `location`, an edge's `locations[]`
-entries, `kg.references/1`'s `references[].location`,
-`kg.definition/1`'s `locations[]`, and `kg.file/1`'s `occurrences[].location`.
+entries, `symhow.references/1`'s `references[].location`,
+`symhow.definition/1`'s `locations[]`, and `symhow.file/1`'s `occurrences[].location`.
 
-## `kg.graph/1`
+## `symhow.graph/1`
 
 Every graph-producing verb: `callers callees bases derived members neighbors
 overrides overridden-by context`.
 
 ```json
 {
-  "kg_version": "0.1.0",
-  "schema": "kg.graph/1",
+  "symhow_version": "0.1.0",
+  "schema": "symhow.graph/1",
   "query": {
     "verb": "callers",
     "db": "/tmp/cucs.srctrldb",
@@ -181,19 +181,19 @@ overrides overridden-by context`.
 }
 ```
 
-- `query.edge_kinds` is the actual `kg::db::EdgeKind` value(s) this call
+- `query.edge_kinds` is the actual `symhow::db::EdgeKind` value(s) this call
   used: a single fixed kind for `callers`/`callees` (`CALL`),
   `bases`/`derived` (`INHERITANCE`), `overrides`/`overridden-by`
   (`OVERRIDE`), `members` (`MEMBER`); for `neighbors` it's the user's
   `--edge-kind` filter, or (default, no filter given) every named edge kind
-  decomposed from the `ALL` mask (`kg::out::json::decomposeEdgeKindMask()`).
+  decomposed from the `ALL` mask (`symhow::out::json::decomposeEdgeKindMask()`).
 - `query.node_kinds` is the raw `--kind` filter list, empty if unfiltered.
 - `query.depth` / `query.max_nodes` reflect what the verb ACTUALLY applied:
   `callers`/`callees`/`bases`/`derived` use `--depth`/`--max-nodes`
   verbatim; `overrides`/`overridden-by`/`members`/`neighbors` are fixed at
   `depth=1`, `max_nodes=0` (unlimited) regardless of the flags (those verbs
   never apply a node cap at all -- see `QueryEngine.cpp`).
-- `truncated` is `kg::query::BfsResult::truncated`. For `neighbors`
+- `truncated` is `symhow::query::BfsResult::truncated`. For `neighbors`
   specifically: its `QueryEngine::neighbors()` implementation builds its own
   `BfsResult` by hand (it isn't routed through `runBfs()`) and never sets
   `truncated` at all -- it is **always `false`** for that verb, since
@@ -210,7 +210,7 @@ overrides overridden-by context`.
 
 ### `context` (Phase 4 of `docs/NOTES_DESIGN.md`)
 
-`kg query context SYMBOL [--depth N=1] [--no-notes] [--max-nodes N]` is the
+`symhow query context SYMBOL [--depth N=1] [--no-notes] [--max-nodes N]` is the
 one graph verb that is a UNION of several traversals rather than one: the
 seed, `callers()` and `callees()` (both to `--depth`), one-hop
 `overrides`/`overridden-by`, and -- only when the seed is a `CLASS`/`STRUCT`
@@ -221,10 +221,10 @@ class-like seed). `query.depth`/`query.max_nodes` are the `callers`/
 `overrides`/`members`/etc.  elsewhere in this doc).
 
 The one shape addition: **every node object gets a `"notes"` field** -- the
-same object `kg.note/1`'s own `"note"` field carries (see below), or JSON
+same object `symhow.note/1`'s own `"note"` field carries (see below), or JSON
 `null` if the symbol has no note. `--no-notes` omits the key entirely
 (rather than sending it as `null` for every node) -- this is the one case in
-`kg.graph/1` where a key can be flat-out absent depending on a flag, so
+`symhow.graph/1` where a key can be flat-out absent depending on a flag, so
 check for the key's presence before assuming it's always there.
 
 ```json
@@ -239,21 +239,21 @@ check for the key's presence before assuming it's always there.
     "commit": "80412d5c0ea094fa408558865152a5e9755116f" } }
 ```
 
-Notes are read via the same overlay-aware `kg::notes::openNotes()` path
-`kg notes show`/`status` use -- `context` never writes the DB; if a notes
-file changed on disk since the last `kg notes sync`, the usual "notes cache
-out of date -- run `kg notes sync`" hint goes to stderr (suppressed by
+Notes are read via the same overlay-aware `symhow::notes::openNotes()` path
+`symhow notes show`/`status` use -- `context` never writes the DB; if a notes
+file changed on disk since the last `symhow notes sync`, the usual "notes cache
+out of date -- run `symhow notes sync`" hint goes to stderr (suppressed by
 `--json`'s stdout purity the same way every other verb suppresses it, i.e.
 it's still printed to stderr, just never mixed into the JSON on stdout).
 Text mode additionally prints, under any node with a note, an indented
 `brief:` line tagged `[stale]`/`[unfilled]` as appropriate; `--notes-full`
 prints the whole rendered block instead of just the brief.
 
-## `kg.references/1`
+## `symhow.references/1`
 
 ```json
 {
-  "kg_version": "0.1.0", "schema": "kg.references/1",
+  "symhow_version": "0.1.0", "schema": "symhow.references/1",
   "query": { "verb": "references", "db": "/tmp/cucs.srctrldb",
              "symbol": "cucascade::idata_representation", "symbol_ids": [3001] },
   "truncated": false,
@@ -270,11 +270,11 @@ prints the whole rendered block instead of just the brief.
 }
 ```
 
-**`edge_kind: "DECLARATION"` is invented by `kg`, not a real
-`kg::db::EdgeKind` from the Sourcetrail schema.** It labels the one
+**`edge_kind: "DECLARATION"` is invented by `symhow`, not a real
+`symhow::db::EdgeKind` from the Sourcetrail schema.** It labels the one
 `references[]` entry (`edge_id: null`) that is the symbol's own
 declaration/definition site rather than an incoming reference edge --
-`kg::query::ReferenceHit::hasEdge == false`. Every other entry's `edge_kind`
+`symhow::query::ReferenceHit::hasEdge == false`. Every other entry's `edge_kind`
 is a real upstream `EdgeKind` string (`CALL`, `INHERITANCE`, `MEMBER`, ...),
 and `edge_id` is the real `edge.id`. For the `DECLARATION` entry, `context`
 equals `target` (the symbol referencing itself, by convention, since there
@@ -284,11 +284,11 @@ is no separate "referencing" node for a declaration site).
 `nodes[]` is sorted by `(kind, serialized_name, id)` (see "Key ordering and
 determinism" above), not by first-appearance in `references[]`.
 
-## `kg.definition/1`
+## `symhow.definition/1`
 
 ```json
 {
-  "kg_version": "0.1.0", "schema": "kg.definition/1",
+  "symhow_version": "0.1.0", "schema": "symhow.definition/1",
   "query": { "verb": "definition", "db": "/tmp/cucs.srctrldb",
              "symbol": "fixture::Square", "symbol_ids": [23] },
   "truncated": false,
@@ -316,11 +316,11 @@ track which location came from which seed (see
 `definition --all-matches --json` output with more than one seed should not
 assume every entry in `locations[]` belongs to `symbol`.
 
-## `kg.search/1`
+## `symhow.search/1`
 
 ```json
 {
-  "kg_version": "0.1.0", "schema": "kg.search/1",
+  "symhow_version": "0.1.0", "schema": "symhow.search/1",
   "query": { "verb": "search", "db": "/tmp/cucs.srctrldb", "text": "reslimpol", "limit": 5, "kinds": ["CLASS"] },
   "truncated": false,
   "stats": { "candidates_scanned": 41233, "hit_count": 2, "elapsed_ms": 61 },
@@ -340,17 +340,17 @@ assume every entry in `locations[]` belongs to `symbol`.
 != 0]` mirroring `QueryEngine::search()`'s own candidate-selection WHERE
 clause (that function doesn't return the count itself). `matched_indices`
 are the fuzzy matcher's highlighted character positions into the node's
-`name` (original, non-lowercased) -- see `kg::query::FuzzyHit`.
+`name` (original, non-lowercased) -- see `symhow::query::FuzzyHit`.
 `truncated` is always `false`: `limit` is an intentional result cap, not a
 "more results existed but were cut" signal -- there is no reliable way to
 tell whether more matches existed beyond `limit` without re-running
 unbounded, so this schema doesn't attempt to report it.
 
-## `kg.stats/1`
+## `symhow.stats/1`
 
 ```json
 {
-  "kg_version": "0.1.0", "schema": "kg.stats/1",
+  "symhow_version": "0.1.0", "schema": "symhow.stats/1",
   "query": { "verb": "stats", "db": "/tmp/cucs.srctrldb" },
   "database": { "storage_version": 25, "path": "/tmp/cucs.srctrldb", "size_bytes": 184320000,
                 "reader_indices_present": true },
@@ -374,11 +374,11 @@ unlike what some internal design notes say, `--errors 0` is currently
 treated the same as the default (100), not "show every error" -- this is
 existing Phase 4 CLI behavior, unchanged by Phase 5), sorted by `id`.
 
-## `kg.file/1`
+## `symhow.file/1`
 
 ```json
 {
-  "kg_version": "0.1.0", "schema": "kg.file/1",
+  "symhow_version": "0.1.0", "schema": "symhow.file/1",
   "query": { "verb": "file", "db": "/tmp/cucs.srctrldb", "path": "shapes.hpp" },
   "file": { "id": 3, "path": "/abs/path/shapes.hpp", "language": "cpp",
             "indexed": true, "complete": true, "line_count": 43 },
@@ -399,8 +399,8 @@ existing Phase 4 CLI behavior, unchanged by Phase 5), sorted by `id`.
 actually has recorded content -- `filecontent` table). `"occurrences"` is
 present only when `--occurrences` was given.
 
-**`is_local_symbol` is invented by `kg`, replacing an implicit signal from
-Phase 4.** `kg::query::FileOccurrence::elementKind == 0` means "this
+**`is_local_symbol` is invented by `symhow`, replacing an implicit signal from
+Phase 4.** `symhow::query::FileOccurrence::elementKind == 0` means "this
 occurrence's `element_id` is not a `node` row" -- which is true for BOTH an
 edge occurrence (a reference token, not the symbol itself) AND a
 `local_symbol` occurrence (parameters/locals/template parameters, which
@@ -420,15 +420,15 @@ section). This schema makes that distinction explicit and self-documenting:
   key either. A consumer can distinguish this third case from a genuine node
   occurrence only by the absence of the `node` key.
 
-## `kg.index-summary/1`
+## `symhow.index-summary/1`
 
-Printed by `kg index ... --json` (not `kg query`), replacing Phase 3's
+Printed by `symhow index ... --json` (not `symhow query`), replacing Phase 3's
 ad-hoc flat-keyed `--json` summary object with the same envelope convention
 as every other schema here. Same underlying data
-(`kg::model::IndexSummary`), just reshaped -- no change to indexing logic.
+(`symhow::model::IndexSummary`), just reshaped -- no change to indexing logic.
 
 ```json
-{ "kg_version": "0.1.0", "schema": "kg.index-summary/1",
+{ "symhow_version": "0.1.0", "schema": "symhow.index-summary/1",
   "database": "/tmp/cucs.srctrldb",
   "counts": { "tus_total": 200, "tus_attempted": 200, "tus_with_content": 190, "tus_failed": 10,
               "symbols": 71002, "references": 214883, "files": 1183, "errors": 37, "name_collisions": 0 },
@@ -436,52 +436,52 @@ as every other schema here. Same underlying data
   "failed_tus": [ "/path/a.cu" ] }
 ```
 
-No `"query"` field (there's no `kg query` verb/db-path pair for an index
+No `"query"` field (there's no `symhow query` verb/db-path pair for an index
 run -- `"database"` is the output path directly).
 
-## `kg.ambiguous/1`
+## `symhow.ambiguous/1`
 
 Printed to **stdout** (replacing the text candidate table) before exiting
 `2`, whenever `--json` is given and a symbol or file-path spec resolves
-ambiguously without `--all-matches` -- both `kg query <verb> SYMBOL --json`
+ambiguously without `--all-matches` -- both `symhow query <verb> SYMBOL --json`
 (symbol ambiguity, e.g. a class and its same-named constructor -- see
-`docs/KNOWN_LIMITATIONS.md`'s Phase 4 section) and `kg query file PATH
+`docs/KNOWN_LIMITATIONS.md`'s Phase 4 section) and `symhow query file PATH
 --json` (multiple files matching a path suffix).
 
 ```json
-{ "kg_version": "0.1.0", "schema": "kg.ambiguous/1",
+{ "symhow_version": "0.1.0", "schema": "symhow.ambiguous/1",
   "query": { "verb": "bases", "db": "/tmp/cucs.srctrldb", "symbol": "Square" },
   "candidates": [ /* node objects, see "The node object" above -- built from
                      ResolvedSymbol directly, not re-queried from `node` */ ] }
 ```
 
 Note: `query`'s positional-argument field is always called `"symbol"` in
-this schema (and in `kg.not-found/1` below), even for the `file` verb's
+this schema (and in `symhow.not-found/1` below), even for the `file` verb's
 path-ambiguity/not-found case (`query.symbol` then holds the raw path spec
-the user typed, e.g. `"shapes.hpp"`) -- unlike `kg.file/1` itself, which
-uses `"path"`. This keeps `kg.ambiguous/1`/`kg.not-found/1` a single,
+the user typed, e.g. `"shapes.hpp"`) -- unlike `symhow.file/1` itself, which
+uses `"path"`. This keeps `symhow.ambiguous/1`/`symhow.not-found/1` a single,
 verb-independent shape rather than branching field names by verb.
 
-## `kg.not-found/1`
+## `symhow.not-found/1`
 
 Printed to **stdout** (replacing the stderr "did you mean" text) before
 exiting `3`. Two variants sharing one schema name:
 
-- Symbol not found (`kg query <verb> SYMBOL --json`): `"suggestions"` is
+- Symbol not found (`symhow query <verb> SYMBOL --json`): `"suggestions"` is
   `QueryEngine::search(spec, nullptr, 5)`'s top-5 fuzzy hits, rendered as
-  full node objects (same as `kg.search/1`'s `hits[].node`, minus the
+  full node objects (same as `symhow.search/1`'s `hits[].node`, minus the
   `score`/`matched_indices` wrapper -- these are just node objects here).
-- File path not found (`kg query file PATH --json`): `"suggestions"` is the
-  file verb's own `kg::query::fuzzyMatch()` result against the file map
+- File path not found (`symhow query file PATH --json`): `"suggestions"` is the
+  file verb's own `symhow::query::fuzzyMatch()` result against the file map
   (`QueryEngine::search()` only ever ranks symbol nodes, not file paths, so
   this doesn't reuse that path) -- each suggestion is a node object with
   `kind: "FILE"`, `indexed: false`, and `qualified_name`/`name` both equal to
   the raw file path (files have no `serialized_name` to decode).
 
 ```json
-{ "kg_version": "0.1.0", "schema": "kg.not-found/1",
+{ "symhow_version": "0.1.0", "schema": "symhow.not-found/1",
   "query": { "verb": "bases", "db": "/tmp/cucs.srctrldb", "symbol": "NoSuchSymbolXYZ" },
-  "candidates_scanned_note": "n/a -- see kg.search/1 for that stat",
+  "candidates_scanned_note": "n/a -- see symhow.search/1 for that stat",
   "suggestions": [] }
 ```
 
@@ -489,20 +489,20 @@ exiting `3`. Two variants sharing one schema name:
 field -- an empty `suggestions` array, as shown, is the normal/common case
 when nothing fuzzy-matches either.)
 
-## `kg.dbdiff/1`
+## `symhow.dbdiff/1`
 
-Printed by `kg dbdiff A B --json`, a HIDDEN maintenance/equivalence-testing
-command (not listed in `kg --help`) built on top of
-`kg::update::{takeSnapshot,diffSnapshots}` (Phase 2 of `kg update`). It
+Printed by `symhow dbdiff A B --json`, a HIDDEN maintenance/equivalence-testing
+command (not listed in `symhow --help`) built on top of
+`symhow::update::{takeSnapshot,diffSnapshots}` (Phase 2 of `symhow update`). It
 compares two `.srctrldb` databases *logically* -- by content-derived keys
 (`serialized_name`, paths, etc), never by row id, since ids aren't stable
-across separate `kg index`/`kg update` runs of the same code -- and is how
+across separate `symhow index`/`symhow update` runs of the same code -- and is how
 Phase 2/3 verify that an incrementally-updated database is identical to a
-full re-index. No `"query"` field (there's no `kg query` verb/db-path pair
+full re-index. No `"query"` field (there's no `symhow query` verb/db-path pair
 here -- two database paths, not one, are the input).
 
 ```json
-{ "kg_version": "0.1.0", "schema": "kg.dbdiff/1",
+{ "symhow_version": "0.1.0", "schema": "symhow.dbdiff/1",
   "equal": false,
   "counts": { "only_in_a": 623, "only_in_b": 233 },
   "only_in_a": [ "node|::Square|4096", "..." ],
@@ -512,25 +512,25 @@ here -- two database paths, not one, are the input).
 Each entry in `only_in_a`/`only_in_b` is prefixed with its category
 (`node|`, `edge|`, `location|`, `symbol|`, `file|`, `error|`,
 `local_symbol|`, `symbol_def|`, `tu|`, `note|`, `note_problem|`) followed by
-the "|"-joined key for that category -- see `include/kg/update/Snapshot.h`
+the "|"-joined key for that category -- see `include/symhow/update/Snapshot.h`
 for the exact field list per category. `note` (Phase 4 of
 `docs/NOTES_DESIGN.md`) is keyed by `(serialized_name, notes_path, brief,
-what, how, filled, stale, note_hash)` from `kg_note` (empty on both sides if
-that table doesn't exist yet -- `kg notes sync` never ran); `note_problem`
-by `(notes_path, line, kind)` from `kg_note_problem`. Both are deliberately
+what, how, filled, stale, note_hash)` from `symhow_note` (empty on both sides if
+that table doesn't exist yet -- `symhow notes sync` never ran); `note_problem`
+by `(notes_path, line, kind)` from `symhow_note_problem`. Both are deliberately
 NOT keyed by `node.id` or an absolute file path -- see the notes cache's own
 "keyed by stable identity" principle -- so `--only note` between two
-independently-`kg index`d databases (different node ids, different absolute
+independently-`symhow index`d databases (different node ids, different absolute
 paths) can still come back equal (see `ctest -R notes_cross_worktree`).
 Exit codes (not specific to `--json`): `0` the databases are logically
 equivalent, `3` they differ, `4` one of the two databases couldn't be opened
 at all (e.g. missing file, wrong `storage_version`) -- in that last case
 nothing is printed to stdout, only a plain-text error to stderr (there's no
-well-formed `kg.dbdiff/1` object to emit, since one side never got a
+well-formed `symhow.dbdiff/1` object to emit, since one side never got a
 Snapshot).
 
 `--only CATEGORY` (repeatable) restricts BOTH the comparison and the
-reported counts to exactly the given category name(s) -- e.g. `kg dbdiff A B
+reported counts to exactly the given category name(s) -- e.g. `symhow dbdiff A B
 --only note` reports `equal: true` as soon as the `note` category matches,
 regardless of whether node/edge/location rows differ. Without `--only`,
 every category is compared (the default, pre-Phase-4 behavior).
@@ -540,9 +540,9 @@ snapshotting; the two flags compose (`--only` picks which top-level
 categories are compared at all, `--ignore` narrows what goes into the
 `locations` category specifically).
 
-## `kg.update-summary/1`
+## `symhow.update-summary/1`
 
-Printed to **stdout** by `kg update ... --json` (Phase 3) on EVERY exit
+Printed to **stdout** by `symhow update ... --json` (Phase 3) on EVERY exit
 code -- `0` (a real update, or `--dry-run`, which sets `"dry_run": true`
 and reports what it *would* clear/re-index via the same fields a real run
 uses), `5` (nothing to do; every count is `0` and `"index"` is an empty
@@ -559,19 +559,19 @@ On a refusal (exit `2`) or hard error (exit `1`), the object is a smaller
 "error envelope" instead of the full summary shape:
 
 ```json
-{ "kg_version": "0.1.0", "schema": "kg.update-summary/1",
+{ "symhow_version": "0.1.0", "schema": "symhow.update-summary/1",
   "database": "/tmp/cucs.srctrldb",
-  "error": "an update is already in progress on this database (kg_update_in_progress is set) -- ...",
+  "error": "an update is already in progress on this database (symhow_update_in_progress is set) -- ...",
   "exit_code": 2 }
 ```
 
-(`"error"` is the same text printed to stderr, without the `kg update:
-refused: `/`kg update: error: ` prefix; `"exit_code"` echoes the process's
+(`"error"` is the same text printed to stderr, without the `symhow update:
+refused: `/`symhow update: error: ` prefix; `"exit_code"` echoes the process's
 actual exit code -- `1` or `2` -- so a caller parsing only stdout can still
 tell success from failure without also capturing stderr.)
 
 ```json
-{ "kg_version": "0.1.0", "schema": "kg.update-summary/1",
+{ "symhow_version": "0.1.0", "schema": "symhow.update-summary/1",
   "database": "/tmp/cucs.srctrldb", "dry_run": false, "in_place": false,
   "repo": { "root": "/home/x/cucs", "from": "a1b2c3d", "to": "e4f5g6h" },
   "files": { "changed": 3, "deleted": 1, "renamed": 1, "flag_changed": 0,
@@ -592,25 +592,25 @@ tell success from failure without also capturing stderr.)
 Notes:
 
 - `"notes"` (Phase 3 of `docs/NOTES_DESIGN.md`) is populated only when a
-  notes dir was known (`meta.kg_notes_dir`, or `<repo root>/notes` if it
+  notes dir was known (`meta.symhow_notes_dir`, or `<repo root>/notes` if it
   exists) AND exists on disk at the end of this update -- an empty object
   `{}` otherwise (no notes dir at all, same convention as `"index"`).
-  `kg::notes::syncNotes()` is re-run against the just-updated database
+  `symhow::notes::syncNotes()` is re-run against the just-updated database
   before this summary is built, so `"noted"`/`"stale"` are its
-  post-update `kg.notes-sync/1` `"counts"."matched"`/`"stale"`;
+  post-update `symhow.notes-sync/1` `"counts"."matched"`/`"stale"`;
   `"newly_stale"` counts serialized-name identities that were NOT stale in
-  `kg_note` before this update's re-sync but ARE after it (comparing
-  against whatever the PREVIOUS `kg notes sync` left behind -- re-indexing
-  itself never touches the `kg_note*` cache); `"problems"` is this sync's
-  total problem count (same vocabulary as `kg.notes-sync/1`'s
+  `symhow_note` before this update's re-sync but ARE after it (comparing
+  against whatever the PREVIOUS `symhow notes sync` left behind -- re-indexing
+  itself never touches the `symhow_note*` cache); `"problems"` is this sync's
+  total problem count (same vocabulary as `symhow.notes-sync/1`'s
   `"problems"[]`, including `signature-mismatch`/`orphaned-file`). A notes
   dir with problems, or a notes-sync exception, NEVER fails the update --
   it's report-only (text mode prints `notes: N noted, S stale (K newly
-  stale)` to stderr; a sync exception logs a `kg update: warning: ...` line
+  stale)` to stderr; a sync exception logs a `symhow update: warning: ...` line
   and leaves `"notes"` as `{}`).
 
 - `"gc"."non_indexed_files"` is always `0` since Phase 5: the sweep that
-  deleted edge-less non-indexed `file` rows was removed (a fresh `kg index`
+  deleted edge-less non-indexed `file` rows was removed (a fresh `symhow index`
   legitimately produces such rows -- see
   `docs/KNOWN_LIMITATIONS.md`'s Phase 5 section). The field is kept so the
   object's shape is unchanged.
@@ -618,7 +618,7 @@ Notes:
   involved at all).
 - `"files"."renamed"` (Phase 4) is the number of `git diff`-detected
   `R<score>` rename entries in this run's change set (e.g. `git mv a.cpp
-  b.cpp` counts as 1). `kg update` itself still processes a rename as an
+  b.cpp` counts as 1). `symhow update` itself still processes a rename as an
   independent delete-old + add/index-new pair internally (`matchChanged()`
   doesn't special-case renames for invalidation purposes -- there's no
   "skip re-parsing, just relabel" fast path), so a rename's cost is the
@@ -634,15 +634,15 @@ Notes:
   files/paths -- almost always the same number, but NOT when the CDB lists
   a path more than once (e.g. the same source compiled into several
   targets/configs with different flags): re-indexing such a path
-  re-indexes ALL of its entries together (kg_tu is keyed by path, so
+  re-indexes ALL of its entries together (symhow_tu is keyed by path, so
   there's exactly one row either way, but every one of that path's
   entries still needs its own parse/walk pass), so these counts can exceed
   the number of distinct files actually touched. Same caveat applies to
-  `kg.index-summary/1`'s `"counts"."tus_total"` and the human-readable
+  `symhow.index-summary/1`'s `"counts"."tus_total"` and the human-readable
   `[k/N]` progress counter -- see `docs/KNOWN_LIMITATIONS.md`'s "Phase 9:
   duplicate CDB entries" section.
 - `"tus"."retried"` (Phase 4) is the count of CDB entries whose previous
-  `kg_tu.status` (see `include/kg/index/Provenance.h`'s `kKgTuDdl`) was
+  `symhow_tu.status` (see `include/symhow/index/Provenance.h`'s `kSymhowTuDdl`) was
   `"partial"` or `"failed"` -- i.e. a TU that produced no content, had a
   fatal diagnostic, or (CUDA only) only succeeded via a degraded fallback
   rung last time. These are folded into the same clear-and-reindex set as
@@ -653,30 +653,30 @@ Notes:
   edge OR an INDEXER_ERROR occurrence") that retried every genuinely
   include-free TU on literally every run, forever -- see
   `docs/KNOWN_LIMITATIONS.md`'s Phase 3/4 sections.
-- `"index"` mirrors `kg.index-summary/1`'s `"counts"` object exactly (same
+- `"index"` mirrors `symhow.index-summary/1`'s `"counts"` object exactly (same
   field names) when at least one TU was actually re-indexed; it's an empty
   object `{}` when `"tus"."to_index"` is `0` (e.g. a pure-deletion update,
   or nothing to do at all).
-- No `"query"` field, same rationale as `kg.index-summary/1`/`kg.dbdiff/1`.
-- `kg update` also refuses (exit `2`) if `<db>.kg-lock` already exists (another
-  `kg update` is running, or a previous one crashed and left it behind -- the
+- No `"query"` field, same rationale as `symhow.index-summary/1`/`symhow.dbdiff/1`.
+- `symhow update` also refuses (exit `2`) if `<db>.symhow-lock` already exists (another
+  `symhow update` is running, or a previous one crashed and left it behind -- the
   error message says to remove it if stale) or if a `<db>-journal`/`<db>-wal`
   file exists next to the database (a hot journal -- some previous writer may
   have crashed mid-write). The lock file is held (and removed, RAII-style) for
   the ENTIRE `runUpdate()` call, including the exit-`5` "nothing to do" path's
   best-effort provenance refresh.
 
-## `kg.notes-lint/1`
+## `symhow.notes-lint/1`
 
-Printed by `kg notes lint --notes-dir DIR --json` (Phase 1 of
-`docs/NOTES_DESIGN.md`'s `kg notes` feature -- see that doc for the
+Printed by `symhow notes lint --notes-dir DIR --json` (Phase 1 of
+`docs/NOTES_DESIGN.md`'s `symhow notes` feature -- see that doc for the
 markdown format). No DB involved at all: `lint` walks `DIR` recursively for
-`*.md` files and parses each with `kg::notes::parseNotesFile`
-(`include/kg/notes/Markdown.h`). No `"query"`/`"stats"` field (nothing was
+`*.md` files and parses each with `symhow::notes::parseNotesFile`
+(`include/symhow/notes/Markdown.h`). No `"query"`/`"stats"` field (nothing was
 queried against a database).
 
 ```json
-{ "kg_version": "0.1.0", "schema": "kg.notes-lint/1",
+{ "symhow_version": "0.1.0", "schema": "symhow.notes-lint/1",
   "notes_dir": "/repo/notes",
   "files": 42, "blocks": 118, "filled": 71,
   "problems": [
@@ -689,10 +689,10 @@ queried against a database).
   canonicalized).
 - `"files"`/`"blocks"`/`"filled"` are total counts across every `*.md` file
   found: `"blocks"` is every `##` block parsed, `"filled"` is how many of
-  those have `NoteBlock::filled() == true` (see `include/kg/notes/NoteModel.h`
+  those have `NoteBlock::filled() == true` (see `include/symhow/notes/NoteModel.h`
   -- brief/what/how/pre/post/bugs/suggestions non-empty; `signature` doesn't
   count).
-- `"problems"[]` is every `kg::notes::Problem` from every file, sorted by
+- `"problems"[]` is every `symhow::notes::Problem` from every file, sorted by
   `(path, line)`; `"path"` is relative to `--notes-dir` (POSIX-style
   separators). `"kind"` is one of: `unknown-heading`, `duplicate-section`,
   `duplicate-block`, `unclosed-fence`, `missing-signature-fence`,
@@ -707,23 +707,23 @@ queried against a database).
 
 Related to (but not documented by) this schema: the staleness anchor
 comment a `##` block may carry right after its heading --
-`<!-- kg-hash: <16-hex fnv1a64>  kg-commit: <sha> -->` -- parsed into
+`<!-- symhow-hash: <16-hex fnv1a64>  symhow-commit: <sha> -->` -- parsed into
 `NoteBlock::bodyHash`/`NoteBlock::commit` but not currently surfaced by
-`lint` itself (Phase 2's `kg notes sync`/`kg.notes-sync/1` is what compares
+`lint` itself (Phase 2's `symhow notes sync`/`symhow.notes-sync/1` is what compares
 `bodyHash` against the DB-computed body hash and reports staleness).
 
-## `kg.notes-sync/1`
+## `symhow.notes-sync/1`
 
-Printed by `kg notes sync -d DB [--notes-dir DIR] [--strict] [--json]`
-(Phase 2 of `docs/NOTES_DESIGN.md`). Rebuilds the `kg_note`/`kg_note_file`/
-`kg_note_problem` cache tables from the markdown tree, matching every `##`
-block to exactly one symbol (see `include/kg/notes/Sync.h`'s `matchBlock()`
+Printed by `symhow notes sync -d DB [--notes-dir DIR] [--strict] [--json]`
+(Phase 2 of `docs/NOTES_DESIGN.md`). Rebuilds the `symhow_note`/`symhow_note_file`/
+`symhow_note_problem` cache tables from the markdown tree, matching every `##`
+block to exactly one symbol (see `include/symhow/notes/Sync.h`'s `matchBlock()`
 doc for the matching algorithm) and recomputing each match's current body
-hash (`include/kg/notes/BodyHash.h`).
+hash (`include/symhow/notes/BodyHash.h`).
 
 ```json
-{ "kg_version": "0.1.0", "schema": "kg.notes-sync/1",
-  "database": "/repo/kg.srctrldb", "notes_dir": "/repo/notes",
+{ "symhow_version": "0.1.0", "schema": "symhow.notes-sync/1",
+  "database": "/repo/symhow.srctrldb", "notes_dir": "/repo/notes",
   "counts": {
     "files": 8, "blocks": 43,
     "matched": 34, "unmatched": 0, "ambiguous": 4, "duplicate_target": 5,
@@ -737,16 +737,16 @@ hash (`include/kg/notes/BodyHash.h`).
 ```
 
 - `"notes_dir"` is the ABSOLUTE resolved notes directory (unlike
-  `kg.notes-lint/1`'s verbatim `--notes-dir` echo), since `sync` also
-  persists it into `meta.kg_notes_dir`.
+  `symhow.notes-lint/1`'s verbatim `--notes-dir` echo), since `sync` also
+  persists it into `meta.symhow_notes_dir`.
 - `"counts"` is a full rebuild tally: every `"blocks"` is exactly one of
   matched/unmatched/ambiguous/duplicate_target (`matched + unmatched +
   ambiguous + duplicate_target == blocks`); `filled`/`stale`/`unanchored`/
   `signature_mismatch` are subsets of `matched` (a block that didn't match
   anything has nothing to persist a filled/stale/unanchored/mismatch
-  verdict for). `lint_problems` is every `kg::notes::Problem` from
+  verdict for). `lint_problems` is every `symhow::notes::Problem` from
   `parseNotesFile` (parse-level issues, same `kind` vocabulary as
-  `kg.notes-lint/1`) rolled into `"problems"[]` alongside the sync-level
+  `symhow.notes-lint/1`) rolled into `"problems"[]` alongside the sync-level
   problem kinds:
   - `unmatched` -- zero symbols resolve the block's heading.
   - `ambiguous` -- more than one symbol resolves the heading and the
@@ -754,7 +754,7 @@ hash (`include/kg/notes/BodyHash.h`).
     lists every remaining candidate's id + signature.
   - `duplicate-target` -- a later block resolved to a symbol an earlier
     block (in file-then-line order) already claimed; the later block is
-    parsed but never written to `kg_note` ("ignored").
+    parsed but never written to `symhow_note` ("ignored").
   - `signature-mismatch` (Phase 3) -- a block resolves to exactly one
     candidate (no ambiguity), but its `### signature` fence's normalized
     text matches neither the candidate's full signature nor its
@@ -762,29 +762,29 @@ hash (`include/kg/notes/BodyHash.h`).
     `"expected '...', found '...'"`).
   - `orphaned-file` (Phase 3) -- a notes file's own source path (its
     `notes_path` with the trailing `.md` stripped, resolved against
-    `meta.kg_repo_root`) no longer exists as a `file` row (e.g. after
+    `meta.symhow_repo_root`) no longer exists as a `file` row (e.g. after
     `git mv`ing the source without moving its notes). One problem per
     file (`"line"` is always `1`, `"heading"` is empty), independent of
     whether the file's individual blocks still match by name elsewhere.
-    `"orphaned_files"` counts these; only checked when `meta.kg_repo_root`
+    `"orphaned_files"` counts these; only checked when `meta.symhow_repo_root`
     is known.
 - Exit codes: `0` (even with problems, unless `--strict`), `1` usage error,
   `3` with `--strict` and `problems` non-empty, `4` database error.
 - Text mode prints each problem as `path:line: kind: message`, then a one-
   line summary.
 
-## `kg.note/1`
+## `symhow.note/1`
 
-Printed by `kg notes show -d DB SYMBOL [--section SEC] --json`. `SYMBOL`
-resolves exactly like `kg query` (same `kg.ambiguous/1`/`kg.not-found/1`
+Printed by `symhow notes show -d DB SYMBOL [--section SEC] --json`. `SYMBOL`
+resolves exactly like `symhow query` (same `symhow.ambiguous/1`/`symhow.not-found/1`
 envelopes and exit codes 2/3 on ambiguous/not-found); once resolved, the
-note is looked up via the overlay-aware `kg::notes::openNotes()`, so a
+note is looked up via the overlay-aware `symhow::notes::openNotes()`, so a
 markdown file edited on disk since the last `sync` is reflected here even
 though nothing was written back to the DB.
 
 ```json
-{ "kg_version": "0.1.0", "schema": "kg.note/1",
-  "query": { "verb": "show", "db": "/repo/kg.srctrldb", "symbol": "a::b::c::add", "symbol_ids": [40] },
+{ "symhow_version": "0.1.0", "schema": "symhow.note/1",
+  "query": { "verb": "show", "db": "/repo/symhow.srctrldb", "symbol": "a::b::c::add", "symbol_ids": [40] },
   "symbol": { "id": 40, "kind": "FUNCTION", "name": "add", "qualified_name": "a::b::c::add",
               "signature": "int add(int, int)", "indexed": true, "definition_kind": "EXPLICIT",
               "location": { "file": "src/ns.cpp", "start_line": 3, "start_column": 1, "end_line": 3, "end_column": 1, "kind": "SCOPE" } },
@@ -796,30 +796,30 @@ though nothing was written back to the DB.
   "cache_outdated_files": [] }
 ```
 
-- `"symbol"` is the exact same node-object shape `kg.graph/1`/
-  `kg.definition/1` use (built by reusing `JsonWriter::definition()`'s own
+- `"symbol"` is the exact same node-object shape `symhow.graph/1`/
+  `symhow.definition/1` use (built by reusing `JsonWriter::definition()`'s own
   `"symbol"` field) -- no `depth`/`seed` keys (this isn't a graph verb).
 - `"note"` is `null` when the resolved symbol has no note (text mode: exit
   `3`, stderr says so; JSON mode: still exits `3`, with `"note": null`
   printed to stdout so scripts don't have to parse stderr).
 - `"cache_outdated_files"` lists every `*.md` path (relative to the notes
   dir) `openNotes()` found changed-on-disk-since-last-sync or new; whenever
-  non-empty, `kg notes show`/`status` also print `notes cache out of date
-  (N files changed) -- run \`kg notes sync\`` to STDERR (both text and JSON
+  non-empty, `symhow notes show`/`status` also print `notes cache out of date
+  (N files changed) -- run \`symhow notes sync\`` to STDERR (both text and JSON
   mode -- stdout stays pure JSON under `--json`).
 - `--section SEC` (text mode only) prints just that section's text (`brief`/
   `what`/`how`/`signature`) or numbered list (`pre`/`post`/`bugs`/
   `suggestions`) instead of the full canonical block.
 
-## `kg.notes-status/1`
+## `symhow.notes-status/1`
 
-Printed by `kg notes status -d DB [--stale] [--unfilled] [--unanchored]
+Printed by `symhow notes status -d DB [--stale] [--unfilled] [--unanchored]
 [--problems] [--json]`. Coverage report over every indexed FUNCTION/METHOD
 symbol (a `node` row with a `symbol` row), using the same overlay-aware
 `openNotes()` `show` uses.
 
 ```json
-{ "kg_version": "0.1.0", "schema": "kg.notes-status/1", "database": "/repo/kg.srctrldb",
+{ "symhow_version": "0.1.0", "schema": "symhow.notes-status/1", "database": "/repo/symhow.srctrldb",
   "counts": { "total": 42, "noted": 34, "filled": 23, "stale": 7, "unanchored": 8,
               "signature_mismatch": 1, "problems": 9 },
   "stale": ["a::b::c::add (src/ns.cpp.md:3)"],
@@ -832,24 +832,24 @@ symbol (a `node` row with a `symbol` row), using the same overlay-aware
   happens to resolve to some other node kind isn't in this coverage
   universe at all). `"filled"`/`"stale"`/`"unanchored"` are subsets of
   `"noted"`. `"signature_mismatch"` (Phase 3) is the count of
-  `kg_note_problem` rows of kind `signature-mismatch` from the last `sync`.
-  `"problems"` is the `kg_note_problem` row count from the last `sync`
+  `symhow_note_problem` rows of kind `signature-mismatch` from the last `sync`.
+  `"problems"` is the `symhow_note_problem` row count from the last `sync`
   (list form only under `--problems`; the JSON schema for each entry
-  matches `kg.notes-sync/1`'s `"problems"[]`).
+  matches `symhow.notes-sync/1`'s `"problems"[]`).
 - `--stale`/`--unfilled`/`--unanchored`/`--problems` each add the
   corresponding list key (`"stale"`, `"unfilled"`, `"unanchored"`,
   `"problems"`) only when the flag is passed; entries are `"qualified_name
   (notes_path:line)"` strings, sorted.
 
-## `kg.notes-symbols/1`
+## `symhow.notes-symbols/1`
 
-Printed by `kg notes symbols -d DB [--kind K]... [--file GLOB] [--json]`.
+Printed by `symhow notes symbols -d DB [--kind K]... [--file GLOB] [--json]`.
 Lists indexed symbols in exactly the shape
-`scripts/kg-notes-fake.py --symbols-json` consumes (Phase 3's `scaffold`
+`scripts/symhow-notes-fake.py --symbols-json` consumes (Phase 3's `scaffold`
 shares this same code path).
 
 ```json
-{ "kg_version": "0.1.0", "schema": "kg.notes-symbols/1", "database": "/repo/kg.srctrldb",
+{ "symhow_version": "0.1.0", "schema": "symhow.notes-symbols/1", "database": "/repo/symhow.srctrldb",
   "symbols": [
     { "source_path": "src/ns.cpp", "qualified_name": "a::b::c::add",
       "signature": "int add(int, int)", "body_hash": "611a45463dfd2e2e",
@@ -860,28 +860,28 @@ shares this same code path).
 - Default `--kind` is `FUNCTION`+`METHOD`; any `--kind` (repeatable) narrows
   to exactly the kinds given.
 - `"source_path"` is the symbol's definition location's file path, relative
-  to `meta.kg_repo_root` when available (else the raw indexed path); symbols
+  to `meta.symhow_repo_root` when available (else the raw indexed path); symbols
   with no definition location at all are omitted (nothing to write a notes
   block against). `--file GLOB` filters on this field.
-- `"commit"` is `meta.kg_repo_commit` (same value for every row).
+- `"commit"` is `meta.symhow_repo_commit` (same value for every row).
 - Sorted deterministically by `(source_path, definition_line, qualified_name)`
   (`definition_line` itself isn't a JSON field -- purely a sort key).
 
-## `kg.notes-scaffold/1`
+## `symhow.notes-scaffold/1`
 
-Printed by `kg notes scaffold -d DB [--notes-dir DIR] (--all | --file
+Printed by `symhow notes scaffold -d DB [--notes-dir DIR] (--all | --file
 SRC-GLOB | --class QNAME | SYMBOL) [--kind K]... [--dry-run] [--json]`
-(Phase 3). Symbol selection reuses `kg.notes-symbols/1`'s own
-`kg::notes::listSymbols()` for `--all`/`--file`; `--class QNAME` resolves the
-class/struct like `kg query` and walks its members (`QueryEngine::members()`,
+(Phase 3). Symbol selection reuses `symhow.notes-symbols/1`'s own
+`symhow::notes::listSymbols()` for `--all`/`--file`; `--class QNAME` resolves the
+class/struct like `symhow query` and walks its members (`QueryEngine::members()`,
 including out-of-line method definitions); `SYMBOL` resolves a single symbol
-like `kg query` (same exit codes: `2` ambiguous, `3` not found/no definition
-location). Writing itself (`kg::notes::scaffoldNotes()`) is idempotent and
-non-destructive -- see `include/kg/notes/Scaffold.h`'s doc comment.
+like `symhow query` (same exit codes: `2` ambiguous, `3` not found/no definition
+location). Writing itself (`symhow::notes::scaffoldNotes()`) is idempotent and
+non-destructive -- see `include/symhow/notes/Scaffold.h`'s doc comment.
 
 ```json
-{ "kg_version": "0.1.0", "schema": "kg.notes-scaffold/1",
-  "database": "/repo/kg.srctrldb", "notes_dir": "/repo/notes", "dry_run": false,
+{ "symhow_version": "0.1.0", "schema": "symhow.notes-scaffold/1",
+  "database": "/repo/symhow.srctrldb", "notes_dir": "/repo/notes", "dry_run": false,
   "symbols_selected": 12,
   "files": [
     { "path": "src/ns.cpp.md", "file_created": false, "appended": 3, "skipped_existing": 9 }
@@ -890,7 +890,7 @@ non-destructive -- see `include/kg/notes/Scaffold.h`'s doc comment.
 ```
 
 - `"symbols_selected"` is how many `SymbolRow`s were selected before
-  scaffolding (matches `kg.notes-symbols/1`'s row count for `--all`/
+  scaffolding (matches `symhow.notes-symbols/1`'s row count for `--all`/
   `--file`; `1` for `SYMBOL`; the member count for `--class`).
 - `"files"[].path` is relative to `"notes_dir"`; `"file_created"` is true
   only for a brand-new file (a `# <source path>` heading plus every
@@ -907,43 +907,43 @@ non-destructive -- see `include/kg/notes/Scaffold.h`'s doc comment.
   `--all`/`--file`/`--class`/`SYMBOL`), `2` ambiguous `SYMBOL`/`--class`,
   `3` not found / no definition location, `4` database error.
 
-## `kg.notes-accept/1`
+## `symhow.notes-accept/1`
 
-Printed by `kg notes accept -d DB (SYMBOL | --all | --file SRC-GLOB)
-[--json]` (Phase 3). Rewrites ONLY the `kg-hash`/`kg-commit` metadata
+Printed by `symhow notes accept -d DB (SYMBOL | --all | --file SRC-GLOB)
+[--json]` (Phase 3). Rewrites ONLY the `symhow-hash`/`symhow-commit` metadata
 comment of matching block(s) to the current body hash/commit -- `--all`/
 `--file` accept every currently-stale note (from the overlay-aware
-`kg::notes::openNotes()`); a bare `SYMBOL` accepts its note unconditionally
+`symhow::notes::openNotes()`); a bare `SYMBOL` accepts its note unconditionally
 (even if it wasn't stale -- a safe no-op re-anchor). Refuses (per file) to
 rewrite any notes file that isn't already at its `renderFile()` fixed point
-(see `kg.notes-fmt/1`). Re-runs `kg::notes::syncNotes()` afterward so
-`kg_note.stale` reflects the rewrite.
+(see `symhow.notes-fmt/1`). Re-runs `symhow::notes::syncNotes()` afterward so
+`symhow_note.stale` reflects the rewrite.
 
 ```json
-{ "kg_version": "0.1.0", "schema": "kg.notes-accept/1",
-  "database": "/repo/kg.srctrldb",
+{ "symhow_version": "0.1.0", "schema": "symhow.notes-accept/1",
+  "database": "/repo/symhow.srctrldb",
   "accepted": ["a::b::c::add\tfoo.cpp#..."],
   "refused_files": [] }
 ```
 
 - `"accepted"` lists the `serialized_name` (stable identity) of every note
-  whose `kg-hash`/`kg-commit` comment was rewritten, sorted.
+  whose `symhow-hash`/`symhow-commit` comment was rewritten, sorted.
 - `"refused_files"` lists `notes_path`s that were skipped -- either
-  unreadable, or not in canonical form (a `kg notes accept: '<path>' is not
-  in canonical form; run \`kg notes fmt\` first -- skipped` line is also
+  unreadable, or not in canonical form (a `symhow notes accept: '<path>' is not
+  in canonical form; run \`symhow notes fmt\` first -- skipped` line is also
   printed to stderr for each).
 - Exit codes: `0` ok, `1` usage error, `2` ambiguous `SYMBOL`, `3` not
   found / no note, `4` one or more files refused (accept still applied to
   every OTHER file/note it could).
 
-## `kg.notes-fmt/1`
+## `symhow.notes-fmt/1`
 
-Printed by `kg notes fmt --notes-dir DIR [--check] [--json]` (Phase 3). No
+Printed by `symhow notes fmt --notes-dir DIR [--check] [--json]` (Phase 3). No
 DB involved (same as `lint`): a plain canonical re-render
 (`parseNotesFile` -> `renderFile`) of every `*.md` under DIR.
 
 ```json
-{ "kg_version": "0.1.0", "schema": "kg.notes-fmt/1",
+{ "symhow_version": "0.1.0", "schema": "symhow.notes-fmt/1",
   "notes_dir": "/repo/notes", "check": false, "files": 8,
   "changed": ["src/overloads.cpp.md"] }
 ```
@@ -958,7 +958,7 @@ DB involved (same as `lint`): a plain canonical re-render
 ## Text-mode truncation footer
 
 Unrelated to JSON, but part of the same "surface `truncated` clearly" effort:
-`kg::out::writeBfsResult()` (text mode) now prints an explicit
+`symhow::out::writeBfsResult()` (text mode) now prints an explicit
 `"... truncated at N nodes"` line after the edge-count summary whenever
 `BfsResult::truncated` is `true`, in addition to the existing inline
 `[truncated: --max-nodes reached]` marker on the edge-count line itself.

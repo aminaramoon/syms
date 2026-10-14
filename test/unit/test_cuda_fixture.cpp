@@ -11,37 +11,37 @@
 
 #include <algorithm>
 
-#include "kg/db/Database.h"
-#include "kg/db/Enums.h"
-#include "kg/query/QueryEngine.h"
-#include "kg/query/SymbolResolver.h"
+#include "symhow/db/Database.h"
+#include "symhow/db/Enums.h"
+#include "symhow/query/QueryEngine.h"
+#include "symhow/query/SymbolResolver.h"
 
-using kg::query::QueryEngine;
-using kg::query::ResolveOutcome;
+using symhow::query::QueryEngine;
+using symhow::query::ResolveOutcome;
 
 namespace
 {
 
 std::string cudaFixtureDbPath()
 {
-#ifdef KG_CUDA_FIXTURE_DB
-    return KG_CUDA_FIXTURE_DB;
+#ifdef SYMHOW_CUDA_FIXTURE_DB
+    return SYMHOW_CUDA_FIXTURE_DB;
 #else
     return "cuda_fixture.srctrldb";
 #endif
 }
 
-int64_t resolveOne(kg::db::Database& db, const std::string& spec, const std::vector<int>* kindFilter = nullptr)
+int64_t resolveOne(symhow::db::Database& db, const std::string& spec, const std::vector<int>* kindFilter = nullptr)
 {
-    const kg::query::ResolveResult rr = kg::query::resolveSymbol(db, spec, kindFilter, nullptr);
+    const symhow::query::ResolveResult rr = symhow::query::resolveSymbol(db, spec, kindFilter, nullptr);
     INFO("resolving '" << spec << "'");
     REQUIRE(rr.outcome == ResolveOutcome::Unique);
     return rr.candidates.front().id;
 }
 
-bool containsNode(const kg::query::BfsResult& r, int64_t id)
+bool containsNode(const symhow::query::BfsResult& r, int64_t id)
 {
-    return std::any_of(r.nodes.begin(), r.nodes.end(), [id](const kg::query::BfsNode& n) { return n.id == id; });
+    return std::any_of(r.nodes.begin(), r.nodes.end(), [id](const symhow::query::BfsNode& n) { return n.id == id; });
 }
 
 }  // namespace
@@ -50,12 +50,12 @@ TEST_CASE(
     "cuda_fixture: kernel, device helper, and host launcher all exist as FUNCTION nodes",
     "[fixture][cuda_fixture]")
 {
-    kg::db::Database db(cudaFixtureDbPath());
-    const std::vector<int> functionKind = {kg::db::NodeKind::FUNCTION};
+    symhow::db::Database db(cudaFixtureDbPath());
+    const std::vector<int> functionKind = {symhow::db::NodeKind::FUNCTION};
 
-    const int64_t kernel = resolveOne(db, "kg_cuda_fixture_kernel", &functionKind);
-    const int64_t helper = resolveOne(db, "kg_cuda_fixture_double_value", &functionKind);
-    const int64_t launcher = resolveOne(db, "kg_cuda_fixture_launch", &functionKind);
+    const int64_t kernel = resolveOne(db, "symhow_cuda_fixture_kernel", &functionKind);
+    const int64_t helper = resolveOne(db, "symhow_cuda_fixture_double_value", &functionKind);
+    const int64_t launcher = resolveOne(db, "symhow_cuda_fixture_launch", &functionKind);
 
     // Just resolving each uniquely as a FUNCTION-kind node (above) already
     // proves they exist with that kind; REQUIRE something on the ids too so
@@ -68,11 +68,11 @@ TEST_CASE(
 
 TEST_CASE("cuda_fixture: launcher -> kernel is a real CALL edge (nowrapper rung, no CUDA toolkit installed)", "[fixture][cuda_fixture]")
 {
-    kg::db::Database db(cudaFixtureDbPath());
+    symhow::db::Database db(cudaFixtureDbPath());
     QueryEngine engine(db);
 
-    const int64_t kernel = resolveOne(db, "kg_cuda_fixture_kernel");
-    const int64_t launcher = resolveOne(db, "kg_cuda_fixture_launch");
+    const int64_t kernel = resolveOne(db, "symhow_cuda_fixture_kernel");
+    const int64_t launcher = resolveOne(db, "symhow_cuda_fixture_launch");
 
     // The `kernel<<<grid,block>>>(args)` launch syntax lowers (via clang's
     // Sema, see fake_cuda.h's cudaConfigureCall doc comment) into a
@@ -80,15 +80,15 @@ TEST_CASE("cuda_fixture: launcher -> kernel is a real CALL edge (nowrapper rung,
     // with clang_getCursorReferenced() resolving DIRECTLY to the kernel's
     // FunctionDecl -- empirically verified (see docs/KNOWN_LIMITATIONS.md's
     // Phase 6 section) via a standalone libclang cursor dump before writing
-    // this assertion, so kg::index::AstWalker::handleCallExpr() needs no
+    // this assertion, so symhow::index::AstWalker::handleCallExpr() needs no
     // CUDA-specific special-casing to record this edge.
-    const kg::query::BfsResult callees = engine.callees({launcher}, /*depth=*/1, /*maxNodes=*/0);
+    const symhow::query::BfsResult callees = engine.callees({launcher}, /*depth=*/1, /*maxNodes=*/0);
     CHECK(containsNode(callees, kernel));
 
     bool foundCallEdge = false;
     for (const auto& e : callees.edges)
     {
-        if (e.kind == kg::db::EdgeKind::CALL && e.source == launcher && e.target == kernel)
+        if (e.kind == symhow::db::EdgeKind::CALL && e.source == launcher && e.target == kernel)
         {
             foundCallEdge = true;
         }
@@ -98,19 +98,19 @@ TEST_CASE("cuda_fixture: launcher -> kernel is a real CALL edge (nowrapper rung,
 
 TEST_CASE("cuda_fixture: kernel -> device helper is a real CALL edge", "[fixture][cuda_fixture]")
 {
-    kg::db::Database db(cudaFixtureDbPath());
+    symhow::db::Database db(cudaFixtureDbPath());
     QueryEngine engine(db);
 
-    const int64_t kernel = resolveOne(db, "kg_cuda_fixture_kernel");
-    const int64_t helper = resolveOne(db, "kg_cuda_fixture_double_value");
+    const int64_t kernel = resolveOne(db, "symhow_cuda_fixture_kernel");
+    const int64_t helper = resolveOne(db, "symhow_cuda_fixture_double_value");
 
-    const kg::query::BfsResult callees = engine.callees({kernel}, /*depth=*/1, /*maxNodes=*/0);
+    const symhow::query::BfsResult callees = engine.callees({kernel}, /*depth=*/1, /*maxNodes=*/0);
     CHECK(containsNode(callees, helper));
 
     bool foundCallEdge = false;
     for (const auto& e : callees.edges)
     {
-        if (e.kind == kg::db::EdgeKind::CALL && e.source == kernel && e.target == helper)
+        if (e.kind == symhow::db::EdgeKind::CALL && e.source == kernel && e.target == helper)
         {
             foundCallEdge = true;
         }

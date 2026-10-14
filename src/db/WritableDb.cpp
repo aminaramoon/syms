@@ -1,10 +1,10 @@
-#include "kg/db/WritableDb.h"
+#include "symhow/db/WritableDb.h"
 
 #include <sqlite3.h>
 
 #include <stdexcept>
 
-namespace kg::db
+namespace symhow::db
 {
 
 WritableDb::WritableDb(std::string path, bool foreignKeys) : m_path(std::move(path))
@@ -174,4 +174,4 @@ bool WritableDb::tableExists(const std::string& name)
     return found;
 }
 
-}  // namespace kg::db
+}  // namespace symhow::db

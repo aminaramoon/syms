@@ -1,9 +1,9 @@
-#include "kg/common/Paths.h"
+#include "symhow/common/Paths.h"
 
 #include <filesystem>
 #include <system_error>
 
-namespace kg::common::paths
+namespace symhow::common::paths
 {
 
 std::string normalize(const std::string& path)
@@ -42,4 +42,4 @@ const std::string& NormalizationCache::operator()(const std::string& path)
     return m_paths.emplace(path, normalize(path)).first->second;
 }
 
-}  // namespace kg::common::paths
+}  // namespace symhow::common::paths

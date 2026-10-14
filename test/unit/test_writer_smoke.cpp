@@ -1,5 +1,5 @@
 // Phase 1 smoke test for the vendored SourcetrailDB writer
-// (third_party/sourcetraildb, target kg_sourcetraildb).
+// (third_party/sourcetraildb, target symhow_sourcetraildb).
 //
 // This is the real deliverable proving the vendored writer works end to
 // end: it writes a small symbol hierarchy (a namespace containing two
@@ -29,8 +29,8 @@ namespace
 
 std::filesystem::path testDatabasePath()
 {
-#ifdef KG_TEST_BINARY_DIR
-    std::filesystem::path dir(KG_TEST_BINARY_DIR);
+#ifdef SYMHOW_TEST_BINARY_DIR
+    std::filesystem::path dir(SYMHOW_TEST_BINARY_DIR);
 #else
     std::filesystem::path dir = std::filesystem::temp_directory_path();
 #endif

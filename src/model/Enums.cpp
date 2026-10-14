@@ -1,6 +1,6 @@
-#include "kg/model/Enums.h"
+#include "symhow/model/Enums.h"
 
-namespace kg::model
+namespace symhow::model
 {
 
 int kindRank(SymbolKind kind)
@@ -27,4 +27,4 @@ bool symbolKindBeats(SymbolKind candidate, SymbolKind current)
     return static_cast<int>(candidate) > static_cast<int>(current);
 }
 
-}  // namespace kg::model
+}  // namespace symhow::model

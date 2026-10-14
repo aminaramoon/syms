@@ -1,10 +1,10 @@
-#include "kg/index/Progress.h"
+#include "symhow/index/Progress.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 
-namespace kg::index::progress
+namespace symhow::index::progress
 {
 
 namespace
@@ -87,7 +87,7 @@ std::string formatRunningSummary(uint32_t done, uint32_t total, double tusPerMin
     char rateBuf[32];
     std::snprintf(rateBuf, sizeof(rateBuf), "%.1f", tusPerMin);
 
-    std::string line = "kg index: ";
+    std::string line = "symhow index: ";
     line += std::to_string(done) + "/" + std::to_string(total) + " done, ";
     line += rateBuf;
     line += " TU/min, elapsed ";
@@ -121,4 +121,4 @@ std::string relativeToRoot(const std::string& absPath, const std::string& repoRo
     return absPath;
 }
 
-}  // namespace kg::index::progress
+}  // namespace symhow::index::progress

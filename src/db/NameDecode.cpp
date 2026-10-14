@@ -1,8 +1,8 @@
-#include "kg/db/NameDecode.h"
+#include "symhow/db/NameDecode.h"
 
 #include <regex>
 
-namespace kg::db
+namespace symhow::db
 {
 
 namespace
@@ -148,4 +148,4 @@ std::string DecodedName::signature() const
     return last.prefix + " " + last.name + last.postfix;
 }
 
-}  // namespace kg::db
+}  // namespace symhow::db

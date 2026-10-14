@@ -1,8 +1,8 @@
-// Unit coverage for kg::index::pathArgsHashes() -- the combined, per-path
+// Unit coverage for symhow::index::pathArgsHashes() -- the combined, per-path
 // args_hash/entry_count recipe that fixes the duplicate-CDB-entry bug (see
 // docs/KNOWN_LIMITATIONS.md): a real compile_commands.json can list the same
 // `file` more than once (several targets/configs with different flags), but
-// kg_tu is keyed by PATH, so a single, order-independent hash has to stand
+// symhow_tu is keyed by PATH, so a single, order-independent hash has to stand
 // in for however many entries that path actually has.
 
 #include <catch2/catch_test_macros.hpp>
@@ -11,11 +11,11 @@
 #include <string>
 #include <vector>
 
-#include "kg/index/CompileDb.h"
+#include "symhow/index/CompileDb.h"
 
-using kg::index::CompileEntry;
-using kg::index::pathArgsHashes;
-using kg::index::PathArgsInfo;
+using symhow::index::CompileEntry;
+using symhow::index::pathArgsHashes;
+using symhow::index::PathArgsInfo;
 
 namespace
 {

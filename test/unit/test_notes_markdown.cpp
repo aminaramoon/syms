@@ -9,11 +9,11 @@
 
 #include <nlohmann/json.hpp>
 
-#include "kg/common/Process.h"
-#include "kg/notes/Markdown.h"
-#include "kg/notes/NoteModel.h"
+#include "symhow/common/Process.h"
+#include "symhow/notes/Markdown.h"
+#include "symhow/notes/NoteModel.h"
 
-using namespace kg::notes;
+using namespace symhow::notes;
 
 namespace
 {
@@ -349,7 +349,7 @@ TEST_CASE("problem: stray-heading-level (##### and a second #)", "[notes]")
 
 TEST_CASE("problem: misplaced-meta", "[notes]")
 {
-    const std::string c = "# f.cpp\n\n## ns::foo\nbrief text here\n<!-- kg-hash: abc123 -->\n";
+    const std::string c = "# f.cpp\n\n## ns::foo\nbrief text here\n<!-- symhow-hash: abc123 -->\n";
     NotesFile f = parseNotesFile(c, "f.md");
     CHECK(hasProblem(f.problems, "misplaced-meta", 5));
     REQUIRE(f.blocks.size() == 1);
@@ -357,12 +357,12 @@ TEST_CASE("problem: misplaced-meta", "[notes]")
 }
 
 // -----------------------------------------------------------------------
-// kg-hash / kg-commit staleness anchor comment
+// symhow-hash / symhow-commit staleness anchor comment
 // -----------------------------------------------------------------------
 
 TEST_CASE("meta comment immediately after heading is parsed into bodyHash/commit", "[notes]")
 {
-    const std::string c = "# f.cpp\n\n## ns::foo\n<!-- kg-hash: abc123  kg-commit: deadbeef -->\nbrief text\n";
+    const std::string c = "# f.cpp\n\n## ns::foo\n<!-- symhow-hash: abc123  symhow-commit: deadbeef -->\nbrief text\n";
     NotesFile f = parseNotesFile(c, "f.md");
     CHECK(f.problems.empty());
     REQUIRE(f.blocks.size() == 1);
@@ -445,15 +445,15 @@ TEST_CASE("placeholderBlockMarkdown with bodyHash/commit emits and round-trips t
 
 TEST_CASE("fake generator output lints as expected and round-trips", "[notes][notes_fake]")
 {
-    const std::string sourceDir = KG_TEST_SOURCE_DIR;
-    const std::string scriptPath = sourceDir + "/../scripts/kg-notes-fake.py";
+    const std::string sourceDir = SYMHOW_TEST_SOURCE_DIR;
+    const std::string scriptPath = sourceDir + "/../scripts/symhow-notes-fake.py";
     const std::string fixturePath = sourceDir + "/notes/symbols.fixture.json";
-    const std::string outDir = std::string(KG_TEST_BINARY_DIR) + "/notes_fake_out";
+    const std::string outDir = std::string(SYMHOW_TEST_BINARY_DIR) + "/notes_fake_out";
 
     std::filesystem::remove_all(outDir);
     std::filesystem::create_directories(outDir);
 
-    kg::common::process::Result gen = kg::common::process::run(
+    symhow::common::process::Result gen = symhow::common::process::run(
         {"python3", scriptPath, "--symbols-json", fixturePath, "--notes-dir", outDir, "--seed", "7", "--fill-ratio", "0.6", "--empty-ratio", "0.1",
          "--overloads"});
     if (gen.exitCode == -1)
@@ -466,16 +466,16 @@ TEST_CASE("fake generator output lints as expected and round-trips", "[notes][no
     // Without --strict: no lint problems (the injected ambiguous
     // empty-signature pair is not something lint -- which has no DB -- can
     // detect; it's a sync-time/DB-aware concern).
-    kg::common::process::Result lintPlain = kg::common::process::run({KG_BINARY, "notes", "lint", "--notes-dir", outDir});
+    symhow::common::process::Result lintPlain = symhow::common::process::run({SYMHOW_BINARY, "notes", "lint", "--notes-dir", outDir});
     CHECK(lintPlain.exitCode == 0);
 
     // With --strict: --empty-ratio guarantees some sections are entirely
     // absent, so missing-section problems are reported.
-    kg::common::process::Result lintStrict = kg::common::process::run({KG_BINARY, "notes", "lint", "--notes-dir", outDir, "--strict", "--json"});
+    symhow::common::process::Result lintStrict = symhow::common::process::run({SYMHOW_BINARY, "notes", "lint", "--notes-dir", outDir, "--strict", "--json"});
     CHECK(lintStrict.exitCode == 3);
 
     nlohmann::json j = nlohmann::json::parse(lintStrict.out);
-    CHECK(j["schema"] == "kg.notes-lint/1");
+    CHECK(j["schema"] == "symhow.notes-lint/1");
     const std::size_t reportedBlocks = j["blocks"].get<std::size_t>();
 
     // Cross-check block count and fixed point (parse -> render -> byte

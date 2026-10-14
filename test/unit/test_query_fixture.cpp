@@ -1,4 +1,4 @@
-// Correctness tests for kg::query::QueryEngine (and a few kg::query::
+// Correctness tests for symhow::query::QueryEngine (and a few symhow::query::
 // resolveSymbol / DB-conformance checks) against the real synthetic fixture
 // database (build/fixture.srctrldb -- see test/CMakeLists.txt's
 // FIXTURES_REQUIRED FixtureDb wiring for these [fixture]-tagged tests).
@@ -10,46 +10,46 @@
 
 #include <sqlite3.h>
 
-#include "kg/db/Database.h"
-#include "kg/db/Enums.h"
-#include "kg/db/NameDecode.h"
-#include "kg/query/Bfs.h"
-#include "kg/query/QueryEngine.h"
-#include "kg/query/SymbolResolver.h"
+#include "symhow/db/Database.h"
+#include "symhow/db/Enums.h"
+#include "symhow/db/NameDecode.h"
+#include "symhow/query/Bfs.h"
+#include "symhow/query/QueryEngine.h"
+#include "symhow/query/SymbolResolver.h"
 
-using kg::query::QueryEngine;
-using kg::query::ResolveOutcome;
+using symhow::query::QueryEngine;
+using symhow::query::ResolveOutcome;
 
 namespace
 {
 
 std::string fixtureDbPath()
 {
-#ifdef KG_FIXTURE_DB
-    return KG_FIXTURE_DB;
+#ifdef SYMHOW_FIXTURE_DB
+    return SYMHOW_FIXTURE_DB;
 #else
     return "fixture.srctrldb";
 #endif
 }
 
-int64_t resolveOne(kg::db::Database& db, const std::string& spec, const std::vector<int>* kindFilter = nullptr)
+int64_t resolveOne(symhow::db::Database& db, const std::string& spec, const std::vector<int>* kindFilter = nullptr)
 {
-    const kg::query::ResolveResult rr = kg::query::resolveSymbol(db, spec, kindFilter, nullptr);
+    const symhow::query::ResolveResult rr = symhow::query::resolveSymbol(db, spec, kindFilter, nullptr);
     INFO("resolving '" << spec << "'");
     REQUIRE(rr.outcome == ResolveOutcome::Unique);
     return rr.candidates.front().id;
 }
 
-bool containsNode(const kg::query::BfsResult& r, int64_t id)
+bool containsNode(const symhow::query::BfsResult& r, int64_t id)
 {
-    return std::any_of(r.nodes.begin(), r.nodes.end(), [id](const kg::query::BfsNode& n) { return n.id == id; });
+    return std::any_of(r.nodes.begin(), r.nodes.end(), [id](const symhow::query::BfsNode& n) { return n.id == id; });
 }
 
 // bases()/derived()/etc. always include the seed(s) themselves at depth 0
-// (see kg::query::Bfs.h -- BfsResult::nodes hydrates every visited node,
+// (see symhow::query::Bfs.h -- BfsResult::nodes hydrates every visited node,
 // seeds included); "X's bases" semantically excludes X itself, so tests
 // that check "exactly {A, B, C}" compare against the non-seed nodes.
-std::set<int64_t> nonSeedIds(const kg::query::BfsResult& r)
+std::set<int64_t> nonSeedIds(const symhow::query::BfsResult& r)
 {
     std::set<int64_t> ids;
     for (const auto& n : r.nodes)
@@ -66,7 +66,7 @@ std::set<int64_t> nonSeedIds(const kg::query::BfsResult& r)
 
 TEST_CASE("query_fixture bases(Square) reaches exactly {Polygon,Colored,Shape} at depth 0 and {Polygon,Colored} at depth 1", "[fixture][query_fixture]")
 {
-    kg::db::Database db(fixtureDbPath());
+    symhow::db::Database db(fixtureDbPath());
     QueryEngine engine(db);
 
     const int64_t square = resolveOne(db, "fixture::Square");
@@ -83,7 +83,7 @@ TEST_CASE("query_fixture bases(Square) reaches exactly {Polygon,Colored,Shape} a
 
 TEST_CASE("query_fixture derived(Shape) reaches exactly {Polygon,Colored,Square} at depth 0", "[fixture][query_fixture]")
 {
-    kg::db::Database db(fixtureDbPath());
+    symhow::db::Database db(fixtureDbPath());
     QueryEngine engine(db);
 
     const int64_t shape = resolveOne(db, "fixture::Shape");
@@ -106,20 +106,20 @@ TEST_CASE("query_fixture OVERRIDE edges: Shape::area is transitively overridden 
     // depth, not the QueryEngine::overriddenBy() convenience wrapper, which
     // is fixed at depth=1 per the verb's own contract) finds all 3
     // overriding methods and >= 3 edges, which is what this checks.
-    kg::db::Database db(fixtureDbPath());
+    symhow::db::Database db(fixtureDbPath());
 
     const int64_t shapeArea = resolveOne(db, "fixture::Shape::area");
     const int64_t polygonArea = resolveOne(db, "fixture::Polygon::area");
     const int64_t coloredArea = resolveOne(db, "fixture::Colored::area");
     const int64_t squareArea = resolveOne(db, "fixture::Square::area");
 
-    kg::query::BfsParams p;
+    symhow::query::BfsParams p;
     p.seeds = {shapeArea};
-    p.edgeKindMask = kg::db::EdgeKind::OVERRIDE;
+    p.edgeKindMask = symhow::db::EdgeKind::OVERRIDE;
     p.forward = false;  // overriddenBy direction
     p.depth = 0;          // unlimited, unlike the depth=1 QueryEngine::overriddenBy() verb
 
-    kg::query::BfsResult r = kg::query::runBfs(db, p);
+    symhow::query::BfsResult r = symhow::query::runBfs(db, p);
     CHECK(r.edges.size() >= 3);
     CHECK(containsNode(r, polygonArea));
     CHECK(containsNode(r, coloredArea));
@@ -144,7 +144,7 @@ TEST_CASE("query_fixture OVERRIDE edges: Shape::area is transitively overridden 
 
 TEST_CASE("query_fixture callees(level0) is monotonically non-decreasing and saturates by depth 4", "[fixture][query_fixture]")
 {
-    kg::db::Database db(fixtureDbPath());
+    symhow::db::Database db(fixtureDbPath());
     QueryEngine engine(db);
     const int64_t level0 = resolveOne(db, "level0");
 
@@ -160,12 +160,12 @@ TEST_CASE("query_fixture callees(level0) is monotonically non-decreasing and sat
 
 TEST_CASE("query_fixture callers(pong) terminates on mutual recursion and includes ping", "[fixture][query_fixture]")
 {
-    kg::db::Database db(fixtureDbPath());
+    symhow::db::Database db(fixtureDbPath());
     QueryEngine engine(db);
     const int64_t pong = resolveOne(db, "pong");
     const int64_t ping = resolveOne(db, "ping");
 
-    const kg::query::BfsResult r = engine.callers({pong}, 0, 0);
+    const symhow::query::BfsResult r = engine.callers({pong}, 0, 0);
     CHECK_FALSE(r.truncated);
     CHECK(containsNode(r, pong));
     CHECK(containsNode(r, ping));
@@ -173,7 +173,7 @@ TEST_CASE("query_fixture callers(pong) terminates on mutual recursion and includ
 
 TEST_CASE("query_fixture header included by two TUs dedups to exactly one node per symbol", "[fixture][query_fixture]")
 {
-    kg::db::Database db(fixtureDbPath());
+    symhow::db::Database db(fixtureDbPath());
     // shapes.hpp is #included by both ns.cpp and overloads.cpp; if dedup by
     // USR-derived SymbolKey ever regressed, Square would show up as (at
     // least) 2 separate CLASS nodes with the exact same serialized_name.
@@ -182,7 +182,7 @@ TEST_CASE("query_fixture header included by two TUs dedups to exactly one node p
     db.run(
         "SELECT COUNT(*) FROM node WHERE type = ? AND serialized_name = ?",
         [&](sqlite3_stmt* stmt) {
-            sqlite3_bind_int(stmt, 1, kg::db::NodeKind::CLASS);
+            sqlite3_bind_int(stmt, 1, symhow::db::NodeKind::CLASS);
             sqlite3_bind_text(stmt, 2, squareSerialized.c_str(), -1, SQLITE_TRANSIENT);
         },
         [&](sqlite3_stmt* stmt) { count = sqlite3_column_int64(stmt, 0); });
@@ -191,21 +191,50 @@ TEST_CASE("query_fixture header included by two TUs dedups to exactly one node p
 
 TEST_CASE("query_fixture resolveSymbol on the tu_a/tu_b USR-collision qualifiedNames resolves 4 distinct ids", "[fixture][query_fixture]")
 {
-    kg::db::Database db(fixtureDbPath());
+    symhow::db::Database db(fixtureDbPath());
 
-    // Pulled from decodeSerializedName() of the real fixture rows (see
-    // test_name_decode.cpp for how these strings were captured).
-    const std::vector<std::string> specs = {
-        "helper() [tu_a.cpp#317677a3]",
-        "helper() [tu_b.cpp#c490d472]",
-        "main() [tu_a.cpp#317677a3]",
-        "main() [tu_b.cpp#c490d472]",
+    // The two TUs each define their own helper()/main(); NameBuilder appends
+    // a USR-derived hash suffix to disambiguate the colliding qualified
+    // names. The suffix bytes are clang-version specific (USRs embed the
+    // clang builtin version), so they're resolved from the fixture DB rather
+    // than hardcoded -- what must hold for ANY clang is that each of the 4
+    // colliding names has its own row and resolves uniquely.
+    const std::vector<std::pair<std::string, std::string>> bases = {
+        {"helper", "tu_a.cpp"},
+        {"helper", "tu_b.cpp"},
+        {"main", "tu_a.cpp"},
+        {"main", "tu_b.cpp"},
     };
 
     std::set<int64_t> ids;
-    for (const std::string& spec : specs)
+    for (const auto& [base, tu] : bases)
     {
-        const kg::query::ResolveResult rr = kg::query::resolveSymbol(db, spec, nullptr, nullptr);
+        // The raw serialized_name stores the bare element name ("mhelper"),
+        // NOT the qualifiedName() display form, so LIKE-match on the raw
+        // shape ("...m<base>\t...p() [<tu>#...") and decode the row back
+        // into its qualifiedName() to get the spec string.
+        std::string spec;
+        int64_t rows = 0;
+        db.run(
+            "SELECT serialized_name FROM node WHERE serialized_name LIKE ?",
+            [&](sqlite3_stmt* stmt) {
+                const std::string pattern = "%m" + base + "%() [" + tu + "#%";
+                sqlite3_bind_text(stmt, 1, pattern.c_str(), -1, SQLITE_TRANSIENT);
+            },
+            [&](sqlite3_stmt* stmt) {
+                if (spec.empty())
+                {
+                    const unsigned char* text = sqlite3_column_text(stmt, 0);
+                    const std::string serialized = text ? reinterpret_cast<const char*>(text) : "";
+                    spec = symhow::db::decodeSerializedName(serialized).qualifiedName();
+                }
+                ++rows;
+            });
+        INFO("looking for '" << base << "() [" << tu << "#...]': found " << rows << " rows");
+        REQUIRE(rows == 1);
+        REQUIRE_FALSE(spec.empty());
+
+        const symhow::query::ResolveResult rr = symhow::query::resolveSymbol(db, spec, nullptr, nullptr);
         INFO("resolving '" << spec << "'");
         REQUIRE(rr.outcome == ResolveOutcome::Unique);
         ids.insert(rr.candidates.front().id);
@@ -215,10 +244,10 @@ TEST_CASE("query_fixture resolveSymbol on the tu_a/tu_b USR-collision qualifiedN
 
 TEST_CASE("query_fixture search('sqr', kind=CLASS) ranks Square first", "[fixture][query_fixture]")
 {
-    kg::db::Database db(fixtureDbPath());
+    symhow::db::Database db(fixtureDbPath());
     QueryEngine engine(db);
 
-    const std::vector<int> classOnly{kg::db::NodeKind::CLASS};
+    const std::vector<int> classOnly{symhow::db::NodeKind::CLASS};
     const auto hits = engine.search("sqr", &classOnly, 10);
     REQUIRE_FALSE(hits.empty());
     CHECK(hits.front().displayName == "fixture::Square");
@@ -226,7 +255,7 @@ TEST_CASE("query_fixture search('sqr', kind=CLASS) ranks Square first", "[fixtur
 
 TEST_CASE("query_fixture definition(Square) prefers the SCOPE location over TOKEN", "[fixture][query_fixture]")
 {
-    kg::db::Database db(fixtureDbPath());
+    symhow::db::Database db(fixtureDbPath());
     QueryEngine engine(db);
     const int64_t square = resolveOne(db, "fixture::Square");
 
@@ -234,13 +263,13 @@ TEST_CASE("query_fixture definition(Square) prefers the SCOPE location over TOKE
     REQUIRE_FALSE(def.locations.empty());
     for (const auto& loc : def.locations)
     {
-        CHECK(loc.locationKind == kg::db::LocationKind::SCOPE);
+        CHECK(loc.locationKind == symhow::db::LocationKind::SCOPE);
     }
 }
 
 TEST_CASE("query_fixture references(Shape) locations are non-empty and point at real fixture source paths", "[fixture][query_fixture]")
 {
-    kg::db::Database db(fixtureDbPath());
+    symhow::db::Database db(fixtureDbPath());
     QueryEngine engine(db);
     const int64_t shape = resolveOne(db, "fixture::Shape");
 
@@ -255,7 +284,7 @@ TEST_CASE("query_fixture references(Shape) locations are non-empty and point at 
 
 TEST_CASE("query_fixture DB conformance: storage_version, all 13 tables, no orphan edges", "[fixture][query_fixture]")
 {
-    kg::db::Database db(fixtureDbPath());
+    symhow::db::Database db(fixtureDbPath());
     CHECK(db.storageVersion() == 25);
 
     static const std::vector<std::string> kExpectedTables = {

@@ -1,4 +1,4 @@
-#include "kg/common/Process.h"
+#include "symhow/common/Process.h"
 
 #include <poll.h>
 #include <spawn.h>
@@ -10,7 +10,7 @@
 
 extern char** environ;
 
-namespace kg::common::process
+namespace symhow::common::process
 {
 
 namespace
@@ -90,7 +90,7 @@ Result run(const std::vector<std::string>& argv, const std::string* cwd)
     Result result;
     if (argv.empty())
     {
-        result.err = "kg::common::process::run: empty argv";
+        result.err = "symhow::common::process::run: empty argv";
         return result;
     }
 
@@ -110,10 +110,18 @@ Result run(const std::vector<std::string>& argv, const std::string* cwd)
     posix_spawn_file_actions_adddup2(&actions, errPipe[1], STDERR_FILENO);
     posix_spawn_file_actions_addclose(&actions, outPipe[1]);
     posix_spawn_file_actions_addclose(&actions, errPipe[1]);
-#ifdef __GLIBC__
+#if defined(__GLIBC__)
     if (cwd != nullptr && !cwd->empty())
     {
         posix_spawn_file_actions_addchdir_np(&actions, cwd->c_str());
+    }
+#elif defined(__APPLE__)
+    // macOS (10.15+) ships posix_spawn_file_actions_addchdir() as the
+    // canonical name (its own _np alias is deprecated); same race-free
+    // chdir-before-exec semantics as the glibc extension above.
+    if (cwd != nullptr && !cwd->empty())
+    {
+        posix_spawn_file_actions_addchdir(&actions, cwd->c_str());
     }
 #else
     // posix_spawn_file_actions_addchdir_np is a glibc extension; on other
@@ -129,7 +137,7 @@ Result run(const std::vector<std::string>& argv, const std::string* cwd)
         ::close(errPipe[0]);
         ::close(errPipe[1]);
         result.exitCode = -1;
-        result.err = "kg::common::process::run: cwd is not supported on this platform (no posix_spawn chdir extension)";
+        result.err = "symhow::common::process::run: cwd is not supported on this platform (no posix_spawn chdir extension)";
         return result;
     }
 #endif
@@ -182,4 +190,4 @@ Result run(const std::vector<std::string>& argv, const std::string* cwd)
     return result;
 }
 
-}  // namespace kg::common::process
+}  // namespace symhow::common::process

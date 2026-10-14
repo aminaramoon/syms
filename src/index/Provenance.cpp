@@ -1,13 +1,13 @@
-#include "kg/index/Provenance.h"
+#include "symhow/index/Provenance.h"
 
 #include <sqlite3.h>
 
 #include <nlohmann/json.hpp>
 
-#include "kg/db/Meta.h"
-#include "kg/db/WritableDb.h"
+#include "symhow/db/Meta.h"
+#include "symhow/db/WritableDb.h"
 
-namespace kg::index
+namespace symhow::index
 {
 
 namespace
@@ -122,49 +122,49 @@ void optionsFromJson(const nlohmann::json& j, Provenance& prov)
 
 }  // namespace
 
-void writeProvenance(kg::db::WritableDb& db, const Provenance& prov)
+void writeProvenance(symhow::db::WritableDb& db, const Provenance& prov)
 {
-    kg::db::setMeta(db, "kg_provenance_version", std::to_string(kProvenanceVersion));
-    kg::db::setMeta(db, "kg_version", prov.kgVersion);
-    kg::db::setMeta(db, "kg_walker_version", std::to_string(prov.walkerVersion));
-    kg::db::setMeta(db, "kg_cdb_path", prov.cdbPath);
-    kg::db::setMeta(db, "kg_options_json", optionsToJson(prov).dump());
-    kg::db::setMeta(db, "kg_repo_root", prov.repoRoot);
-    kg::db::setMeta(db, "kg_repo_commit", prov.repoCommit);
-    kg::db::setMeta(db, "kg_dirty_paths", nlohmann::json(prov.dirtyPaths).dump());
-    kg::db::setMeta(db, "kg_indexed_at", prov.indexedAtUtc);
-    kg::db::setMeta(db, "kg_last_update_at", prov.lastUpdateAtUtc);
-    // Own meta key, NOT part of kg_options_json -- see Provenance::notesDir's
-    // doc comment. Only written when non-empty, so a `kg index` run without
-    // --notes-dir never clobbers a notes dir set by a later `kg notes sync
-    // --notes-dir` / `kg update`.
+    symhow::db::setMeta(db, "symhow_provenance_version", std::to_string(kProvenanceVersion));
+    symhow::db::setMeta(db, "symhow_version", prov.symhowVersion);
+    symhow::db::setMeta(db, "symhow_walker_version", std::to_string(prov.walkerVersion));
+    symhow::db::setMeta(db, "symhow_cdb_path", prov.cdbPath);
+    symhow::db::setMeta(db, "symhow_options_json", optionsToJson(prov).dump());
+    symhow::db::setMeta(db, "symhow_repo_root", prov.repoRoot);
+    symhow::db::setMeta(db, "symhow_repo_commit", prov.repoCommit);
+    symhow::db::setMeta(db, "symhow_dirty_paths", nlohmann::json(prov.dirtyPaths).dump());
+    symhow::db::setMeta(db, "symhow_indexed_at", prov.indexedAtUtc);
+    symhow::db::setMeta(db, "symhow_last_update_at", prov.lastUpdateAtUtc);
+    // Own meta key, NOT part of symhow_options_json -- see Provenance::notesDir's
+    // doc comment. Only written when non-empty, so a `symhow index` run without
+    // --notes-dir never clobbers a notes dir set by a later `symhow notes sync
+    // --notes-dir` / `symhow update`.
     if (!prov.notesDir.empty())
     {
-        kg::db::setMeta(db, "kg_notes_dir", prov.notesDir);
+        symhow::db::setMeta(db, "symhow_notes_dir", prov.notesDir);
     }
 }
 
 std::optional<Provenance> readProvenance(sqlite3* handle)
 {
-    const std::optional<std::string> version = kg::db::getMeta(handle, "kg_provenance_version");
+    const std::optional<std::string> version = symhow::db::getMeta(handle, "symhow_provenance_version");
     if (!version.has_value())
     {
         return std::nullopt;
     }
 
     Provenance prov;
-    prov.kgVersion = kg::db::getMeta(handle, "kg_version").value_or("");
+    prov.symhowVersion = symhow::db::getMeta(handle, "symhow_version").value_or("");
     try
     {
-        prov.walkerVersion = std::stoi(kg::db::getMeta(handle, "kg_walker_version").value_or("0"));
+        prov.walkerVersion = std::stoi(symhow::db::getMeta(handle, "symhow_walker_version").value_or("0"));
     }
     catch (const std::exception&)
     {
         prov.walkerVersion = 0;
     }
-    prov.cdbPath = kg::db::getMeta(handle, "kg_cdb_path").value_or("");
+    prov.cdbPath = symhow::db::getMeta(handle, "symhow_cdb_path").value_or("");
 
-    const std::string optionsJson = kg::db::getMeta(handle, "kg_options_json").value_or("");
+    const std::string optionsJson = symhow::db::getMeta(handle, "symhow_options_json").value_or("");
     if (!optionsJson.empty())
     {
         try
@@ -178,10 +178,10 @@ std::optional<Provenance> readProvenance(sqlite3* handle)
         }
     }
 
-    prov.repoRoot = kg::db::getMeta(handle, "kg_repo_root").value_or("");
-    prov.repoCommit = kg::db::getMeta(handle, "kg_repo_commit").value_or("");
+    prov.repoRoot = symhow::db::getMeta(handle, "symhow_repo_root").value_or("");
+    prov.repoCommit = symhow::db::getMeta(handle, "symhow_repo_commit").value_or("");
 
-    const std::string dirtyJson = kg::db::getMeta(handle, "kg_dirty_paths").value_or("");
+    const std::string dirtyJson = symhow::db::getMeta(handle, "symhow_dirty_paths").value_or("");
     if (!dirtyJson.empty())
     {
         try
@@ -193,11 +193,11 @@ std::optional<Provenance> readProvenance(sqlite3* handle)
         }
     }
 
-    prov.indexedAtUtc = kg::db::getMeta(handle, "kg_indexed_at").value_or("");
-    prov.lastUpdateAtUtc = kg::db::getMeta(handle, "kg_last_update_at").value_or("");
-    prov.notesDir = kg::db::getMeta(handle, "kg_notes_dir").value_or("");
+    prov.indexedAtUtc = symhow::db::getMeta(handle, "symhow_indexed_at").value_or("");
+    prov.lastUpdateAtUtc = symhow::db::getMeta(handle, "symhow_last_update_at").value_or("");
+    prov.notesDir = symhow::db::getMeta(handle, "symhow_notes_dir").value_or("");
 
     return prov;
 }
 
-}  // namespace kg::index
+}  // namespace symhow::index

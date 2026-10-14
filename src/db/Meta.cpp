@@ -1,10 +1,10 @@
-#include "kg/db/Meta.h"
+#include "symhow/db/Meta.h"
 
 #include <sqlite3.h>
 
-#include "kg/db/WritableDb.h"
+#include "symhow/db/WritableDb.h"
 
-namespace kg::db
+namespace symhow::db
 {
 
 std::optional<std::string> getMeta(sqlite3* handle, const std::string& key)
@@ -49,4 +49,4 @@ void deleteMeta(WritableDb& db, const std::string& key)
         [&](sqlite3_stmt* stmt) { sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_TRANSIENT); });
 }
 
-}  // namespace kg::db
+}  // namespace symhow::db

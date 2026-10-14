@@ -3,11 +3,11 @@
 #include <filesystem>
 #include <string>
 
-#include "kg/update/GitDiff.h"
+#include "symhow/update/GitDiff.h"
 
-using kg::update::ChangeKind;
-using kg::update::parseNameStatusZ;
-using kg::update::parseStatusPorcelainZ;
+using symhow::update::ChangeKind;
+using symhow::update::parseNameStatusZ;
+using symhow::update::parseStatusPorcelainZ;
 
 namespace
 {
@@ -138,7 +138,7 @@ TEST_CASE("gitdiff: parseNameStatusZ maps U (unmerged) to ChangeKind::Unmerged, 
 
 TEST_CASE("gitdiff: statusHasUnmergedEntries detects every unmerged XY pairing")
 {
-    using kg::update::statusHasUnmergedEntries;
+    using symhow::update::statusHasUnmergedEntries;
     REQUIRE(statusHasUnmergedEntries(nulJoin({"UU conflicted.cpp"})));
     REQUIRE(statusHasUnmergedEntries(nulJoin({"AU added_by_us.cpp"})));
     REQUIRE(statusHasUnmergedEntries(nulJoin({"UA added_by_them.cpp"})));
@@ -148,7 +148,7 @@ TEST_CASE("gitdiff: statusHasUnmergedEntries detects every unmerged XY pairing")
 
 TEST_CASE("gitdiff: statusHasUnmergedEntries is false for ordinary entries")
 {
-    using kg::update::statusHasUnmergedEntries;
+    using symhow::update::statusHasUnmergedEntries;
     REQUIRE_FALSE(statusHasUnmergedEntries(nulJoin({" M a.cpp", "?? b.cpp", "A  c.cpp"})));
     REQUIRE_FALSE(statusHasUnmergedEntries(std::string_view{}));
 }

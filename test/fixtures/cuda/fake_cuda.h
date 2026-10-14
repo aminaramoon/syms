@@ -2,7 +2,7 @@
 // toolkit-free indexing (Phase 6 CUDA fixture).
 //
 // Goal: let clang's `-x cuda -nocudainc -nocudalib --cuda-host-only` mode
-// (kg's "nowrapper" CUDA rung -- see kg::index::cuda::synthesize()) parse a
+// (symhow's "nowrapper" CUDA rung -- see symhow::index::cuda::synthesize()) parse a
 // `.cu` file containing `__global__`/`__device__`/`__shared__` declarations
 // and a `kernel<<<grid,block>>>(args)` launch, WITHOUT any real CUDA
 // toolkit installed. Force-included via `-include` (see
@@ -36,8 +36,16 @@
 //      ordinary C++ standard header) from being found via the normal
 //      `-resource-dir`/system include search, so `#include <cstddef>` is
 //      enough (no need to hand-roll a `size_t` typedef).
+//      UPDATE: newer toolchains (e.g. clang 21 without a full C++ stdlib on
+//      its default header search path) can fail to resolve <cstddef> in this
+//      mode, which silently kills the whole cudaConfigureCall declaration
+//      (its parameters use size_t) and with it the <<<>>> launch lowering.
+//      size_t needs no header at all: __SIZE_TYPE__ is a compiler builtin
+//      macro that expands to exactly the type sizeof() yields, on every
+//      target, so the typedef below is hermetic across toolchains.
 #pragma once
-#include <cstddef>
+
+typedef __SIZE_TYPE__ size_t;
 
 #define __global__ __attribute__((global))
 #define __device__ __attribute__((device))

@@ -6,15 +6,15 @@
 #include <fstream>
 #include <unistd.h>
 
-#include "kg/common/Process.h"
-#include "kg/update/Git.h"
+#include "symhow/common/Process.h"
+#include "symhow/update/Git.h"
 
-#ifndef KG_TEST_BINARY_DIR
-#define KG_TEST_BINARY_DIR "."
+#ifndef SYMHOW_TEST_BINARY_DIR
+#define SYMHOW_TEST_BINARY_DIR "."
 #endif
 
-using kg::update::ChangeKind;
-using kg::update::collectChanges;
+using symhow::update::ChangeKind;
+using symhow::update::collectChanges;
 
 namespace
 {
@@ -22,7 +22,7 @@ namespace
 bool gitAvailable()
 {
     static const bool available = [] {
-        const auto result = kg::common::process::run({"git", "--version"});
+        const auto result = symhow::common::process::run({"git", "--version"});
         return result.exitCode == 0;
     }();
     return available;
@@ -30,7 +30,7 @@ bool gitAvailable()
 
 void run(const std::vector<std::string>& argv, const std::string& cwd)
 {
-    const auto result = kg::common::process::run(argv, &cwd);
+    const auto result = symhow::common::process::run(argv, &cwd);
     REQUIRE(result.exitCode == 0);
 }
 
@@ -47,15 +47,15 @@ std::filesystem::path freshRepoDir()
 {
     static int counter = 0;
     const std::filesystem::path dir =
-        std::filesystem::path(KG_TEST_BINARY_DIR) / ("kg_test_git_repo_" + std::to_string(::getpid()) + "_" + std::to_string(counter++));
+        std::filesystem::path(SYMHOW_TEST_BINARY_DIR) / ("symhow_test_git_repo_" + std::to_string(::getpid()) + "_" + std::to_string(counter++));
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
     return dir;
 }
 
-bool hasChange(const std::vector<kg::update::ChangedFile>& changes, ChangeKind kind, const std::string& newPathSuffix)
+bool hasChange(const std::vector<symhow::update::ChangedFile>& changes, ChangeKind kind, const std::string& newPathSuffix)
 {
-    return std::any_of(changes.begin(), changes.end(), [&](const kg::update::ChangedFile& c) {
+    return std::any_of(changes.begin(), changes.end(), [&](const symhow::update::ChangedFile& c) {
         return c.kind == kind && c.newPath.size() >= newPathSuffix.size() &&
                c.newPath.compare(c.newPath.size() - newPathSuffix.size(), newPathSuffix.size(), newPathSuffix) == 0;
     });
@@ -72,8 +72,8 @@ TEST_CASE("git: collectChanges against the working tree finds a Modified + an Ad
 
     const std::filesystem::path repo = freshRepoDir();
     run({"git", "init", "-q"}, repo.string());
-    run({"git", "config", "user.email", "kg-test@example.com"}, repo.string());
-    run({"git", "config", "user.name", "kg-test"}, repo.string());
+    run({"git", "config", "user.email", "symhow-test@example.com"}, repo.string());
+    run({"git", "config", "user.name", "symhow-test"}, repo.string());
 
     writeFile(repo / "a.cpp", "int a();\n");
     writeFile(repo / "b.cpp", "int b();\n");
@@ -113,20 +113,20 @@ TEST_CASE("git: collectChanges between two fixed commits reports the right set a
 
     const std::filesystem::path repo = freshRepoDir();
     run({"git", "init", "-q"}, repo.string());
-    run({"git", "config", "user.email", "kg-test@example.com"}, repo.string());
-    run({"git", "config", "user.name", "kg-test"}, repo.string());
+    run({"git", "config", "user.email", "symhow-test@example.com"}, repo.string());
+    run({"git", "config", "user.name", "symhow-test"}, repo.string());
 
     writeFile(repo / "a.cpp", "int a();\n");
     run({"git", "add", "-A"}, repo.string());
     run({"git", "commit", "-q", "-m", "first"}, repo.string());
-    const auto firstSha = kg::update::revParse(repo.string(), "HEAD");
+    const auto firstSha = symhow::update::revParse(repo.string(), "HEAD");
     REQUIRE(firstSha.has_value());
 
     writeFile(repo / "a.cpp", "int a(); // changed\n");
     writeFile(repo / "d.cpp", "int d();\n");
     run({"git", "add", "-A"}, repo.string());
     run({"git", "commit", "-q", "-m", "second"}, repo.string());
-    const auto secondSha = kg::update::revParse(repo.string(), "HEAD");
+    const auto secondSha = symhow::update::revParse(repo.string(), "HEAD");
     REQUIRE(secondSha.has_value());
 
     std::string err;
@@ -149,8 +149,8 @@ TEST_CASE("git: collectChanges fails cleanly on a bad baseline rev")
 
     const std::filesystem::path repo = freshRepoDir();
     run({"git", "init", "-q"}, repo.string());
-    run({"git", "config", "user.email", "kg-test@example.com"}, repo.string());
-    run({"git", "config", "user.name", "kg-test"}, repo.string());
+    run({"git", "config", "user.email", "symhow-test@example.com"}, repo.string());
+    run({"git", "config", "user.name", "symhow-test"}, repo.string());
     writeFile(repo / "a.cpp", "int a();\n");
     run({"git", "add", "-A"}, repo.string());
     run({"git", "commit", "-q", "-m", "init"}, repo.string());
@@ -172,13 +172,13 @@ TEST_CASE("git: collectChanges refuses a repo with unmerged (conflicted) paths")
 
     const std::filesystem::path repo = freshRepoDir();
     run({"git", "init", "-q"}, repo.string());
-    run({"git", "config", "user.email", "kg-test@example.com"}, repo.string());
-    run({"git", "config", "user.name", "kg-test"}, repo.string());
+    run({"git", "config", "user.email", "symhow-test@example.com"}, repo.string());
+    run({"git", "config", "user.name", "symhow-test"}, repo.string());
 
     writeFile(repo / "f.txt", "base\n");
     run({"git", "add", "-A"}, repo.string());
     run({"git", "commit", "-q", "-m", "base"}, repo.string());
-    const auto baseSha = kg::update::revParse(repo.string(), "HEAD");
+    const auto baseSha = symhow::update::revParse(repo.string(), "HEAD");
     REQUIRE(baseSha.has_value());
 
     run({"git", "checkout", "-q", "-b", "b1"}, repo.string());
@@ -192,7 +192,7 @@ TEST_CASE("git: collectChanges refuses a repo with unmerged (conflicted) paths")
     // Intentionally not checking the exit code -- a merge conflict makes
     // `git merge` exit non-zero on purpose.
     const std::string repoStr = repo.string();
-    kg::common::process::run({"git", "merge", "-q", "b1"}, &repoStr);
+    symhow::common::process::run({"git", "merge", "-q", "b1"}, &repoStr);
 
     std::string err;
     const auto changeSet = collectChanges(repoStr, *baseSha, std::nullopt, &err);
@@ -202,7 +202,7 @@ TEST_CASE("git: collectChanges refuses a repo with unmerged (conflicted) paths")
     // Clean up the conflicted merge state so freshRepoDir()'s eventual
     // remove_all() doesn't matter either way, but abort explicitly for
     // clarity.
-    kg::common::process::run({"git", "merge", "--abort"}, &repoStr);
+    symhow::common::process::run({"git", "merge", "--abort"}, &repoStr);
     std::filesystem::remove_all(repo);
 }
 
@@ -215,14 +215,14 @@ TEST_CASE("git: submoduleExcludeGlobs reads .gitmodules without initialized subm
     const std::filesystem::path repo = freshRepoDir();
     run({"git", "init", "-q"}, repo.string());
 
-    REQUIRE(kg::update::submodulePaths(repo.string()).empty());
+    REQUIRE(symhow::update::submodulePaths(repo.string()).empty());
 
     writeFile(
         repo / ".gitmodules",
         "[submodule \"duckdb\"]\n\tpath = duckdb\n\turl = https://example.invalid/duckdb.git\n"
         "[submodule \"nested\"]\n\tpath = experimental/deps/nested lib\n\turl = https://example.invalid/nested.git\n");
 
-    const std::vector<std::string> globs = kg::update::submoduleExcludeGlobs(repo.string());
+    const std::vector<std::string> globs = symhow::update::submoduleExcludeGlobs(repo.string());
     REQUIRE(globs.size() == 2);
     const std::string root = std::filesystem::path(repo).lexically_normal().string();
     CHECK(globs[0] == root + "/duckdb/**");
@@ -238,7 +238,7 @@ TEST_CASE("git: topLevel resolves the repo root")
 
     const std::filesystem::path repo = freshRepoDir();
     run({"git", "init", "-q"}, repo.string());
-    const auto top = kg::update::topLevel(repo.string());
+    const auto top = symhow::update::topLevel(repo.string());
     REQUIRE(top.has_value());
     REQUIRE(std::filesystem::weakly_canonical(*top) == std::filesystem::weakly_canonical(repo));
 

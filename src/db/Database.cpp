@@ -1,4 +1,4 @@
-#include "kg/db/Database.h"
+#include "symhow/db/Database.h"
 
 #include <sqlite3.h>
 
@@ -6,10 +6,10 @@
 #include <stdexcept>
 #include <utility>
 
-#include "kg/common/Log.h"
-#include "kg/db/WritableDb.h"
+#include "symhow/common/Log.h"
+#include "symhow/db/WritableDb.h"
 
-namespace kg::db
+namespace symhow::db
 {
 
 namespace
@@ -17,20 +17,20 @@ namespace
 
 // Exactly the 9 statements src/index/SrctrldbBackend.cpp's finish() runs
 // post-write (kIndexStatements there) -- duplicated here rather than shared
-// via a common header, per the Phase 4 instructions (kg_index is off-limits
+// via a common header, per the Phase 4 instructions (symhow_index is off-limits
 // to this phase, and this is a small, stable, copy-once list).
 const std::vector<std::pair<std::string, std::string>>& indexDefinitions()
 {
     static const std::vector<std::pair<std::string, std::string>> kDefs = {
-        {"kg_edge_source_idx", "CREATE INDEX IF NOT EXISTS kg_edge_source_idx ON edge(source_node_id);"},
-        {"kg_edge_target_idx", "CREATE INDEX IF NOT EXISTS kg_edge_target_idx ON edge(target_node_id);"},
-        {"kg_edge_type_idx", "CREATE INDEX IF NOT EXISTS kg_edge_type_idx ON edge(type);"},
-        {"kg_node_type_idx", "CREATE INDEX IF NOT EXISTS kg_node_type_idx ON node(type);"},
-        {"kg_srcloc_file_idx", "CREATE INDEX IF NOT EXISTS kg_srcloc_file_idx ON source_location(file_node_id);"},
-        {"kg_occurrence_elem_idx", "CREATE INDEX IF NOT EXISTS kg_occurrence_elem_idx ON occurrence(element_id);"},
-        {"kg_occurrence_loc_idx", "CREATE INDEX IF NOT EXISTS kg_occurrence_loc_idx ON occurrence(source_location_id);"},
-        {"kg_file_path_idx", "CREATE INDEX IF NOT EXISTS kg_file_path_idx ON file(path);"},
-        {"kg_symbol_defkind_idx", "CREATE INDEX IF NOT EXISTS kg_symbol_defkind_idx ON symbol(definition_kind);"},
+        {"symhow_edge_source_idx", "CREATE INDEX IF NOT EXISTS symhow_edge_source_idx ON edge(source_node_id);"},
+        {"symhow_edge_target_idx", "CREATE INDEX IF NOT EXISTS symhow_edge_target_idx ON edge(target_node_id);"},
+        {"symhow_edge_type_idx", "CREATE INDEX IF NOT EXISTS symhow_edge_type_idx ON edge(type);"},
+        {"symhow_node_type_idx", "CREATE INDEX IF NOT EXISTS symhow_node_type_idx ON node(type);"},
+        {"symhow_srcloc_file_idx", "CREATE INDEX IF NOT EXISTS symhow_srcloc_file_idx ON source_location(file_node_id);"},
+        {"symhow_occurrence_elem_idx", "CREATE INDEX IF NOT EXISTS symhow_occurrence_elem_idx ON occurrence(element_id);"},
+        {"symhow_occurrence_loc_idx", "CREATE INDEX IF NOT EXISTS symhow_occurrence_loc_idx ON occurrence(source_location_id);"},
+        {"symhow_file_path_idx", "CREATE INDEX IF NOT EXISTS symhow_file_path_idx ON file(path);"},
+        {"symhow_symbol_defkind_idx", "CREATE INDEX IF NOT EXISTS symhow_symbol_defkind_idx ON symbol(definition_kind);"},
     };
     return kDefs;
 }
@@ -64,7 +64,7 @@ void ensureIndices(const std::string& dbPath)
     }
     catch (const std::exception& e)
     {
-        throw std::runtime_error("kg query --ensure-indices: " + std::string(e.what()));
+        throw std::runtime_error("symhow query --ensure-indices: " + std::string(e.what()));
     }
 }
 
@@ -137,8 +137,8 @@ Database::Database(std::string path, int verbosity) : m_path(std::move(path))
 
     if (m_storageVersion != kExpectedStorageVersion)
     {
-        const std::string msg = "'" + m_path + "' has storage_version '" + versionText + "', but kg query only supports " +
-                                 std::to_string(kExpectedStorageVersion) + " (no migration support -- re-index with this build's `kg index`)";
+        const std::string msg = "'" + m_path + "' has storage_version '" + versionText + "', but symhow query only supports " +
+                                 std::to_string(kExpectedStorageVersion) + " (no migration support -- re-index with this build's `symhow index`)";
         sqlite3_close(m_handle);
         m_handle = nullptr;
         throw std::runtime_error(msg);
@@ -148,7 +148,7 @@ Database::Database(std::string path, int verbosity) : m_path(std::move(path))
     {
         for (const std::string& name : missingIndexNames(*this))
         {
-            kg::common::logInfo("kg query: warning: expected index '" + name + "' is missing (run with --ensure-indices to create it)");
+            symhow::common::logInfo("symhow query: warning: expected index '" + name + "' is missing (run with --ensure-indices to create it)");
         }
     }
 }
@@ -206,4 +206,4 @@ void Database::run(const std::string& sql, const Binder& bind, const RowFn& onRo
     }
 }
 
-}  // namespace kg::db
+}  // namespace symhow::db

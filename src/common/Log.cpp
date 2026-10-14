@@ -1,13 +1,13 @@
-#include "kg/common/Log.h"
+#include "symhow/common/Log.h"
 
 #include <cstdio>
 
-namespace kg::common
+namespace symhow::common
 {
 
 void logInfo(const std::string& message)
 {
-    std::fprintf(stderr, "[kg] %s\n", message.c_str());
+    std::fprintf(stderr, "[symhow] %s\n", message.c_str());
 }
 
-}  // namespace kg::common
+}  // namespace symhow::common

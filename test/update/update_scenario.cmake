@@ -1,16 +1,16 @@
-# Git-driven `kg update` acceptance test (Phase 4).
+# Git-driven `symhow update` acceptance test (Phase 4).
 #
 # Run as a CMake script (`-P`), invoked by CTest as the `update_scenario`
 # test (see ../CMakeLists.txt for the exact `add_test()` registration).
 # Unlike Phase 3's `--files`-only fixture tests (test_update_driver.cpp),
-# this drives `kg update` against a REAL git repository with a real commit
+# this drives `symhow update` against a REAL git repository with a real commit
 # history -- edit/edit-header/delete/add/rename/flag-change/uncommitted-
 # then-reverted scenarios -- and after every step verifies the
 # incrementally-updated database is logically IDENTICAL to a full
-# `kg index` re-run of the same commit (`kg dbdiff`, exit 0 == equivalent).
+# `symhow index` re-run of the same commit (`symhow dbdiff`, exit 0 == equivalent).
 #
 # Required variables (all passed by test/CMakeLists.txt's add_test()):
-#   KG      -- absolute path to the `kg` executable
+#   SYMHOW      -- absolute path to the `symhow` executable
 #   SRC     -- test/fixtures/synthetic (the source fixture project; never
 #              modified in place -- everything happens in a throwaway copy)
 #   WORK    -- scratch directory (recreated from scratch every run)
@@ -23,8 +23,8 @@
 
 cmake_minimum_required(VERSION 3.25) # cmake_language(EXIT ...), string(JSON ...)
 
-if(NOT DEFINED KG OR NOT DEFINED SRC OR NOT DEFINED WORK)
-    message(FATAL_ERROR "update_scenario.cmake: KG, SRC and WORK must all be set")
+if(NOT DEFINED SYMHOW OR NOT DEFINED SRC OR NOT DEFINED WORK)
+    message(FATAL_ERROR "update_scenario.cmake: SYMHOW, SRC and WORK must all be set")
 endif()
 
 if(NOT DEFINED GIT OR GIT STREQUAL "" OR NOT EXISTS "${GIT}")
@@ -41,10 +41,10 @@ endif()
 # Helpers
 # ------------------------------------------------------------------------
 
-# kg_run(<desc> <workdir> <expected-rc> <cmd...>) -- runs a command, prints
+# symhow_run(<desc> <workdir> <expected-rc> <cmd...>) -- runs a command, prints
 # its captured stdout/stderr and FATAL_ERRORs if the exit code isn't the
-# expected one. Sets KG_OUT / KG_ERR in the caller's scope.
-function(kg_run desc workdir expected_rc)
+# expected one. Sets SYMHOW_OUT / SYMHOW_ERR in the caller's scope.
+function(symhow_run desc workdir expected_rc)
     set(cmd ${ARGN})
     execute_process(
         COMMAND ${cmd}
@@ -57,8 +57,8 @@ function(kg_run desc workdir expected_rc)
             "${desc}\n  command: ${cmd}\n  expected exit ${expected_rc}, got ${rc}\n"
             "--- stdout ---\n${out}\n--- stderr ---\n${err}")
     endif()
-    set(KG_OUT "${out}" PARENT_SCOPE)
-    set(KG_ERR "${err}" PARENT_SCOPE)
+    set(SYMHOW_OUT "${out}" PARENT_SCOPE)
+    set(SYMHOW_ERR "${err}" PARENT_SCOPE)
 endfunction()
 
 # sqlite_scalar(<outvar> <dbpath> <sql>) -- runs a single-column sqlite3
@@ -108,7 +108,7 @@ function(git_commit_all workdir message)
         message(FATAL_ERROR "git add -A failed: ${err}")
     endif()
     execute_process(
-        COMMAND "${GIT}" -c user.name=kg -c user.email=kg@test commit -q -m "${message}"
+        COMMAND "${GIT}" -c user.name=symhow -c user.email=symhow@test commit -q -m "${message}"
         WORKING_DIRECTORY "${workdir}"
         RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
     if(NOT rc EQUAL 0)
@@ -130,50 +130,50 @@ endfunction()
 # compile_commands.json reflects whatever add/delete/rename just happened
 # on disk (a plain `cmake --build` wouldn't re-glob without this).
 function(reconfigure)
-    kg_run("reconfigure WORK/build" "${WORK}" 0
+    symhow_run("reconfigure WORK/build" "${WORK}" 0
         "${CMAKE_COMMAND}" -S "${WORK}/repo" -B "${WORK}/build" -G Ninja
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON)
 endfunction()
 
 set(CDB "${WORK}/build/compile_commands.json")
 
-# kg_index(<outdb>) -- a full `kg index --force` of the CURRENT repo state,
+# symhow_index(<outdb>) -- a full `symhow index --force` of the CURRENT repo state,
 # for later dbdiff comparison against the incrementally-updated database.
-function(kg_index outdb)
-    kg_run("kg index -> ${outdb}" "${WORK}" 0
-        "${KG}" index -c "${CDB}" -o "${outdb}" --repo "${WORK}/repo" --force)
+function(symhow_index outdb)
+    symhow_run("symhow index -> ${outdb}" "${WORK}" 0
+        "${SYMHOW}" index -c "${CDB}" -o "${outdb}" --repo "${WORK}/repo" --force)
 endfunction()
 
-# kg_dbdiff(<a> <b>) -- must be logically equivalent (exit 0); prints both
+# symhow_dbdiff(<a> <b>) -- must be logically equivalent (exit 0); prints both
 # sides' output on mismatch.
-function(kg_dbdiff a b)
+function(symhow_dbdiff a b)
     execute_process(
-        COMMAND "${KG}" dbdiff "${a}" "${b}"
+        COMMAND "${SYMHOW}" dbdiff "${a}" "${b}"
         RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
     if(NOT rc EQUAL 0)
-        message(FATAL_ERROR "kg dbdiff ${a} ${b} : expected equivalent (exit 0), got ${rc}\n${out}\n${err}")
+        message(FATAL_ERROR "symhow dbdiff ${a} ${b} : expected equivalent (exit 0), got ${rc}\n${out}\n${err}")
     endif()
 endfunction()
 
-# kg_update_json(<jsonvar> <expected-rc> <extra-args...>) -- runs
-# `kg update -d WORK/inc.srctrldb --json <extra-args...>`, checks the exit
+# symhow_update_json(<jsonvar> <expected-rc> <extra-args...>) -- runs
+# `symhow update -d WORK/inc.srctrldb --json <extra-args...>`, checks the exit
 # code, and stores the parsed JSON text in <jsonvar> (empty string if the
 # exit code doesn't produce JSON, e.g. a refusal).
-function(kg_update_json jsonvar expected_rc)
+function(symhow_update_json jsonvar expected_rc)
     set(extra ${ARGN})
-    kg_run("kg update" "${WORK}" "${expected_rc}"
-        "${KG}" update -d "${WORK}/inc.srctrldb" -c "${CDB}" --repo "${WORK}/repo" --json ${extra})
-    set(${jsonvar} "${KG_OUT}" PARENT_SCOPE)
+    symhow_run("symhow update" "${WORK}" "${expected_rc}"
+        "${SYMHOW}" update -d "${WORK}/inc.srctrldb" -c "${CDB}" --repo "${WORK}/repo" --json ${extra})
+    set(${jsonvar} "${SYMHOW_OUT}" PARENT_SCOPE)
 endfunction()
 
-# kg_notes_json(<jsonvar> <expected-rc> <verb> <extra-args...>) -- runs
-# `kg notes <verb> -d WORK/inc.srctrldb --json <extra-args...>`, checks the
+# symhow_notes_json(<jsonvar> <expected-rc> <verb> <extra-args...>) -- runs
+# `symhow notes <verb> -d WORK/inc.srctrldb --json <extra-args...>`, checks the
 # exit code, stores the parsed JSON text in <jsonvar>.
-function(kg_notes_json jsonvar expected_rc verb)
+function(symhow_notes_json jsonvar expected_rc verb)
     set(extra ${ARGN})
-    kg_run("kg notes ${verb}" "${WORK}" "${expected_rc}"
-        "${KG}" notes "${verb}" -d "${WORK}/inc.srctrldb" --json ${extra})
-    set(${jsonvar} "${KG_OUT}" PARENT_SCOPE)
+    symhow_run("symhow notes ${verb}" "${WORK}" "${expected_rc}"
+        "${SYMHOW}" notes "${verb}" -d "${WORK}/inc.srctrldb" --json ${extra})
+    set(${jsonvar} "${SYMHOW_OUT}" PARENT_SCOPE)
 endfunction()
 
 # ------------------------------------------------------------------------
@@ -194,7 +194,7 @@ file(WRITE "${WORK}/repo/CMakeLists.txt" "\
 # test/fixtures/synthetic/CMakeLists.txt -- GLOB_RECURSE instead of an
 # explicit source list so add/delete/rename scenarios need no edits here.
 cmake_minimum_required(VERSION 3.20)
-project(kg_fixture CXX)
+project(symhow_fixture CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -256,10 +256,10 @@ message(STATUS "update_scenario: initial CDB has the expected ${EXPECTED_TU_COUN
 # Step 3: first full index, baseline node ids
 # ------------------------------------------------------------------------
 
-kg_index("${WORK}/inc.srctrldb")
+symhow_index("${WORK}/inc.srctrldb")
 
-sqlite_scalar(META_COMMIT "${WORK}/inc.srctrldb" "select value from meta where key='kg_repo_commit'")
-assert_eq("meta.kg_repo_commit after initial index" "${META_COMMIT}" "${COMMIT_0}")
+sqlite_scalar(META_COMMIT "${WORK}/inc.srctrldb" "select value from meta where key='symhow_repo_commit'")
+assert_eq("meta.symhow_repo_commit after initial index" "${META_COMMIT}" "${COMMIT_0}")
 
 sqlite_scalar(SHAPE_ID_0 "${WORK}/inc.srctrldb"
     "select id from node where type=128 and serialized_name like '%Shape%' order by id limit 1")
@@ -282,7 +282,7 @@ file(WRITE "${WORK}/repo/src/chain.cpp" "${CHAIN_TEXT}")
 git_commit_all("${WORK}/repo" "a: edit chain.cpp body (add level5())")
 reconfigure()
 
-kg_update_json(J 0)
+symhow_update_json(J 0)
 json_field(v "${J}" files cleared)
 assert_eq("step a: files.cleared" "${v}" "1")
 
@@ -297,8 +297,8 @@ if(LEVEL0_ID_BASE STREQUAL "")
 endif()
 message(STATUS "update_scenario: level0 node id (post-step-a baseline) = ${LEVEL0_ID_BASE}")
 
-kg_index("${WORK}/full_a.srctrldb")
-kg_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_a.srctrldb")
+symhow_index("${WORK}/full_a.srctrldb")
+symhow_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_a.srctrldb")
 
 # ------------------------------------------------------------------------
 # Step 4b: edit include/shapes.hpp (add an inline method to Shape)
@@ -314,15 +314,15 @@ file(WRITE "${WORK}/repo/include/shapes.hpp" "${SHAPES_TEXT}")
 git_commit_all("${WORK}/repo" "b: edit shapes.hpp (add Shape::perimeterHint())")
 reconfigure()
 
-kg_update_json(J 0)
+symhow_update_json(J 0)
 json_field(v "${J}" files cleared)
 assert_ge("step b: files.cleared" "${v}" "3")
 
 sqlite_scalar(LEVEL0_ID "${WORK}/inc.srctrldb" "select id from node where serialized_name like '%level0%' order by id limit 1")
 assert_eq("step b: level0 node id stable (chain.cpp untouched)" "${LEVEL0_ID}" "${LEVEL0_ID_BASE}")
 
-kg_index("${WORK}/full_b.srctrldb")
-kg_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_b.srctrldb")
+symhow_index("${WORK}/full_b.srctrldb")
+symhow_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_b.srctrldb")
 
 # ------------------------------------------------------------------------
 # Step 4b2: class Square -> struct Square (kind-change regression, see
@@ -330,10 +330,10 @@ kg_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_b.srctrldb")
 # already CLASS from the baseline full index; node.type is written
 # upgrade-only (see SrctrldbBackend::flushPending()'s kUpdateNodeTypeSql),
 # so without Invalidator's step-4b node.type reset (UPDATE node SET
-# type=UNKNOWN for every node in kg_lost), this genuine source edit would
-# silently NOT take effect on `kg update` -- CLASS (rank 2) would never be
+# type=UNKNOWN for every node in symhow_lost), this genuine source edit would
+# silently NOT take effect on `symhow update` -- CLASS (rank 2) would never be
 # "downgraded" back to STRUCT (also rank 2, but a different node-kind int)
-# by the re-index's own upgrade-only write, unlike a fresh `kg index` of
+# by the re-index's own upgrade-only write, unlike a fresh `symhow index` of
 # the same edited source, which sees only STRUCT and writes STRUCT from
 # scratch. This is exactly the class of bug the reset exists to prevent.
 # ------------------------------------------------------------------------
@@ -348,7 +348,7 @@ file(WRITE "${WORK}/repo/include/shapes.hpp" "${SHAPES_TEXT}")
 git_commit_all("${WORK}/repo" "b2: class Square -> struct Square")
 reconfigure()
 
-kg_update_json(J 0)
+symhow_update_json(J 0)
 json_field(v "${J}" files cleared)
 assert_ge("step b2: files.cleared" "${v}" "3")
 
@@ -365,8 +365,8 @@ sqlite_scalar(SQUARE_TYPE "${WORK}/inc.srctrldb"
 # a fresh index of the edited source (struct Square) writes exactly this.
 assert_eq("step b2: Square's node.type reflects the struct edit, not the stale CLASS kind" "${SQUARE_TYPE}" "64")
 
-kg_index("${WORK}/full_b2.srctrldb")
-kg_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_b2.srctrldb")
+symhow_index("${WORK}/full_b2.srctrldb")
+symhow_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_b2.srctrldb")
 
 # ------------------------------------------------------------------------
 # Step 4c: git rm src/overloads.cpp
@@ -381,15 +381,15 @@ endif()
 git_commit_all("${WORK}/repo" "c: delete overloads.cpp")
 reconfigure()
 
-kg_update_json(J 0)
+symhow_update_json(J 0)
 json_field(v "${J}" files deleted)
 assert_eq("step c: files.deleted" "${v}" "1")
 
 sqlite_scalar(LEVEL0_ID "${WORK}/inc.srctrldb" "select id from node where serialized_name like '%level0%' order by id limit 1")
 assert_eq("step c: level0 node id stable" "${LEVEL0_ID}" "${LEVEL0_ID_BASE}")
 
-kg_index("${WORK}/full_c.srctrldb")
-kg_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_c.srctrldb")
+symhow_index("${WORK}/full_c.srctrldb")
+symhow_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_c.srctrldb")
 
 # ------------------------------------------------------------------------
 # Step 4d: add src/new_tu.cpp (includes shapes.hpp, uses Square)
@@ -408,15 +408,15 @@ int useSquareFromNewTu()
 git_commit_all("${WORK}/repo" "d: add new_tu.cpp")
 reconfigure()
 
-kg_update_json(J 0)
+symhow_update_json(J 0)
 json_field(v "${J}" tus new)
 assert_eq("step d: tus.new" "${v}" "1")
 
 sqlite_scalar(LEVEL0_ID "${WORK}/inc.srctrldb" "select id from node where serialized_name like '%level0%' order by id limit 1")
 assert_eq("step d: level0 node id stable" "${LEVEL0_ID}" "${LEVEL0_ID_BASE}")
 
-kg_index("${WORK}/full_d.srctrldb")
-kg_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_d.srctrldb")
+symhow_index("${WORK}/full_d.srctrldb")
+symhow_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_d.srctrldb")
 
 # ------------------------------------------------------------------------
 # Step 4e: git mv src/ns.cpp src/ns2.cpp
@@ -431,23 +431,23 @@ endif()
 git_commit_all("${WORK}/repo" "e: rename ns.cpp -> ns2.cpp")
 reconfigure()
 
-kg_update_json(J 0)
+symhow_update_json(J 0)
 json_field(v "${J}" files renamed)
 assert_eq("step e: files.renamed" "${v}" "1")
 
 sqlite_scalar(LEVEL0_ID "${WORK}/inc.srctrldb" "select id from node where serialized_name like '%level0%' order by id limit 1")
 assert_eq("step e: level0 node id stable" "${LEVEL0_ID}" "${LEVEL0_ID_BASE}")
 
-kg_index("${WORK}/full_e.srctrldb")
-kg_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_e.srctrldb")
+symhow_index("${WORK}/full_e.srctrldb")
+symhow_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_e.srctrldb")
 
 # ------------------------------------------------------------------------
 # Step 4f: compiler-flag-only change (add_compile_definitions)
 # ------------------------------------------------------------------------
 
-message(STATUS "update_scenario: step f -- flag change (KG_SCENARIO_FLAG=1)")
-file(APPEND "${WORK}/repo/CMakeLists.txt" "\nadd_compile_definitions(KG_SCENARIO_FLAG=1)\n")
-git_commit_all("${WORK}/repo" "f: add_compile_definitions(KG_SCENARIO_FLAG=1)")
+message(STATUS "update_scenario: step f -- flag change (SYMHOW_SCENARIO_FLAG=1)")
+file(APPEND "${WORK}/repo/CMakeLists.txt" "\nadd_compile_definitions(SYMHOW_SCENARIO_FLAG=1)\n")
+git_commit_all("${WORK}/repo" "f: add_compile_definitions(SYMHOW_SCENARIO_FLAG=1)")
 reconfigure()
 
 # The current CDB (6 entries again: chain/ns2/templates/new_tu/tu_a/tu_b --
@@ -456,7 +456,7 @@ reconfigure()
 file(READ "${CDB}" CDB_TEXT_F)
 string(JSON CDB_LEN_F LENGTH "${CDB_TEXT_F}")
 
-kg_update_json(J 0)
+symhow_update_json(J 0)
 json_field(v "${J}" files flag_changed)
 assert_eq("step f: files.flag_changed == current TU count" "${v}" "${CDB_LEN_F}")
 
@@ -467,8 +467,8 @@ assert_eq("step f: files.flag_changed == current TU count" "${v}" "${CDB_LEN_F}"
 # ids. This is expected per docs/KNOWN_LIMITATIONS.md's Phase 3 note on
 # why GC must run to completion before re-indexing (ids are not preserved
 # across a real clear+reindex of their own declaring file).
-kg_index("${WORK}/full_f.srctrldb")
-kg_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_f.srctrldb")
+symhow_index("${WORK}/full_f.srctrldb")
+symhow_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_f.srctrldb")
 
 sqlite_scalar(LEVEL0_ID_BASE "${WORK}/inc.srctrldb" "select id from node where serialized_name like '%level0%' order by id limit 1")
 message(STATUS "update_scenario: level0 node id (post-step-f, new baseline) = ${LEVEL0_ID_BASE}")
@@ -488,21 +488,21 @@ file(WRITE "${WORK}/repo/src/chain.cpp" "${CHAIN_TEXT_G}")
 reconfigure()
 git_head(HEAD_AT_G "${WORK}/repo")
 
-kg_update_json(J 0)
+symhow_update_json(J 0)
 json_field(v "${J}" files changed)
 assert_eq("step g (dirty): files.changed" "${v}" "1")
 json_field(v "${J}" repo to)
 assert_eq("step g (dirty): repo.to == HEAD (uncommitted change tracked via dirty paths, not a new commit)" "${v}" "${HEAD_AT_G}")
 
-kg_index("${WORK}/full_g1.srctrldb")
-kg_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_g1.srctrldb")
+symhow_index("${WORK}/full_g1.srctrldb")
+symhow_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_g1.srctrldb")
 
 # Same uncommitted bytes: the second update must not parse chain.cpp again.
 file(SHA256 "${WORK}/inc.srctrldb" DB_BEFORE_DRY_G)
-kg_update_json(J 5 --dry-run)
+symhow_update_json(J 5 --dry-run)
 file(SHA256 "${WORK}/inc.srctrldb" DB_AFTER_DRY_G)
 assert_eq("step g repeated dry-run: database byte-identical" "${DB_AFTER_DRY_G}" "${DB_BEFORE_DRY_G}")
-kg_update_json(J 5)
+symhow_update_json(J 5)
 json_field(v "${J}" tus to_index)
 assert_eq("step g repeated dirty update: zero TUs" "${v}" "0")
 
@@ -514,19 +514,19 @@ if(NOT rc EQUAL 0)
 endif()
 reconfigure()
 
-kg_update_json(J 0)
+symhow_update_json(J 0)
 json_field(v "${J}" files changed)
-assert_eq("step g (reverted): files.changed (still re-indexed, via kg_dirty_paths)" "${v}" "1")
+assert_eq("step g (reverted): files.changed (still re-indexed, via symhow_dirty_paths)" "${v}" "1")
 
-kg_index("${WORK}/full_g2.srctrldb")
-kg_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_g2.srctrldb")
+symhow_index("${WORK}/full_g2.srctrldb")
+symhow_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_g2.srctrldb")
 
 # ------------------------------------------------------------------------
 # Step 4g2: delete a HEADER (include/macros.hpp) that's still included by a
 # TU (src/ns2.cpp, post step-e rename) -- a deleted header alone (never a
-# kg_tu row itself) used to be invisible to the "nothing to do?" check
+# symhow_tu row itself) used to be invisible to the "nothing to do?" check
 # (which only looked at match.deleted, not the deletedSeed set that
-# actually captures header deletions too), so `kg update` would wrongly
+# actually captures header deletions too), so `symhow update` would wrongly
 # report exit 5 and leave the header (and its includer) uncleared.
 # ------------------------------------------------------------------------
 
@@ -544,8 +544,8 @@ endif()
 git_commit_all("${WORK}/repo" "g2: delete macros.hpp, drop its use from ns2.cpp")
 reconfigure()
 
-kg_update_json(J 0)
-# macros.hpp is a HEADER, never a kg_tu row -- `files.deleted` (from
+symhow_update_json(J 0)
+# macros.hpp is a HEADER, never a symhow_tu row -- `files.deleted` (from
 # match.deleted, which only ever tracks TU deletions) legitimately stays 0
 # for a header-only deletion; what matters is that it's still cleared (via
 # the deletedSeed path -- see UpdateDriver.cpp step 4's emptiness check)
@@ -555,15 +555,15 @@ assert_eq("step g2: files.deleted (headers never count as TU deletions)" "${v}" 
 json_field(v "${J}" files cleared)
 assert_ge("step g2: files.cleared (macros.hpp + its includer ns2.cpp, at least)" "${v}" "2")
 
-kg_index("${WORK}/full_g2b.srctrldb")
-kg_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_g2b.srctrldb")
+symhow_index("${WORK}/full_g2b.srctrldb")
+symhow_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_g2b.srctrldb")
 
 # ------------------------------------------------------------------------
 # Step 4h: nothing changed -> exit 5
 # ------------------------------------------------------------------------
 
 message(STATUS "update_scenario: step h -- nothing changed")
-kg_update_json(J 5)
+symhow_update_json(J 5)
 
 # ------------------------------------------------------------------------
 # Step 5: --in-place on a final edit
@@ -579,37 +579,37 @@ file(WRITE "${WORK}/repo/src/chain.cpp" "${CHAIN_TEXT_IP}")
 git_commit_all("${WORK}/repo" "in-place: another chain.cpp edit")
 reconfigure()
 
-kg_update_json(J 0 --in-place)
+symhow_update_json(J 0 --in-place)
 
-sqlite_scalar(IN_PROGRESS "${WORK}/inc.srctrldb" "select value from meta where key='kg_update_in_progress'")
-assert_eq("kg_update_in_progress absent after a successful --in-place update" "${IN_PROGRESS}" "")
+sqlite_scalar(IN_PROGRESS "${WORK}/inc.srctrldb" "select value from meta where key='symhow_update_in_progress'")
+assert_eq("symhow_update_in_progress absent after a successful --in-place update" "${IN_PROGRESS}" "")
 
-kg_index("${WORK}/full_inplace.srctrldb")
-kg_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_inplace.srctrldb")
+symhow_index("${WORK}/full_inplace.srctrldb")
+symhow_dbdiff("${WORK}/inc.srctrldb" "${WORK}/full_inplace.srctrldb")
 
 # ------------------------------------------------------------------------
 # Step (notes): Phase 3 of docs/NOTES_DESIGN.md -- scaffold/fill/sync/commit
 # notes for chain.cpp only (--file, not --all, so editing an unrelated
-# function later provably can't touch any note), then drive `kg update`
+# function later provably can't touch any note), then drive `symhow update`
 # through edit/edit-elsewhere/accept/rename/delete scenarios, asserting via
-# `kg update --json`'s `notes` object and `kg notes status/sync --json`.
+# `symhow update --json`'s `notes` object and `symhow notes status/sync --json`.
 # ------------------------------------------------------------------------
 
 set(NOTES_DIR "${WORK}/repo/notes")
 
 message(STATUS "update_scenario: notes step 1 -- scaffold + fill + sync + commit")
-kg_run("kg notes scaffold" "${WORK}" 0
-    "${KG}" notes scaffold -d "${WORK}/inc.srctrldb" --notes-dir "${NOTES_DIR}" --file "src/chain.cpp")
+symhow_run("symhow notes scaffold" "${WORK}" 0
+    "${SYMHOW}" notes scaffold -d "${WORK}/inc.srctrldb" --notes-dir "${NOTES_DIR}" --file "src/chain.cpp")
 if(NOT EXISTS "${NOTES_DIR}/src/chain.cpp.md")
     message(FATAL_ERROR "update_scenario: notes scaffold didn't create ${NOTES_DIR}/src/chain.cpp.md")
 endif()
 
 if(DEFINED SCRIPTS AND NOT SCRIPTS STREQUAL "")
-    kg_run("kg-notes-fake --fill-existing" "${WORK}" 0
-        python3 "${SCRIPTS}/kg-notes-fake.py" --fill-existing "${NOTES_DIR}" --seed 5 --fill-ratio 0.6)
+    symhow_run("symhow-notes-fake --fill-existing" "${WORK}" 0
+        python3 "${SCRIPTS}/symhow-notes-fake.py" --fill-existing "${NOTES_DIR}" --seed 5 --fill-ratio 0.6)
 endif()
 
-kg_notes_json(J 0 sync --notes-dir "${NOTES_DIR}")
+symhow_notes_json(J 0 sync --notes-dir "${NOTES_DIR}")
 json_field(v "${J}" counts stale)
 assert_eq("notes step 1: freshly-synced notes have 0 stale" "${v}" "0")
 
@@ -617,7 +617,7 @@ git_commit_all("${WORK}/repo" "notes: scaffold + fill chain.cpp notes")
 
 # ------------------------------------------------------------------------
 # Step (notes-a): edit level1's BODY -> exactly level1 goes stale, and
-# `kg update`'s summary reports notes.newly_stale == 1.
+# `symhow update`'s summary reports notes.newly_stale == 1.
 # ------------------------------------------------------------------------
 
 message(STATUS "update_scenario: notes step a -- edit level1's body")
@@ -630,11 +630,11 @@ file(WRITE "${WORK}/repo/src/chain.cpp" "${CHAIN_TEXT_NA}")
 git_commit_all("${WORK}/repo" "notes-a: edit level1 body")
 reconfigure()
 
-kg_update_json(J 0)
+symhow_update_json(J 0)
 json_field(v "${J}" notes newly_stale)
 assert_eq("notes step a: exactly 1 newly-stale note (level1)" "${v}" "1")
 
-kg_notes_json(J 0 status --stale)
+symhow_notes_json(J 0 status --stale)
 string(JSON STALE_LEN LENGTH "${J}" stale)
 assert_eq("notes step a: exactly 1 stale note listed" "${STALE_LEN}" "1")
 json_field(v "${J}" stale 0)
@@ -659,23 +659,23 @@ file(WRITE "${WORK}/repo/include/shapes.hpp" "${SHAPES_TEXT_NB}")
 git_commit_all("${WORK}/repo" "notes-b: edit an unnoted function (Shape::perimeterHint)")
 reconfigure()
 
-kg_update_json(J 0)
+symhow_update_json(J 0)
 json_field(v "${J}" notes newly_stale)
 assert_eq("notes step b: nothing newly stale (the edited function has no note)" "${v}" "0")
 
-kg_notes_json(J 0 status --stale)
+symhow_notes_json(J 0 status --stale)
 string(JSON STALE_LEN LENGTH "${J}" stale)
 assert_eq("notes step b: level1 is STILL the only stale note" "${STALE_LEN}" "1")
 
 # ------------------------------------------------------------------------
-# Step (notes-c): `kg notes accept level1` -> stale clears; the markdown's
-# kg-hash changes but everything else in the file is byte-identical.
+# Step (notes-c): `symhow notes accept level1` -> stale clears; the markdown's
+# symhow-hash changes but everything else in the file is byte-identical.
 # ------------------------------------------------------------------------
 
 message(STATUS "update_scenario: notes step c -- accept level1")
 file(READ "${NOTES_DIR}/src/chain.cpp.md" CHAIN_MD_BEFORE)
 
-kg_notes_json(J 0 accept level1 --notes-dir "${NOTES_DIR}")
+symhow_notes_json(J 0 accept level1 --notes-dir "${NOTES_DIR}")
 json_field(v "${J}" accepted)
 string(JSON ACCEPTED_LEN LENGTH "${J}" accepted)
 assert_eq("notes step c: exactly 1 note accepted" "${ACCEPTED_LEN}" "1")
@@ -684,15 +684,15 @@ assert_eq("notes step c: no files refused (canonical form)" "${REFUSED_LEN}" "0"
 
 file(READ "${NOTES_DIR}/src/chain.cpp.md" CHAIN_MD_AFTER)
 if(CHAIN_MD_BEFORE STREQUAL CHAIN_MD_AFTER)
-    message(FATAL_ERROR "notes step c: accept should have changed level1's kg-hash comment")
+    message(FATAL_ERROR "notes step c: accept should have changed level1's symhow-hash comment")
 endif()
-string(REGEX REPLACE "kg-hash: [0-9a-f]+" "kg-hash: X" NORM_BEFORE "${CHAIN_MD_BEFORE}")
-string(REGEX REPLACE "kg-commit: [0-9a-f]+" "kg-commit: X" NORM_BEFORE "${NORM_BEFORE}")
-string(REGEX REPLACE "kg-hash: [0-9a-f]+" "kg-hash: X" NORM_AFTER "${CHAIN_MD_AFTER}")
-string(REGEX REPLACE "kg-commit: [0-9a-f]+" "kg-commit: X" NORM_AFTER "${NORM_AFTER}")
-assert_eq("notes step c: accept only rewrites kg-hash/kg-commit comments -- everything else byte-identical" "${NORM_BEFORE}" "${NORM_AFTER}")
+string(REGEX REPLACE "symhow-hash: [0-9a-f]+" "symhow-hash: X" NORM_BEFORE "${CHAIN_MD_BEFORE}")
+string(REGEX REPLACE "symhow-commit: [0-9a-f]+" "symhow-commit: X" NORM_BEFORE "${NORM_BEFORE}")
+string(REGEX REPLACE "symhow-hash: [0-9a-f]+" "symhow-hash: X" NORM_AFTER "${CHAIN_MD_AFTER}")
+string(REGEX REPLACE "symhow-commit: [0-9a-f]+" "symhow-commit: X" NORM_AFTER "${NORM_AFTER}")
+assert_eq("notes step c: accept only rewrites symhow-hash/symhow-commit comments -- everything else byte-identical" "${NORM_BEFORE}" "${NORM_AFTER}")
 
-kg_notes_json(J 0 status --stale)
+symhow_notes_json(J 0 status --stale)
 string(JSON STALE_LEN LENGTH "${J}" stale)
 assert_eq("notes step c: 0 stale notes after accepting level1" "${STALE_LEN}" "0")
 
@@ -710,9 +710,9 @@ endif()
 git_commit_all("${WORK}/repo" "notes-d: rename chain.cpp -> chain_renamed.cpp")
 reconfigure()
 
-kg_update_json(J 0)
+symhow_update_json(J 0)
 
-kg_notes_json(J 0 sync --notes-dir "${NOTES_DIR}")
+symhow_notes_json(J 0 sync --notes-dir "${NOTES_DIR}")
 json_field(v "${J}" counts orphaned_files)
 assert_ge("notes step d: chain.cpp.md is reported orphaned-file" "${v}" "1")
 
@@ -734,7 +734,7 @@ endif()
 # ------------------------------------------------------------------------
 # Step (notes-e): delete a noted function (factorial, and its one call site
 # in runChain so the TU still compiles) -> its block becomes "unmatched"
-# after `kg update` + `kg notes sync`.
+# after `symhow update` + `symhow notes sync`.
 # ------------------------------------------------------------------------
 
 message(STATUS "update_scenario: notes step e -- delete factorial()")
@@ -751,9 +751,9 @@ file(WRITE "${WORK}/repo/src/chain_renamed.cpp" "${CHAIN_TEXT_NE}")
 git_commit_all("${WORK}/repo" "notes-e: delete factorial()")
 reconfigure()
 
-kg_update_json(J 0)
+symhow_update_json(J 0)
 
-kg_notes_json(J 0 sync --notes-dir "${NOTES_DIR}")
+symhow_notes_json(J 0 sync --notes-dir "${NOTES_DIR}")
 json_field(v "${J}" counts unmatched)
 assert_ge("notes step e: factorial's block is now unmatched" "${v}" "1")
 

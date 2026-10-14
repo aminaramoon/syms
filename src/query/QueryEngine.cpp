@@ -1,15 +1,15 @@
-#include "kg/query/QueryEngine.h"
+#include "symhow/query/QueryEngine.h"
 
 #include <sqlite3.h>
 
 #include <algorithm>
 #include <unordered_set>
 
-#include "kg/db/Enums.h"
-#include "kg/db/NameDecode.h"
-#include "kg/query/FuzzyMatcher.h"
+#include "symhow/db/Enums.h"
+#include "symhow/db/NameDecode.h"
+#include "symhow/query/FuzzyMatcher.h"
 
-namespace kg::query
+namespace symhow::query
 {
 
 namespace
@@ -85,7 +85,7 @@ void sortLocations(std::vector<FileLocation>& locs)
 
 }  // namespace
 
-QueryEngine::QueryEngine(kg::db::Database& db) : m_db(db)
+QueryEngine::QueryEngine(symhow::db::Database& db) : m_db(db)
 {
     loadFileMap();
 }
@@ -113,12 +113,12 @@ BfsResult QueryEngine::sortedBfs(BfsParams params) const
 
 BfsResult QueryEngine::callers(const std::vector<int64_t>& symbolIds, int depth, int maxNodes, int nodeKindMask) const
 {
-    return sortedBfs(BfsParams{symbolIds, kg::db::EdgeKind::CALL, /*forward=*/false, depth, maxNodes, nodeKindMask});
+    return sortedBfs(BfsParams{symbolIds, symhow::db::EdgeKind::CALL, /*forward=*/false, depth, maxNodes, nodeKindMask});
 }
 
 BfsResult QueryEngine::callees(const std::vector<int64_t>& symbolIds, int depth, int maxNodes, int nodeKindMask) const
 {
-    return sortedBfs(BfsParams{symbolIds, kg::db::EdgeKind::CALL, /*forward=*/true, depth, maxNodes, nodeKindMask});
+    return sortedBfs(BfsParams{symbolIds, symhow::db::EdgeKind::CALL, /*forward=*/true, depth, maxNodes, nodeKindMask});
 }
 
 BfsResult QueryEngine::bases(const std::vector<int64_t>& symbolIds, int depth, int maxNodes, int nodeKindMask) const
@@ -127,27 +127,27 @@ BfsResult QueryEngine::bases(const std::vector<int64_t>& symbolIds, int depth, i
     // class (confirmed against the real fixture: e.g. Square -> Polygon,
     // Square -> Colored, Polygon -> Shape, Colored -> Shape), so walking
     // forward (source_node_id IN frontier) walks derived -> base.
-    return sortedBfs(BfsParams{symbolIds, kg::db::EdgeKind::INHERITANCE, /*forward=*/true, depth, maxNodes, nodeKindMask});
+    return sortedBfs(BfsParams{symbolIds, symhow::db::EdgeKind::INHERITANCE, /*forward=*/true, depth, maxNodes, nodeKindMask});
 }
 
 BfsResult QueryEngine::derived(const std::vector<int64_t>& symbolIds, int depth, int maxNodes, int nodeKindMask) const
 {
-    return sortedBfs(BfsParams{symbolIds, kg::db::EdgeKind::INHERITANCE, /*forward=*/false, depth, maxNodes, nodeKindMask});
+    return sortedBfs(BfsParams{symbolIds, symhow::db::EdgeKind::INHERITANCE, /*forward=*/false, depth, maxNodes, nodeKindMask});
 }
 
 BfsResult QueryEngine::overrides(const std::vector<int64_t>& symbolIds, int nodeKindMask) const
 {
-    return sortedBfs(BfsParams{symbolIds, kg::db::EdgeKind::OVERRIDE, /*forward=*/true, 1, 0, nodeKindMask});
+    return sortedBfs(BfsParams{symbolIds, symhow::db::EdgeKind::OVERRIDE, /*forward=*/true, 1, 0, nodeKindMask});
 }
 
 BfsResult QueryEngine::overriddenBy(const std::vector<int64_t>& symbolIds, int nodeKindMask) const
 {
-    return sortedBfs(BfsParams{symbolIds, kg::db::EdgeKind::OVERRIDE, /*forward=*/false, 1, 0, nodeKindMask});
+    return sortedBfs(BfsParams{symbolIds, symhow::db::EdgeKind::OVERRIDE, /*forward=*/false, 1, 0, nodeKindMask});
 }
 
 BfsResult QueryEngine::members(const std::vector<int64_t>& symbolIds, int nodeKindMask) const
 {
-    return sortedBfs(BfsParams{symbolIds, kg::db::EdgeKind::MEMBER, /*forward=*/true, 1, 0, nodeKindMask});
+    return sortedBfs(BfsParams{symbolIds, symhow::db::EdgeKind::MEMBER, /*forward=*/true, 1, 0, nodeKindMask});
 }
 
 BfsResult QueryEngine::neighbors(const std::vector<int64_t>& symbolIds, int edgeKindMask) const
@@ -225,7 +225,7 @@ ReferencesResult QueryEngine::references(const std::vector<int64_t>& symbolIds) 
         }
 
         static constexpr int kRelevantKinds[] = {
-            kg::db::LocationKind::TOKEN, kg::db::LocationKind::SCOPE, kg::db::LocationKind::LOCAL_SYMBOL, kg::db::LocationKind::UNSOLVED};
+            symhow::db::LocationKind::TOKEN, symhow::db::LocationKind::SCOPE, symhow::db::LocationKind::LOCAL_SYMBOL, symhow::db::LocationKind::UNSOLVED};
 
         m_db.runChunkedIn(
             "SELECT o.element_id, l.id, l.file_node_id, l.start_line, l.start_column, l.end_line, l.end_column, l.type "
@@ -303,7 +303,7 @@ DefinitionResult QueryEngine::definition(const std::vector<int64_t>& symbolIds) 
                 loc.endLine = sqlite3_column_int(stmt, 4);
                 loc.endColumn = sqlite3_column_int(stmt, 5);
                 loc.locationKind = sqlite3_column_int(stmt, 6);
-                if (loc.locationKind == kg::db::LocationKind::SCOPE)
+                if (loc.locationKind == symhow::db::LocationKind::SCOPE)
                 {
                     scopeLocs.push_back(std::move(loc));
                 }
@@ -372,7 +372,7 @@ std::vector<SearchHit> QueryEngine::search(const std::string& text, const std::v
             const std::string sname = columnText(stmt, 2);
             const bool indexed = !columnIsNull(stmt, 3);
 
-            const kg::db::DecodedName decoded = kg::db::decodeSerializedName(sname);
+            const symhow::db::DecodedName decoded = symhow::db::decodeSerializedName(sname);
             Meta m;
             m.kind = kind;
             m.qualifiedName = decoded.qualifiedName();
@@ -546,7 +546,7 @@ FileResult QueryEngine::fileInfo(
                 const int64_t id = sqlite3_column_int64(stmt, 0);
                 const int kind = sqlite3_column_int(stmt, 1);
                 const std::string sname = columnText(stmt, 2);
-                elemInfo[id] = ElemInfo{kind, kg::db::decodeSerializedName(sname).displayName()};
+                elemInfo[id] = ElemInfo{kind, symhow::db::decodeSerializedName(sname).displayName()};
             });
 
             for (const LocRow& r : locRows)
@@ -670,4 +670,4 @@ std::unordered_map<int64_t, std::string> QueryEngine::primaryLocations(const std
     return out;
 }
 
-}  // namespace kg::query
+}  // namespace symhow::query

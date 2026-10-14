@@ -1,13 +1,13 @@
-// Pure unit tests for kg::index::progress's formatting helpers (Feature:
-// `kg index` progress display) -- counter width, duration/eta formatting,
+// Pure unit tests for symhow::index::progress's formatting helpers (Feature:
+// `symhow index` progress display) -- counter width, duration/eta formatting,
 // and the full per-TU/summary line assembly. No fixture DB needed: these
 // functions do no I/O.
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "kg/index/Progress.h"
+#include "symhow/index/Progress.h"
 
-using namespace kg::index::progress;
+using namespace symhow::index::progress;
 
 TEST_CASE("progress: formatCounter right-aligns to total's digit width", "[progress]")
 {
@@ -52,10 +52,10 @@ TEST_CASE("progress: formatProgressLine carries a CUDA rung suffix through uncha
 TEST_CASE("progress: formatRunningSummary includes an eta while in progress, omits it once done", "[progress]")
 {
     const std::string mid = formatRunningSummary(120, 975, 12.3, 9 * 60 + 41.0, 42 * 60.0);
-    CHECK(mid == "kg index: 120/975 done, 12.3 TU/min, elapsed 9m41s, eta ~42m00s");
+    CHECK(mid == "symhow index: 120/975 done, 12.3 TU/min, elapsed 9m41s, eta ~42m00s");
 
     const std::string done = formatRunningSummary(975, 975, 12.3, 9 * 60 + 41.0, 0.0);
-    CHECK(done == "kg index: 975/975 done, 12.3 TU/min, elapsed 9m41s");
+    CHECK(done == "symhow index: 975/975 done, 12.3 TU/min, elapsed 9m41s");
     CHECK(done.find("eta") == std::string::npos);
 }
 

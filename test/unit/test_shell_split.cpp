@@ -1,8 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "kg/common/Shell.h"
+#include "symhow/common/Shell.h"
 
-using kg::common::shell::split;
+using symhow::common::shell::split;
 
 TEST_CASE("shell_split: shell::split handles plain space-separated tokens", "[shell]")
 {

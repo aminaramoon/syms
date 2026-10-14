@@ -1,11 +1,11 @@
-#include "kg/update/Git.h"
+#include "symhow/update/Git.h"
 
 #include <filesystem>
 #include <set>
 
-#include "kg/common/Process.h"
+#include "symhow/common/Process.h"
 
-namespace kg::update
+namespace symhow::update
 {
 
 namespace
@@ -24,8 +24,8 @@ std::string trimTrailingNewline(std::string s)
 
 std::optional<std::string> revParse(const std::string& repoRoot, const std::string& rev)
 {
-    const kg::common::process::Result result =
-        kg::common::process::run({"git", "-C", repoRoot, "rev-parse", "--verify", rev + "^{commit}"});
+    const symhow::common::process::Result result =
+        symhow::common::process::run({"git", "-C", repoRoot, "rev-parse", "--verify", rev + "^{commit}"});
     if (result.exitCode != 0)
     {
         return std::nullopt;
@@ -35,7 +35,7 @@ std::optional<std::string> revParse(const std::string& repoRoot, const std::stri
 
 std::optional<std::string> topLevel(const std::string& anyDir)
 {
-    const kg::common::process::Result result = kg::common::process::run({"git", "-C", anyDir, "rev-parse", "--show-toplevel"});
+    const symhow::common::process::Result result = symhow::common::process::run({"git", "-C", anyDir, "rev-parse", "--show-toplevel"});
     if (result.exitCode != 0)
     {
         return std::nullopt;
@@ -55,7 +55,7 @@ std::optional<std::string> diffNameStatusZ(
     {
         argv.push_back(baseline);
     }
-    const kg::common::process::Result result = kg::common::process::run(argv);
+    const symhow::common::process::Result result = symhow::common::process::run(argv);
     if (result.exitCode != 0)
     {
         return std::nullopt;
@@ -65,8 +65,8 @@ std::optional<std::string> diffNameStatusZ(
 
 std::optional<std::string> statusPorcelainZ(const std::string& repoRoot)
 {
-    const kg::common::process::Result result =
-        kg::common::process::run({"git", "-C", repoRoot, "status", "--porcelain", "-z", "--untracked-files=all"});
+    const symhow::common::process::Result result =
+        symhow::common::process::run({"git", "-C", repoRoot, "status", "--porcelain", "-z", "--untracked-files=all"});
     if (result.exitCode != 0)
     {
         return std::nullopt;
@@ -77,7 +77,7 @@ std::optional<std::string> statusPorcelainZ(const std::string& repoRoot)
 std::vector<std::string> submodulePaths(const std::string& repoRoot)
 {
     std::vector<std::string> paths;
-    const kg::common::process::Result result = kg::common::process::run(
+    const symhow::common::process::Result result = symhow::common::process::run(
         {"git", "-C", repoRoot, "config", "--file", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"});
     if (result.exitCode != 0)  // exit 1 = no .gitmodules / no matches
     {
@@ -230,4 +230,4 @@ std::optional<ChangeSet> collectChanges(
     return changeSet;
 }
 
-}  // namespace kg::update
+}  // namespace symhow::update

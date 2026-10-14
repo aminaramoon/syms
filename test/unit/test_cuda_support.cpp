@@ -1,8 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "kg/index/CudaSupport.h"
+#include "symhow/index/CudaSupport.h"
 
-using namespace kg::index::cuda;
+using namespace symhow::index::cuda;
 
 namespace
 {

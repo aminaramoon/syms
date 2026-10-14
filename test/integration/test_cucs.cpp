@@ -1,12 +1,12 @@
-// Phase 6 real-corpus integration test: exercises the ENTIRE `kg` pipeline
-// (real `kg index` process, via the compiled binary, against the actual
-// cucs corpus, followed by real `kg query`-engine assertions against the
+// Phase 6 real-corpus integration test: exercises the ENTIRE `symhow` pipeline
+// (real `symhow index` process, via the compiled binary, against the actual
+// cucs corpus, followed by real `symhow query`-engine assertions against the
 // resulting database) end to end. See docs/KNOWN_LIMITATIONS.md's Phase 6
 // section and README.md for how this is wired into CTest.
 //
 // This is a plain `main()` (not a Catch2 test runner): the very first thing
 // it must do is `exit(77)` if the cucs corpus isn't checked out at
-// KG_CUCS_DIR -- CMake's SKIP_RETURN_CODE 77 convention lets CTest report
+// SYMHOW_CUCS_DIR -- CMake's SKIP_RETURN_CODE 77 convention lets CTest report
 // this test as SKIPPED (not FAILED) on any machine that doesn't have the
 // corpus. A Catch2 session's own startup (argument parsing, reporter setup,
 // etc.) is real work that would have to happen before any TEST_CASE body
@@ -33,20 +33,20 @@
 #include <nlohmann/json.hpp>
 #include <sqlite3.h>
 
-#include "kg/db/Database.h"
-#include "kg/db/Enums.h"
-#include "kg/db/NameDecode.h"
-#include "kg/query/QueryEngine.h"
-#include "kg/query/SymbolResolver.h"
+#include "symhow/db/Database.h"
+#include "symhow/db/Enums.h"
+#include "symhow/db/NameDecode.h"
+#include "symhow/query/QueryEngine.h"
+#include "symhow/query/SymbolResolver.h"
 
-#ifndef KG_CUCS_DIR
-#define KG_CUCS_DIR ""
+#ifndef SYMHOW_CUCS_DIR
+#define SYMHOW_CUCS_DIR ""
 #endif
-#ifndef KG_BINARY
-#define KG_BINARY ""
+#ifndef SYMHOW_BINARY
+#define SYMHOW_BINARY ""
 #endif
-#ifndef KG_TEST_OUTPUT_DIR
-#define KG_TEST_OUTPUT_DIR "."
+#ifndef SYMHOW_TEST_OUTPUT_DIR
+#define SYMHOW_TEST_OUTPUT_DIR "."
 #endif
 
 namespace fs = std::filesystem;
@@ -100,19 +100,19 @@ std::string lastLines(const std::string& text, std::size_t n)
     return oss.str();
 }
 
-// Resolves `spec` to a single node id via kg::query::resolveSymbol(),
+// Resolves `spec` to a single node id via symhow::query::resolveSymbol(),
 // printing a [FAIL] line (and returning std::nullopt) if it isn't Unique.
 std::optional<int64_t> resolveUnique(
-    kg::db::Database& db, const std::string& spec, const std::vector<int>* kindFilter, const std::string& label)
+    symhow::db::Database& db, const std::string& spec, const std::vector<int>* kindFilter, const std::string& label)
 {
-    const kg::query::ResolveResult rr = kg::query::resolveSymbol(db, spec, kindFilter, nullptr);
-    if (rr.outcome != kg::query::ResolveOutcome::Unique)
+    const symhow::query::ResolveResult rr = symhow::query::resolveSymbol(db, spec, kindFilter, nullptr);
+    if (rr.outcome != symhow::query::ResolveOutcome::Unique)
     {
         std::printf(
             "[FAIL] %s: resolveSymbol('%s') expected Unique, got %s (%zu candidates)\n",
             label.c_str(),
             spec.c_str(),
-            rr.outcome == kg::query::ResolveOutcome::Ambiguous ? "Ambiguous" : "NotFound",
+            rr.outcome == symhow::query::ResolveOutcome::Ambiguous ? "Ambiguous" : "NotFound",
             rr.candidates.size());
         ++g_fail;
         return std::nullopt;
@@ -120,23 +120,23 @@ std::optional<int64_t> resolveUnique(
     return rr.candidates.front().id;
 }
 
-// The non-seed (depth > 0) qualified names (kg::db::DecodedName::namePath())
+// The non-seed (depth > 0) qualified names (symhow::db::DecodedName::namePath())
 // of a BfsResult -- "X's bases/derived" as a SET, per docs/KNOWN_LIMITATIONS.md's
 // Phase 4 note that BfsResult::nodes always includes the seed(s) at depth 0.
-std::set<std::string> nonSeedQualifiedNames(const kg::query::BfsResult& r)
+std::set<std::string> nonSeedQualifiedNames(const symhow::query::BfsResult& r)
 {
     std::set<std::string> names;
     for (const auto& n : r.nodes)
     {
         if (n.depth > 0)
         {
-            names.insert(kg::db::decodeSerializedName(n.serializedName).namePath());
+            names.insert(symhow::db::decodeSerializedName(n.serializedName).namePath());
         }
     }
     return names;
 }
 
-bool containsNode(const kg::query::BfsResult& r, int64_t id)
+bool containsNode(const symhow::query::BfsResult& r, int64_t id)
 {
     for (const auto& n : r.nodes)
     {
@@ -172,7 +172,7 @@ int runCaptured(const std::string& command, const std::string& stdoutPath, const
 
 int main()
 {
-    const std::string cucsDir = KG_CUCS_DIR;
+    const std::string cucsDir = SYMHOW_CUCS_DIR;
     const std::string cdbPath = cucsDir + "/compile_commands.json";
 
     // --- exit(77) contract: must happen before any real work. -------------
@@ -181,13 +181,13 @@ int main()
         std::fprintf(
             stderr,
             "cucs_integration: '%s' not found -- skipping (this test only runs on a machine with the cucs corpus "
-            "checked out at KG_CUCS_DIR).\n",
+            "checked out at SYMHOW_CUCS_DIR).\n",
             cdbPath.c_str());
         return 77;
     }
 
-    std::printf("cucs_integration: KG_CUCS_DIR=%s\n", cucsDir.c_str());
-    std::printf("cucs_integration: kg binary=%s\n", std::string(KG_BINARY).c_str());
+    std::printf("cucs_integration: SYMHOW_CUCS_DIR=%s\n", cucsDir.c_str());
+    std::printf("cucs_integration: symhow binary=%s\n", std::string(SYMHOW_BINARY).c_str());
 
     // Ground truth for assertion 1: count `"file":` entries in the CDB
     // itself, rather than trusting a possibly-stale hardcoded number (see
@@ -209,17 +209,17 @@ int main()
     std::printf("cucs_integration: real compile_commands.json TU count = %zu\n", realTuCount);
 
     // ========================================================================
-    // Step 1: `kg index` against the real corpus, shelling out to the real
-    // compiled `kg` binary (so this exercises the exact same code path a
+    // Step 1: `symhow index` against the real corpus, shelling out to the real
+    // compiled `symhow` binary (so this exercises the exact same code path a
     // user invoking the CLI would), capturing stdout (the --json summary)
     // and stderr (per-TU progress, including the CUDA rung line) separately.
     // ========================================================================
-    const std::string outDb = std::string(KG_TEST_OUTPUT_DIR) + "/cucs.srctrldb";
-    const std::string stdoutPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_index_stdout.json";
-    const std::string stderrPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_index_stderr.log";
+    const std::string outDb = std::string(SYMHOW_TEST_OUTPUT_DIR) + "/cucs.srctrldb";
+    const std::string stdoutPath = std::string(SYMHOW_TEST_OUTPUT_DIR) + "/cucs_index_stdout.json";
+    const std::string stderrPath = std::string(SYMHOW_TEST_OUTPUT_DIR) + "/cucs_index_stderr.log";
 
     std::ostringstream cmd;
-    cmd << "\"" << std::string(KG_BINARY) << "\" index -c \"" << cdbPath << "\" -o \"" << outDb
+    cmd << "\"" << std::string(SYMHOW_BINARY) << "\" index -c \"" << cdbPath << "\" -o \"" << outDb
         << "\" --force --remap /mnt/workspace=/home/aaramoon/workspace -v --json";
 
     std::printf("cucs_integration: running: %s\n", cmd.str().c_str());
@@ -231,11 +231,11 @@ int main()
     const std::string stdoutText = readFile(stdoutPath);
     const std::string stderrText = readFile(stderrPath);
 
-    std::printf("cucs_integration: kg index exit code = %d, wall time = %.1fs\n", indexRc, indexWallSeconds);
-    std::printf("cucs_integration: kg index stderr (last 15 lines):\n%s", lastLines(stderrText, 15).c_str());
+    std::printf("cucs_integration: symhow index exit code = %d, wall time = %.1fs\n", indexRc, indexWallSeconds);
+    std::printf("cucs_integration: symhow index stderr (last 15 lines):\n%s", lastLines(stderrText, 15).c_str());
 
-    check(indexRc == 0, "[3] kg index process exits 0");
-    check(indexWallSeconds < 3600.0, "[3] kg index completes within the 3600s CTest timeout (self-measured)");
+    check(indexRc == 0, "[3] symhow index process exits 0");
+    check(indexWallSeconds < 3600.0, "[3] symhow index completes within the 3600s CTest timeout (self-measured)");
     std::printf("cucs_integration: [3] actual wall time = %.1fs\n", indexWallSeconds);
 
     nlohmann::json summary;
@@ -247,7 +247,7 @@ int main()
     }
     catch (const std::exception& e)
     {
-        std::printf("[FAIL] parsing kg index --json stdout as JSON: %s\nstdout was:\n%s\n", e.what(), stdoutText.c_str());
+        std::printf("[FAIL] parsing symhow index --json stdout as JSON: %s\nstdout was:\n%s\n", e.what(), stdoutText.c_str());
         ++g_fail;
     }
 
@@ -287,18 +287,18 @@ int main()
     }
 
     // ========================================================================
-    // Step 2: `kg query`-equivalent assertions, via kg::db::Database +
-    // kg::query::QueryEngine/resolveSymbol linked directly into this test
-    // binary (faster and more precise than re-parsing `kg query ... --json`
+    // Step 2: `symhow query`-equivalent assertions, via symhow::db::Database +
+    // symhow::query::QueryEngine/resolveSymbol linked directly into this test
+    // binary (faster and more precise than re-parsing `symhow query ... --json`
     // text output for every one of assertions [4]-[9]; Step 1 above already
-    // exercised the CLI/process-shelling path for the `kg index` side).
+    // exercised the CLI/process-shelling path for the `symhow index` side).
     // ========================================================================
-    kg::db::Database db(outDb);
-    kg::query::QueryEngine engine(db);
+    symhow::db::Database db(outDb);
+    symhow::query::QueryEngine engine(db);
 
     // --- [4] cucascade / cucascade::memory exist as NAMESPACE nodes -------
     {
-        const std::vector<int> nsKind = {kg::db::NodeKind::NAMESPACE};
+        const std::vector<int> nsKind = {symhow::db::NodeKind::NAMESPACE};
         const auto cucascade = resolveUnique(db, "cucascade", &nsKind, "[4]");
         const auto cucascadeMemory = resolveUnique(db, "cucascade::memory", &nsKind, "[4]");
         check(cucascade.has_value(), "[4] 'cucascade' resolves uniquely to a NAMESPACE node");
@@ -310,7 +310,7 @@ int main()
         const auto base = resolveUnique(db, "cucascade::memory::reservation_limit_policy", nullptr, "[5]");
         if (base)
         {
-            const kg::query::BfsResult r = engine.derived({*base}, 1, 0);
+            const symhow::query::BfsResult r = engine.derived({*base}, 1, 0);
             const std::set<std::string> names = nonSeedQualifiedNames(r);
             const std::set<std::string> expected = {
                 "cucascade::memory::ignore_reservation_limit_policy",
@@ -329,7 +329,7 @@ int main()
                 superset,
                 "[5] derived(reservation_limit_policy, depth=1) is a superset of {ignore_,fail_,increase_}reservation_limit_policy");
 
-            const kg::query::DefinitionResult baseDef = engine.definition({*base});
+            const symhow::query::DefinitionResult baseDef = engine.definition({*base});
             bool baseLocOk = false;
             for (const auto& loc : baseDef.locations)
             {
@@ -356,7 +356,7 @@ int main()
                 bool ok = false;
                 if (id)
                 {
-                    const kg::query::DefinitionResult def = engine.definition({*id});
+                    const symhow::query::DefinitionResult def = engine.definition({*id});
                     for (const auto& loc : def.locations)
                     {
                         if (loc.filePath.find("include/cucascade/memory/memory_reservation.hpp") != std::string::npos &&
@@ -380,7 +380,7 @@ int main()
         const auto id = resolveUnique(db, "cucascade::memory::increase_reservation_limit_policy", nullptr, "[6]");
         if (id)
         {
-            const kg::query::BfsResult r = engine.bases({*id}, 1, 0);
+            const symhow::query::BfsResult r = engine.bases({*id}, 1, 0);
             const std::set<std::string> names = nonSeedQualifiedNames(r);
             const std::set<std::string> expected = {"cucascade::memory::reservation_limit_policy"};
             check(
@@ -398,11 +398,11 @@ int main()
         const auto id = resolveUnique(db, "cucascade::memory::reservation_limit_policy::get_policy_name", nullptr, "[7]");
         if (id)
         {
-            const kg::query::BfsResult r = engine.overriddenBy({*id});
+            const symhow::query::BfsResult r = engine.overriddenBy({*id});
             int overrideCount = 0;
             for (const auto& e : r.edges)
             {
-                if (e.kind == kg::db::EdgeKind::OVERRIDE && e.target == *id)
+                if (e.kind == symhow::db::EdgeKind::OVERRIDE && e.target == *id)
                 {
                     ++overrideCount;
                 }
@@ -421,7 +421,7 @@ int main()
         const auto id = resolveUnique(db, "cucascade::disk_data_representation", nullptr, "[8]");
         if (id)
         {
-            const kg::query::BfsResult r = engine.bases({*id}, 0, 0);
+            const symhow::query::BfsResult r = engine.bases({*id}, 0, 0);
             const std::set<std::string> names = nonSeedQualifiedNames(r);
             check(
                 names.find("cucascade::idata_representation") != names.end(),
@@ -484,7 +484,7 @@ int main()
                 allResolved = false;
                 continue;
             }
-            const kg::query::BfsResult callees = engine.callees({*launcherId}, 1, 0);
+            const symhow::query::BfsResult callees = engine.callees({*launcherId}, 1, 0);
             if (!containsNode(callees, *kernelId))
             {
                 allHaveCallEdge = false;
@@ -495,7 +495,7 @@ int main()
         // Does the .cu file itself have an associated `error` row? (any
         // occurrence of an `error` element whose source_location resolves to
         // a `file` row whose path ends with the .cu file's name -- this is
-        // how kg::index::SrctrldbBackend / the vendored
+        // how symhow::index::SrctrldbBackend / the vendored
         // SourcetrailDBWriter::recordError ties an error to a location; the
         // `error.translation_unit` column itself is always empty -- the
         // vendored writer never populates it -- so it can't be used
@@ -526,7 +526,7 @@ int main()
         // Surface which CUDA rung actually succeeded (parsed from -v stderr
         // output; see IndexDriver.cpp's per-TU progress line) -- a
         // nice-to-have introspection aid, not itself part of the JSON
-        // schema (kg.index-summary/1 doesn't carry per-TU rung info today).
+        // schema (symhow.index-summary/1 doesn't carry per-TU rung info today).
         std::istringstream stderrLines(stderrText);
         std::string line;
         while (std::getline(stderrLines, line))
@@ -547,7 +547,7 @@ int main()
 
     // ========================================================================
     // Step 3 (Feature 2, `--parallel`/`-j`): re-index the SAME real cucs
-    // corpus with `-j 8` into a separate database, then `kg dbdiff` it
+    // corpus with `-j 8` into a separate database, then `symhow dbdiff` it
     // against the sequential (`outDb`, Step 1 above) database -- must be
     // logically equivalent (exit 0), proving the reorder-buffer design's
     // determinism guarantee on a real, large, multi-hundred-TU corpus, not
@@ -555,12 +555,12 @@ int main()
     // are printed so a human/CI log shows the actual speedup.
     // ========================================================================
     {
-        const std::string outDbParallel = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_j8.srctrldb";
-        const std::string stdoutParallelPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_index_j8_stdout.json";
-        const std::string stderrParallelPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_index_j8_stderr.log";
+        const std::string outDbParallel = std::string(SYMHOW_TEST_OUTPUT_DIR) + "/cucs_j8.srctrldb";
+        const std::string stdoutParallelPath = std::string(SYMHOW_TEST_OUTPUT_DIR) + "/cucs_index_j8_stdout.json";
+        const std::string stderrParallelPath = std::string(SYMHOW_TEST_OUTPUT_DIR) + "/cucs_index_j8_stderr.log";
 
         std::ostringstream parallelCmd;
-        parallelCmd << "\"" << std::string(KG_BINARY) << "\" index -c \"" << cdbPath << "\" -o \"" << outDbParallel
+        parallelCmd << "\"" << std::string(SYMHOW_BINARY) << "\" index -c \"" << cdbPath << "\" -o \"" << outDbParallel
                     << "\" --force --remap /mnt/workspace=/home/aaramoon/workspace -j 8 -q --json";
 
         std::printf("cucs_integration: running (parallel): %s\n", parallelCmd.str().c_str());
@@ -570,63 +570,63 @@ int main()
         const double parallelWallSeconds = std::chrono::duration<double>(pt1 - pt0).count();
 
         std::printf(
-            "cucs_integration: [11] kg index -j 8 exit code = %d, wall time = %.1fs (sequential was %.1fs, speedup %.2fx)\n",
+            "cucs_integration: [11] symhow index -j 8 exit code = %d, wall time = %.1fs (sequential was %.1fs, speedup %.2fx)\n",
             parallelRc,
             parallelWallSeconds,
             indexWallSeconds,
             indexWallSeconds > 0.0 ? indexWallSeconds / parallelWallSeconds : 0.0);
-        check(parallelRc == 0, "[11] kg index -j 8 process exits 0");
+        check(parallelRc == 0, "[11] symhow index -j 8 process exits 0");
 
         if (fs::exists(outDbParallel))
         {
-            const std::string dbdiffStdoutPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_dbdiff_j1_vs_j8_stdout.log";
-            const std::string dbdiffStderrPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_dbdiff_j1_vs_j8_stderr.log";
+            const std::string dbdiffStdoutPath = std::string(SYMHOW_TEST_OUTPUT_DIR) + "/cucs_dbdiff_j1_vs_j8_stdout.log";
+            const std::string dbdiffStderrPath = std::string(SYMHOW_TEST_OUTPUT_DIR) + "/cucs_dbdiff_j1_vs_j8_stderr.log";
             std::ostringstream dbdiffCmd;
-            dbdiffCmd << "\"" << std::string(KG_BINARY) << "\" dbdiff \"" << outDb << "\" \"" << outDbParallel << "\"";
+            dbdiffCmd << "\"" << std::string(SYMHOW_BINARY) << "\" dbdiff \"" << outDb << "\" \"" << outDbParallel << "\"";
             const int dbdiffRc = runCaptured(dbdiffCmd.str(), dbdiffStdoutPath, dbdiffStderrPath);
             std::printf(
-                "cucs_integration: [11] kg dbdiff (sequential vs -j 8) exit code = %d\n%s",
+                "cucs_integration: [11] symhow dbdiff (sequential vs -j 8) exit code = %d\n%s",
                 dbdiffRc,
                 lastLines(readFile(dbdiffStdoutPath), 20).c_str());
-            check(dbdiffRc == 0, "[11] kg dbdiff: sequential (-j 1) and parallel (-j 8) cucs databases are logically equivalent");
+            check(dbdiffRc == 0, "[11] symhow dbdiff: sequential (-j 1) and parallel (-j 8) cucs databases are logically equivalent");
         }
         else
         {
-            check(false, "[11] kg dbdiff: sequential (-j 1) and parallel (-j 8) cucs databases are logically equivalent");
+            check(false, "[11] symhow dbdiff: sequential (-j 1) and parallel (-j 8) cucs databases are logically equivalent");
         }
     }
 
     // ========================================================================
     // Step 4 (Phase 8, crash-safe/resumable indexing): launch a real
-    // `kg index -j 4 --commit-every 5` against the cucs corpus, send it a
+    // `symhow index -j 4 --commit-every 5` against the cucs corpus, send it a
     // real SIGINT partway through (via a tiny bash wrapper -- std::system()
     // itself can't signal a child), assert it exits 130 with no hot journal
-    // left, then `kg update -d` it to completion and `kg dbdiff` the result
+    // left, then `symhow update -d` it to completion and `symhow dbdiff` the result
     // against a fresh `-j 8` index (outDbParallel, Step 3 above) -- must be
     // EMPTY (strict, no --ignore), proving an interrupted-then-resumed run
     // is logically identical to an uninterrupted one on a real, large
     // corpus, not just the small synthetic fixture the unit tests use.
     // ========================================================================
     {
-        const std::string outDbResume = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_resume.srctrldb";
-        const std::string outDbParallel = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_j8.srctrldb";
+        const std::string outDbResume = std::string(SYMHOW_TEST_OUTPUT_DIR) + "/cucs_resume.srctrldb";
+        const std::string outDbParallel = std::string(SYMHOW_TEST_OUTPUT_DIR) + "/cucs_j8.srctrldb";
         std::error_code rmEc;
         fs::remove(outDbResume, rmEc);
         fs::remove(outDbResume + "-journal", rmEc);
 
-        const std::string resumeStdoutPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_resume_index_stdout.log";
-        const std::string resumeStderrPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_resume_index_stderr.log";
+        const std::string resumeStdoutPath = std::string(SYMHOW_TEST_OUTPUT_DIR) + "/cucs_resume_index_stdout.log";
+        const std::string resumeStderrPath = std::string(SYMHOW_TEST_OUTPUT_DIR) + "/cucs_resume_index_stderr.log";
 
-        // Runs the `kg index` child in the background of a bash subshell,
+        // Runs the `symhow index` child in the background of a bash subshell,
         // waits a few seconds (enough for -j 4 to have made real progress
         // on this corpus but not enough to finish -- Step 1/3's wall times,
         // printed above, are comfortably longer than this), sends it a real
         // SIGINT, waits for it to exit, and propagates ITS exit code as the
         // whole subshell's exit code (`exit $?` after `wait`) -- so
-        // std::system()'s return value is the interrupted kg index
+        // std::system()'s return value is the interrupted symhow index
         // process's own exit code, not the wrapper's.
         std::ostringstream resumeCmd;
-        resumeCmd << "( \"" << std::string(KG_BINARY) << "\" index -c \"" << cdbPath << "\" -o \"" << outDbResume
+        resumeCmd << "( \"" << std::string(SYMHOW_BINARY) << "\" index -c \"" << cdbPath << "\" -o \"" << outDbResume
                    << "\" --force --remap /mnt/workspace=/home/aaramoon/workspace -j 4 --commit-every 5 "
                    << "> \"" << resumeStdoutPath << "\" 2> \"" << resumeStderrPath << "\" & "
                    << "pid=$!; sleep 5; kill -INT $pid 2>/dev/null; wait $pid; exit $? )";
@@ -635,10 +635,10 @@ int main()
         const int resumeRaw = std::system(resumeCmd.str().c_str());
         const int resumeRc = WIFEXITED(resumeRaw) ? WEXITSTATUS(resumeRaw) : -1;
         std::printf(
-            "cucs_integration: [12] kg index -j 4 --commit-every 5, SIGINT'd after 5s: exit code = %d\n%s",
+            "cucs_integration: [12] symhow index -j 4 --commit-every 5, SIGINT'd after 5s: exit code = %d\n%s",
             resumeRc,
             lastLines(readFile(resumeStderrPath), 10).c_str());
-        check(resumeRc == 130, "[12] SIGINT'd `kg index` exits 130");
+        check(resumeRc == 130, "[12] SIGINT'd `symhow index` exits 130");
 
         const bool hasJournal = fs::exists(outDbResume + "-journal");
         check(!hasJournal, "[12] no hot journal left next to the interrupted database");
@@ -647,15 +647,15 @@ int main()
         // also exercises the "index incomplete" query-time notice path,
         // even though this test doesn't assert on stderr text here (unit
         // test_resume_fixture.cpp already pins that down against the small
-        // fixture, via KG_BINARY).
+        // fixture, via SYMHOW_BINARY).
         bool openedOk = false;
         int64_t tuCountAfterInterrupt = -1;
         try
         {
-            kg::db::Database resumeDb(outDbResume);
+            symhow::db::Database resumeDb(outDbResume);
             openedOk = true;
             resumeDb.run(
-                "SELECT count(*) FROM kg_tu", [&](sqlite3_stmt* stmt) { tuCountAfterInterrupt = sqlite3_column_int64(stmt, 0); });
+                "SELECT count(*) FROM symhow_tu", [&](sqlite3_stmt* stmt) { tuCountAfterInterrupt = sqlite3_column_int64(stmt, 0); });
         }
         catch (const std::exception& e)
         {
@@ -663,40 +663,40 @@ int main()
         }
         check(openedOk, "[12] interrupted database opens read-only cleanly");
         std::printf(
-            "cucs_integration: [12] kg_tu rows after interrupt = %lld (of %zu total CDB entries)\n",
+            "cucs_integration: [12] symhow_tu rows after interrupt = %lld (of %zu total CDB entries)\n",
             static_cast<long long>(tuCountAfterInterrupt),
             realTuCount);
         check(
             tuCountAfterInterrupt > 0 && static_cast<std::size_t>(tuCountAfterInterrupt) < realTuCount,
-            "[12] interrupted database has SOME but not ALL kg_tu rows (real interruption, not a completed run)");
+            "[12] interrupted database has SOME but not ALL symhow_tu rows (real interruption, not a completed run)");
 
-        // `kg update -d` finishes the interrupted run.
-        const std::string updateStdoutPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_resume_update_stdout.log";
-        const std::string updateStderrPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_resume_update_stderr.log";
+        // `symhow update -d` finishes the interrupted run.
+        const std::string updateStdoutPath = std::string(SYMHOW_TEST_OUTPUT_DIR) + "/cucs_resume_update_stdout.log";
+        const std::string updateStderrPath = std::string(SYMHOW_TEST_OUTPUT_DIR) + "/cucs_resume_update_stderr.log";
         std::ostringstream updateCmd;
-        updateCmd << "\"" << std::string(KG_BINARY) << "\" update -d \"" << outDbResume << "\" -j 8";
+        updateCmd << "\"" << std::string(SYMHOW_BINARY) << "\" update -d \"" << outDbResume << "\" -j 8";
         const auto ut0 = std::chrono::steady_clock::now();
         const int updateRc = runCaptured(updateCmd.str(), updateStdoutPath, updateStderrPath);
         const auto ut1 = std::chrono::steady_clock::now();
         std::printf(
-            "cucs_integration: [13] kg update -d (resume) exit code = %d, wall time = %.1fs\n%s",
+            "cucs_integration: [13] symhow update -d (resume) exit code = %d, wall time = %.1fs\n%s",
             updateRc,
             std::chrono::duration<double>(ut1 - ut0).count(),
             lastLines(readFile(updateStderrPath), 10).c_str());
-        check(updateRc == 0, "[13] `kg update` resumes and completes the interrupted index");
+        check(updateRc == 0, "[13] `symhow update` resumes and completes the interrupted index");
 
         // Must match a fresh -j 8 index EXACTLY (strict dbdiff, no --ignore)
         // -- reuses outDbParallel from Step 3 rather than indexing a third
         // time.
         if (fs::exists(outDbResume) && fs::exists(outDbParallel))
         {
-            const std::string dbdiffStdoutPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_dbdiff_resume_vs_j8_stdout.log";
-            const std::string dbdiffStderrPath = std::string(KG_TEST_OUTPUT_DIR) + "/cucs_dbdiff_resume_vs_j8_stderr.log";
+            const std::string dbdiffStdoutPath = std::string(SYMHOW_TEST_OUTPUT_DIR) + "/cucs_dbdiff_resume_vs_j8_stdout.log";
+            const std::string dbdiffStderrPath = std::string(SYMHOW_TEST_OUTPUT_DIR) + "/cucs_dbdiff_resume_vs_j8_stderr.log";
             std::ostringstream dbdiffCmd;
-            dbdiffCmd << "\"" << std::string(KG_BINARY) << "\" dbdiff \"" << outDbResume << "\" \"" << outDbParallel << "\"";
+            dbdiffCmd << "\"" << std::string(SYMHOW_BINARY) << "\" dbdiff \"" << outDbResume << "\" \"" << outDbParallel << "\"";
             const int dbdiffRc = runCaptured(dbdiffCmd.str(), dbdiffStdoutPath, dbdiffStderrPath);
             std::printf(
-                "cucs_integration: [13] kg dbdiff (resumed vs fresh -j 8) exit code = %d\n%s",
+                "cucs_integration: [13] symhow dbdiff (resumed vs fresh -j 8) exit code = %d\n%s",
                 dbdiffRc,
                 lastLines(readFile(dbdiffStdoutPath), 20).c_str());
             // Hard assertion (no WARNING fallback): the order-dependence
@@ -709,11 +709,11 @@ int main()
             // docs/KNOWN_LIMITATIONS.md's Phase 8 section) are gone; a
             // resumed-then-completed run must now match a fresh index
             // exactly, same as every other dbdiff assertion in this file.
-            check(dbdiffRc == 0, "[13] kg dbdiff: resumed-then-completed and fresh -j 8 cucs databases are logically equivalent");
+            check(dbdiffRc == 0, "[13] symhow dbdiff: resumed-then-completed and fresh -j 8 cucs databases are logically equivalent");
         }
         else
         {
-            check(false, "[13] kg dbdiff: resumed-then-completed and fresh -j 8 cucs databases are logically equivalent");
+            check(false, "[13] symhow dbdiff: resumed-then-completed and fresh -j 8 cucs databases are logically equivalent");
         }
     }
 

@@ -1,8 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "kg/common/Process.h"
+#include "symhow/common/Process.h"
 
-using kg::common::process::run;
+using symhow::common::process::run;
 
 TEST_CASE("process: runs /bin/echo and captures stdout")
 {
@@ -13,7 +13,7 @@ TEST_CASE("process: runs /bin/echo and captures stdout")
 
 TEST_CASE("process: a nonexistent binary fails to spawn without throwing")
 {
-    const auto result = run({"kg-this-binary-does-not-exist-anywhere-1234"});
+    const auto result = run({"symhow-this-binary-does-not-exist-anywhere-1234"});
     REQUIRE(result.exitCode == -1);
     REQUIRE_FALSE(result.err.empty());
 }
@@ -60,6 +60,6 @@ TEST_CASE("process: cwd changes the child's working directory")
     const auto result = run({"/bin/sh", "-c", "pwd"}, &cwd);
     REQUIRE(result.exitCode == 0);
     // /tmp itself may be a symlink (e.g. to /private/tmp) -- just check the
-    // shell actually ran somewhere other than kg's own working directory.
+    // shell actually ran somewhere other than symhow's own working directory.
     REQUIRE_FALSE(result.out.empty());
 }

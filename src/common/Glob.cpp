@@ -1,10 +1,10 @@
-#include "kg/common/Glob.h"
+#include "symhow/common/Glob.h"
 
 #include <string_view>
 #include <utility>
 #include <vector>
 
-namespace kg::common::glob
+namespace symhow::common::glob
 {
 
 namespace
@@ -231,4 +231,4 @@ bool match(const std::string& pattern, const std::string& path)
     return matchRec(units, 0, path, 0, memo);
 }
 
-}  // namespace kg::common::glob
+}  // namespace symhow::common::glob

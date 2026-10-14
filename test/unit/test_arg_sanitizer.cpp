@@ -4,15 +4,15 @@
 #include <string>
 #include <vector>
 
-#include "kg/index/ArgSanitizer.h"
-#include "kg/index/CompileDb.h"
-#include "kg/index/CudaSupport.h"
+#include "symhow/index/ArgSanitizer.h"
+#include "symhow/index/CompileDb.h"
+#include "symhow/index/CudaSupport.h"
 
-using kg::index::applyRemaps;
-using kg::index::CompileEntry;
-using kg::index::parseRemapArg;
-using kg::index::sanitize;
-using kg::index::SanitizerOptions;
+using symhow::index::applyRemaps;
+using symhow::index::CompileEntry;
+using symhow::index::parseRemapArg;
+using symhow::index::sanitize;
+using symhow::index::SanitizerOptions;
 
 namespace
 {
@@ -66,10 +66,10 @@ struct Case
 // `expected` is trivial to account for, unlike Full (which would also pull
 // in an nvcc-executable-path-derived --cuda-path and a --cuda-gpu-arch
 // dependent on the row's -gencode/--generate-code flags).
-void runCases(const std::vector<Case>& cases, kg::index::cuda::CudaMode cudaMode = kg::index::cuda::CudaMode::Auto)
+void runCases(const std::vector<Case>& cases, symhow::index::cuda::CudaMode cudaMode = symhow::index::cuda::CudaMode::Auto)
 {
     SanitizerOptions options;
-    options.resourceDir = "/opt/resource-dir";  // avoid depending on KG_DEFAULT_RESOURCE_DIR
+    options.resourceDir = "/opt/resource-dir";  // avoid depending on SYMHOW_DEFAULT_RESOURCE_DIR
     options.cudaMode = cudaMode;
 
     for (const auto& c : cases)
@@ -166,7 +166,7 @@ TEST_CASE("arg_sanitizer: ArgSanitizer: nvcc-specific rules (triggered by argv0 
         {"--extended-lambda dropped", "foo.cu", {"--extended-lambda"}, hostOnlyTail, nvcc},
         {"-x cu translated to -x cuda", "foo.cu", {"-x", "cu"}, {"-x", "cuda", "-x", "c++"}, nvcc},
     };
-    runCases(cases, kg::index::cuda::CudaMode::HostOnly);
+    runCases(cases, symhow::index::cuda::CudaMode::HostOnly);
 }
 
 TEST_CASE("arg_sanitizer: ArgSanitizer: nvcc rules also trigger for a .cu file even with a non-nvcc argv0", "[argsanitizer][cuda]")
@@ -181,7 +181,7 @@ TEST_CASE("arg_sanitizer: ArgSanitizer: nvcc rules also trigger for a .cu file e
         {"-forward-unknown-to-host-compiler", "-DKEEP"},
         {"-DKEEP", "-x", "c++"},
         "/usr/bin/c++"};
-    runCases({c}, kg::index::cuda::CudaMode::HostOnly);
+    runCases({c}, symhow::index::cuda::CudaMode::HostOnly);
 }
 
 TEST_CASE("arg_sanitizer: ArgSanitizer: universal drop list still applies inside an nvcc invocation", "[argsanitizer][cuda]")
@@ -192,7 +192,7 @@ TEST_CASE("arg_sanitizer: ArgSanitizer: universal drop list still applies inside
         {"-Werror", "-DKEEP"},
         {"-DKEEP", "-x", "c++"},
         "/opt/cuda/bin/nvcc"};
-    runCases({c}, kg::index::cuda::CudaMode::HostOnly);
+    runCases({c}, symhow::index::cuda::CudaMode::HostOnly);
 }
 
 TEST_CASE("arg_sanitizer: ArgSanitizer: user --drop-arg glob patterns", "[argsanitizer]")
@@ -319,7 +319,7 @@ TEST_CASE("arg_sanitizer: ArgSanitizer: --c-std CLI value overrides the gnu17 de
 }
 
 // --- Remap substring replacement (step 1) -----------------------------------
-// Step 1 itself lives in kg::index::CompileDb (applyRemaps / parseRemapArg),
+// Step 1 itself lives in symhow::index::CompileDb (applyRemaps / parseRemapArg),
 // tested directly here per the Phase 2 test plan.
 
 TEST_CASE("arg_sanitizer: applyRemaps: parseRemapArg splits OLD=NEW on the first '='", "[remap]")

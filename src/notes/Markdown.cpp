@@ -1,4 +1,4 @@
-#include "kg/notes/Markdown.h"
+#include "symhow/notes/Markdown.h"
 
 #include <algorithm>
 #include <cctype>
@@ -6,7 +6,7 @@
 #include <sstream>
 #include <unordered_set>
 
-namespace kg::notes
+namespace symhow::notes
 {
 
 namespace
@@ -216,13 +216,13 @@ enum class Section
     Discard
 };
 
-const std::regex& kgCommentRe()
+const std::regex& symhowCommentRe()
 {
-    static const std::regex re(R"(^\s*<!--.*\bkg-(?:hash|commit)\b.*-->\s*$)");
+    static const std::regex re(R"(^\s*<!--.*\bsymhow-(?:hash|commit)\b.*-->\s*$)");
     return re;
 }
 
-void parseKgComment(const std::string& line, NoteBlock& block, int lineNo)
+void parseSymhowComment(const std::string& line, NoteBlock& block, int lineNo)
 {
     static const std::regex kvRe(R"(([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(\S+))");
     auto begin = std::sregex_iterator(line.begin(), line.end(), kvRe);
@@ -231,11 +231,11 @@ void parseKgComment(const std::string& line, NoteBlock& block, int lineNo)
     {
         const std::string key = (*it)[1].str();
         const std::string value = (*it)[2].str();
-        if (key == "kg-hash")
+        if (key == "symhow-hash")
         {
             block.bodyHash = value;
         }
-        else if (key == "kg-commit")
+        else if (key == "symhow-commit")
         {
             block.commit = value;
         }
@@ -580,16 +580,16 @@ NotesFile parseNotesFile(std::string_view content, std::string path, bool strict
         }
 
         // Not a heading line.
-        if (std::regex_match(line, kgCommentRe()))
+        if (std::regex_match(line, symhowCommentRe()))
         {
             const bool briefEmptySoFar = std::all_of(buf.begin(), buf.end(), [](const auto& p) { return isBlank(p.second); });
             if (curBlockIdx >= 0 && section == Section::Brief && briefEmptySoFar && curBlock().metaLine == 0)
             {
-                parseKgComment(line, curBlock(), lineNo);
+                parseSymhowComment(line, curBlock(), lineNo);
             }
             else
             {
-                file.problems.push_back(Problem{lineNo, "misplaced-meta", "kg-hash/kg-commit comment must immediately follow the '##' heading"});
+                file.problems.push_back(Problem{lineNo, "misplaced-meta", "symhow-hash/symhow-commit comment must immediately follow the '##' heading"});
             }
             continue;
         }
@@ -678,11 +678,11 @@ std::string renderBlock(const NoteBlock& block)
         std::vector<std::string> parts;
         if (!block.bodyHash.empty())
         {
-            parts.push_back("kg-hash: " + block.bodyHash);
+            parts.push_back("symhow-hash: " + block.bodyHash);
         }
         if (!block.commit.empty())
         {
-            parts.push_back("kg-commit: " + block.commit);
+            parts.push_back("symhow-commit: " + block.commit);
         }
         s += "<!-- ";
         for (std::size_t i = 0; i < parts.size(); ++i)
@@ -765,4 +765,4 @@ std::string placeholderBlockMarkdown(const std::string& qualifiedName, const std
     return renderBlock(b);
 }
 
-}  // namespace kg::notes
+}  // namespace symhow::notes

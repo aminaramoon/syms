@@ -1,4 +1,4 @@
-#include "kg/notes/Sync.h"
+#include "symhow/notes/Sync.h"
 
 #include <sqlite3.h>
 
@@ -14,16 +14,16 @@
 
 #include <nlohmann/json.hpp>
 
-#include "kg/db/Meta.h"
-#include "kg/db/NameDecode.h"
-#include "kg/db/WritableDb.h"
-#include "kg/index/ClangUtil.h"
-#include "kg/notes/BodyHash.h"
-#include "kg/notes/Markdown.h"
-#include "kg/notes/NotesStore.h"
-#include "kg/query/SymbolResolver.h"
+#include "symhow/db/Meta.h"
+#include "symhow/db/NameDecode.h"
+#include "symhow/db/WritableDb.h"
+#include "symhow/index/ClangUtil.h"
+#include "symhow/notes/BodyHash.h"
+#include "symhow/notes/Markdown.h"
+#include "symhow/notes/NotesStore.h"
+#include "symhow/query/SymbolResolver.h"
 
-namespace kg::notes
+namespace symhow::notes
 {
 
 namespace
@@ -50,9 +50,9 @@ std::string jsonArray(const std::vector<std::string>& items)
 
 }  // namespace
 
-MatchOutcome matchBlock(kg::db::Database& db, const NoteBlock& block)
+MatchOutcome matchBlock(symhow::db::Database& db, const NoteBlock& block)
 {
-    const kg::query::ResolveResult rr = kg::query::resolveSymbol(db, block.heading, nullptr, nullptr);
+    const symhow::query::ResolveResult rr = symhow::query::resolveSymbol(db, block.heading, nullptr, nullptr);
 
     if (rr.candidates.empty())
     {
@@ -67,8 +67,8 @@ MatchOutcome matchBlock(kg::db::Database& db, const NoteBlock& block)
     // with it (see MatchOutcome::signatureMismatch's doc comment).
     if (rr.candidates.size() == 1)
     {
-        const kg::query::ResolvedSymbol& c = rr.candidates.front();
-        const kg::db::DecodedName decoded = kg::db::decodeSerializedName(c.serializedName);
+        const symhow::query::ResolvedSymbol& c = rr.candidates.front();
+        const symhow::db::DecodedName decoded = symhow::db::decodeSerializedName(c.serializedName);
         MatchOutcome out;
         out.kind = MatchKind::Matched;
         out.nodeId = c.id;
@@ -91,15 +91,15 @@ MatchOutcome matchBlock(kg::db::Database& db, const NoteBlock& block)
         return out;
     }
 
-    std::vector<kg::query::ResolvedSymbol> pool = rr.candidates;
+    std::vector<symhow::query::ResolvedSymbol> pool = rr.candidates;
     {
         const std::string wantFull = normalizeSignature(block.signature.text);
         const std::string wantSuffix = paramSuffix(wantFull);
 
-        std::vector<kg::query::ResolvedSymbol> filtered;
-        for (const kg::query::ResolvedSymbol& c : pool)
+        std::vector<symhow::query::ResolvedSymbol> filtered;
+        for (const symhow::query::ResolvedSymbol& c : pool)
         {
-            const kg::db::DecodedName decoded = kg::db::decodeSerializedName(c.serializedName);
+            const symhow::db::DecodedName decoded = symhow::db::decodeSerializedName(c.serializedName);
             const std::string haveFull = normalizeSignature(decoded.signature());
             const std::string haveSuffix = paramSuffix(haveFull);
             if (!wantFull.empty() && (haveFull == wantFull || haveSuffix == wantSuffix))
@@ -112,7 +112,7 @@ MatchOutcome matchBlock(kg::db::Database& db, const NoteBlock& block)
 
     if (pool.size() == 1)
     {
-        const kg::db::DecodedName decoded = kg::db::decodeSerializedName(pool.front().serializedName);
+        const symhow::db::DecodedName decoded = symhow::db::decodeSerializedName(pool.front().serializedName);
         MatchOutcome out;
         out.kind = MatchKind::Matched;
         out.nodeId = pool.front().id;
@@ -134,7 +134,7 @@ MatchOutcome matchBlock(kg::db::Database& db, const NoteBlock& block)
         {
             detail += "; ";
         }
-        const kg::db::DecodedName decoded = kg::db::decodeSerializedName(rr.candidates[i].serializedName);
+        const symhow::db::DecodedName decoded = symhow::db::decodeSerializedName(rr.candidates[i].serializedName);
         detail += "#" + std::to_string(rr.candidates[i].id) + " " + decoded.signature();
     }
     out.detail = detail;
@@ -172,7 +172,7 @@ SyncResult syncNotes(const std::string& dbPath, const std::string& notesDir, boo
         parsed.push_back(parseNotesFile(content, relPath, strict));
     }
 
-    kg::db::WritableDb wdb(dbPath);
+    symhow::db::WritableDb wdb(dbPath);
     wdb.exec(kCreateNoteTableSql);
     wdb.exec(kCreateNoteFileTableSql);
     wdb.exec(kCreateNoteProblemTableSql);
@@ -180,9 +180,9 @@ SyncResult syncNotes(const std::string& dbPath, const std::string& notesDir, boo
     wdb.begin();
     try
     {
-        wdb.exec("DELETE FROM kg_note;");
-        wdb.exec("DELETE FROM kg_note_file;");
-        wdb.exec("DELETE FROM kg_note_problem;");
+        wdb.exec("DELETE FROM symhow_note;");
+        wdb.exec("DELETE FROM symhow_note_file;");
+        wdb.exec("DELETE FROM symhow_note_problem;");
 
         // Need a read-only Database handle to run resolveSymbol()/
         // bodyHashForNode() against the same file -- WritableDb's own
@@ -197,7 +197,7 @@ SyncResult syncNotes(const std::string& dbPath, const std::string& notesDir, boo
         // `filecontent`/`file`, tables this sync never modifies, so reading
         // them through a fresh read-only Database opened on the same path
         // is safe and simple.
-        kg::db::Database rdb(dbPath);
+        symhow::db::Database rdb(dbPath);
 
         std::unordered_map<int64_t, std::string> matchedNodeToHeadingPath;  // nodeId -> "path:line" of first match
 
@@ -205,9 +205,9 @@ SyncResult syncNotes(const std::string& dbPath, const std::string& notesDir, boo
         // (its own notes_path with the trailing ".md" stripped) no longer
         // exists as a `file` row -- e.g. after `git mv`ing the source file
         // without moving its notes alongside it. Only meaningful when
-        // kg_repo_root is known (nothing to resolve the relative path
+        // symhow_repo_root is known (nothing to resolve the relative path
         // against otherwise); silently skipped when it isn't.
-        const std::string repoRootForOrphanCheck = kg::db::getMeta(rdb.handle(), "kg_repo_root").value_or("");
+        const std::string repoRootForOrphanCheck = symhow::db::getMeta(rdb.handle(), "symhow_repo_root").value_or("");
 
         const std::string syncedAt = []() {
             std::time_t t = std::time(nullptr);
@@ -313,7 +313,7 @@ SyncResult syncNotes(const std::string& dbPath, const std::string& notesDir, boo
                 }
 
                 wdb.execBound(
-                    "INSERT INTO kg_note(serialized_name, qualified_name, notes_path, heading_line, brief, what, how, "
+                    "INSERT INTO symhow_note(serialized_name, qualified_name, notes_path, heading_line, brief, what, how, "
                     "signature_text, pre_json, post_json, bugs_json, suggestions_json, filled, note_hash, note_commit, "
                     "current_body_hash, stale, synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     [&](sqlite3_stmt* stmt) {
@@ -349,14 +349,14 @@ SyncResult syncNotes(const std::string& dbPath, const std::string& notesDir, boo
             const std::string relPath = std::filesystem::relative(full, notesRoot).generic_string();
             std::ifstream in(full, std::ios::binary);
             std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-            const uint64_t contentHash = kg::index::clangutil::fnv1a64(content);
+            const uint64_t contentHash = symhow::index::clangutil::fnv1a64(content);
             char hexbuf[17];
             std::snprintf(hexbuf, sizeof(hexbuf), "%016llx", static_cast<unsigned long long>(contentHash));
             const auto mtime = std::filesystem::last_write_time(full);
             const int64_t mtimeNs = std::chrono::duration_cast<std::chrono::nanoseconds>(mtime.time_since_epoch()).count();
 
             wdb.execBound(
-                "INSERT INTO kg_note_file(notes_path, mtime_ns, content_hash) VALUES (?,?,?)",
+                "INSERT INTO symhow_note_file(notes_path, mtime_ns, content_hash) VALUES (?,?,?)",
                 [&](sqlite3_stmt* stmt) {
                     sqlite3_bind_text(stmt, 1, relPath.c_str(), -1, SQLITE_TRANSIENT);
                     sqlite3_bind_int64(stmt, 2, mtimeNs);
@@ -367,7 +367,7 @@ SyncResult syncNotes(const std::string& dbPath, const std::string& notesDir, boo
         for (const SyncProblem& p : result.problems)
         {
             wdb.execBound(
-                "INSERT INTO kg_note_problem(notes_path, line, heading, kind, message) VALUES (?,?,?,?,?)",
+                "INSERT INTO symhow_note_problem(notes_path, line, heading, kind, message) VALUES (?,?,?,?,?)",
                 [&](sqlite3_stmt* stmt) {
                     sqlite3_bind_text(stmt, 1, p.path.c_str(), -1, SQLITE_TRANSIENT);
                     sqlite3_bind_int(stmt, 2, p.line);
@@ -377,8 +377,8 @@ SyncResult syncNotes(const std::string& dbPath, const std::string& notesDir, boo
                 });
         }
 
-        kg::db::setMeta(wdb, "kg_notes_dir", notesRoot.string());
-        kg::db::setMeta(wdb, "kg_notes_synced_at", syncedAt);
+        symhow::db::setMeta(wdb, "symhow_notes_dir", notesRoot.string());
+        symhow::db::setMeta(wdb, "symhow_notes_synced_at", syncedAt);
 
         wdb.commit();
     }
@@ -391,4 +391,4 @@ SyncResult syncNotes(const std::string& dbPath, const std::string& notesDir, boo
     return result;
 }
 
-}  // namespace kg::notes
+}  // namespace symhow::notes

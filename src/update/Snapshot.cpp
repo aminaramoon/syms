@@ -1,13 +1,13 @@
-#include "kg/update/Snapshot.h"
+#include "symhow/update/Snapshot.h"
 
 #include <sqlite3.h>
 
 #include <unordered_map>
 #include <unordered_set>
 
-#include "kg/db/Database.h"
+#include "symhow/db/Database.h"
 
-namespace kg::update
+namespace symhow::update
 {
 
 namespace
@@ -39,7 +39,7 @@ std::string join(std::initializer_list<std::string> parts)
 
 Snapshot takeSnapshot(const std::string& dbPath, const SnapshotOptions& options)
 {
-    kg::db::Database db(dbPath);
+    symhow::db::Database db(dbPath);
     Snapshot snap;
 
     // --- shared headers (SnapshotOptions::ignoreSharedHeaderLocations) ---
@@ -189,27 +189,27 @@ Snapshot takeSnapshot(const std::string& dbPath, const SnapshotOptions& options)
             snap.locations[join({path, startLine, startCol, endLine, endCol, type, elementKey})]++;
         });
 
-    // --- kg_symbol_def: (serialized_name, file.path) -- skip if absent ----
+    // --- symhow_symbol_def: (serialized_name, file.path) -- skip if absent ----
     bool hasSymbolDef = false;
     db.run(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kg_symbol_def'",
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'symhow_symbol_def'",
         [&](sqlite3_stmt*) { hasSymbolDef = true; });
     if (hasSymbolDef)
     {
         db.run(
-            "SELECT n.serialized_name, f.path FROM kg_symbol_def sd "
+            "SELECT n.serialized_name, f.path FROM symhow_symbol_def sd "
             "JOIN node n ON n.id = sd.node_id "
             "JOIN file f ON f.id = sd.file_node_id",
             [&](sqlite3_stmt* stmt) { snap.symbolDefs[join({columnText(stmt, 0), columnText(stmt, 1)})]++; });
     }
 
-    // --- kg_note / kg_note_problem: skip if absent (Phase 4) ----------------
+    // --- symhow_note / symhow_note_problem: skip if absent (Phase 4) ----------------
     bool hasNote = false;
-    db.run("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kg_note'", [&](sqlite3_stmt*) { hasNote = true; });
+    db.run("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'symhow_note'", [&](sqlite3_stmt*) { hasNote = true; });
     if (hasNote)
     {
         db.run(
-            "SELECT serialized_name, notes_path, brief, what, how, filled, stale, note_hash FROM kg_note",
+            "SELECT serialized_name, notes_path, brief, what, how, filled, stale, note_hash FROM symhow_note",
             [&](sqlite3_stmt* stmt) {
                 const std::string serializedName = columnText(stmt, 0);
                 const std::string notesPath = columnText(stmt, 1);
@@ -223,10 +223,10 @@ Snapshot takeSnapshot(const std::string& dbPath, const SnapshotOptions& options)
             });
     }
     bool hasNoteProblem = false;
-    db.run("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kg_note_problem'", [&](sqlite3_stmt*) { hasNoteProblem = true; });
+    db.run("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'symhow_note_problem'", [&](sqlite3_stmt*) { hasNoteProblem = true; });
     if (hasNoteProblem)
     {
-        db.run("SELECT notes_path, line, kind FROM kg_note_problem", [&](sqlite3_stmt* stmt) {
+        db.run("SELECT notes_path, line, kind FROM symhow_note_problem", [&](sqlite3_stmt* stmt) {
             const std::string notesPath = columnText(stmt, 0);
             const std::string line = std::to_string(sqlite3_column_int(stmt, 1));
             const std::string kind = columnText(stmt, 2);
@@ -234,12 +234,12 @@ Snapshot takeSnapshot(const std::string& dbPath, const SnapshotOptions& options)
         });
     }
 
-    // --- kg_tu: (path, args_hash) -- skip if absent -------------------------
+    // --- symhow_tu: (path, args_hash) -- skip if absent -------------------------
     bool hasTu = false;
-    db.run("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kg_tu'", [&](sqlite3_stmt*) { hasTu = true; });
+    db.run("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'symhow_tu'", [&](sqlite3_stmt*) { hasTu = true; });
     if (hasTu)
     {
-        db.run("SELECT path, args_hash FROM kg_tu", [&](sqlite3_stmt* stmt) {
+        db.run("SELECT path, args_hash FROM symhow_tu", [&](sqlite3_stmt* stmt) {
             snap.tus[join({columnText(stmt, 0), columnText(stmt, 1)})]++;
         });
     }
@@ -320,4 +320,4 @@ SnapshotDiff diffSnapshots(const Snapshot& a, const Snapshot& b, const std::vect
     return diff;
 }
 
-}  // namespace kg::update
+}  // namespace symhow::update

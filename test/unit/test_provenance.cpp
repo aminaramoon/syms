@@ -5,18 +5,18 @@
 
 #include <sqlite3.h>
 
-#include "kg/db/WritableDb.h"
-#include "kg/index/Provenance.h"
+#include "symhow/db/WritableDb.h"
+#include "symhow/index/Provenance.h"
 
-using kg::db::WritableDb;
-using kg::index::Provenance;
+using symhow::db::WritableDb;
+using symhow::index::Provenance;
 
 namespace
 {
 
 std::string tempDbPath()
 {
-    return (std::filesystem::temp_directory_path() / "kg_test_provenance.sqlite").string();
+    return (std::filesystem::temp_directory_path() / "symhow_test_provenance.sqlite").string();
 }
 
 std::unique_ptr<WritableDb> freshMetaDb(const std::string& path)
@@ -35,11 +35,11 @@ std::unique_ptr<WritableDb> freshMetaDb(const std::string& path)
 
 }  // namespace
 
-TEST_CASE("provenance: readProvenance returns nullopt when kg_provenance_version is absent")
+TEST_CASE("provenance: readProvenance returns nullopt when symhow_provenance_version is absent")
 {
     const std::string path = tempDbPath();
     auto db = freshMetaDb(path);
-    REQUIRE_FALSE(kg::index::readProvenance(db->handle()).has_value());
+    REQUIRE_FALSE(symhow::index::readProvenance(db->handle()).has_value());
     std::filesystem::remove(path);
 }
 
@@ -49,8 +49,8 @@ TEST_CASE("provenance: write/read round-trips every field")
     auto db = freshMetaDb(path);
 
     Provenance prov;
-    prov.kgVersion = "1.2.3";
-    prov.walkerVersion = kg::index::kWalkerVersion;
+    prov.symhowVersion = "1.2.3";
+    prov.walkerVersion = symhow::index::kWalkerVersion;
     prov.cdbPath = "/abs/path/compile_commands.json";
     prov.dbOptions.remaps.emplace_back("/old", "/new");
     prov.dbOptions.includeGlobs.push_back("src/**");
@@ -62,8 +62,8 @@ TEST_CASE("provenance: write/read round-trips every field")
     prov.sanitizerOptions.stdFallback = "c++20";
     prov.sanitizerOptions.cStdFallback = "gnu11";
     prov.sanitizerOptions.cudaPath = "/opt/cuda";
-    prov.sanitizerOptions.cudaMode = kg::index::cuda::CudaMode::NoWrapper;
-    prov.systemFileRows = kg::index::SystemFileRows::All;
+    prov.sanitizerOptions.cudaMode = symhow::index::cuda::CudaMode::NoWrapper;
+    prov.systemFileRows = symhow::index::SystemFileRows::All;
     prov.limit = 42;
     prov.repoRoot = "/home/user/repo";
     prov.repoCommit = "deadbeefcafef00d";
@@ -72,12 +72,12 @@ TEST_CASE("provenance: write/read round-trips every field")
     prov.lastUpdateAtUtc = "2026-01-02T00:00:00Z";
 
     db->begin();
-    kg::index::writeProvenance(*db, prov);
+    symhow::index::writeProvenance(*db, prov);
     db->commit();
 
-    const auto readBack = kg::index::readProvenance(db->handle());
+    const auto readBack = symhow::index::readProvenance(db->handle());
     REQUIRE(readBack.has_value());
-    REQUIRE(readBack->kgVersion == prov.kgVersion);
+    REQUIRE(readBack->symhowVersion == prov.symhowVersion);
     REQUIRE(readBack->walkerVersion == prov.walkerVersion);
     REQUIRE(readBack->cdbPath == prov.cdbPath);
     REQUIRE(readBack->dbOptions.remaps == prov.dbOptions.remaps);
@@ -108,24 +108,24 @@ TEST_CASE("provenance: writeProvenance is idempotent (re-writing overwrites, not
     auto db = freshMetaDb(path);
 
     Provenance prov;
-    prov.kgVersion = "1.0.0";
+    prov.symhowVersion = "1.0.0";
     prov.indexedAtUtc = "2026-01-01T00:00:00Z";
 
     db->begin();
-    kg::index::writeProvenance(*db, prov);
-    prov.kgVersion = "2.0.0";
-    kg::index::writeProvenance(*db, prov);
+    symhow::index::writeProvenance(*db, prov);
+    prov.symhowVersion = "2.0.0";
+    symhow::index::writeProvenance(*db, prov);
     db->commit();
 
     int rows = -1;
     db->query(
-        "SELECT count(*) FROM meta WHERE key = 'kg_version'",
+        "SELECT count(*) FROM meta WHERE key = 'symhow_version'",
         [&](sqlite3_stmt* stmt) { rows = sqlite3_column_int(stmt, 0); });
     REQUIRE(rows == 1);
 
-    const auto readBack = kg::index::readProvenance(db->handle());
+    const auto readBack = symhow::index::readProvenance(db->handle());
     REQUIRE(readBack.has_value());
-    REQUIRE(readBack->kgVersion == "2.0.0");
+    REQUIRE(readBack->symhowVersion == "2.0.0");
 
     std::filesystem::remove(path);
 }

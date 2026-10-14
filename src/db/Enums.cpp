@@ -1,10 +1,10 @@
-#include "kg/db/Enums.h"
+#include "symhow/db/Enums.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 
-namespace kg::db
+namespace symhow::db
 {
 
 namespace
@@ -157,4 +157,4 @@ std::optional<int> locationKindFromString(const std::string& name)
     return fromStringImpl(kLocationKindTable, name);
 }
 
-}  // namespace kg::db
+}  // namespace symhow::db

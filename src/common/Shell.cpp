@@ -1,8 +1,8 @@
-#include "kg/common/Shell.h"
+#include "symhow/common/Shell.h"
 
 #include <cctype>
 
-namespace kg::common::shell
+namespace symhow::common::shell
 {
 
 namespace
@@ -104,4 +104,4 @@ std::vector<std::string> split(const std::string& command)
     return tokens;
 }
 
-}  // namespace kg::common::shell
+}  // namespace symhow::common::shell

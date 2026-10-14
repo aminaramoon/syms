@@ -1,4 +1,4 @@
-#include "kg/notes/NotesStore.h"
+#include "symhow/notes/NotesStore.h"
 
 #include <sqlite3.h>
 
@@ -10,13 +10,13 @@
 
 #include <nlohmann/json.hpp>
 
-#include "kg/db/Meta.h"
-#include "kg/index/ClangUtil.h"
-#include "kg/notes/BodyHash.h"
-#include "kg/notes/Markdown.h"
-#include "kg/notes/Sync.h"
+#include "symhow/db/Meta.h"
+#include "symhow/index/ClangUtil.h"
+#include "symhow/notes/BodyHash.h"
+#include "symhow/notes/Markdown.h"
+#include "symhow/notes/Sync.h"
 
-namespace kg::notes
+namespace symhow::notes
 {
 
 namespace
@@ -53,16 +53,16 @@ std::vector<std::string> jsonArrayToVec(const std::string& s)
 }
 
 // Same content-hash formula Sync.cpp's syncNotes() writes into
-// kg_note_file.content_hash -- 16 lowercase hex digits of FNV-1a-64 over the
+// symhow_note_file.content_hash -- 16 lowercase hex digits of FNV-1a-64 over the
 // raw file bytes.
 std::string contentHashOf(const std::string& bytes)
 {
     char buf[17];
-    std::snprintf(buf, sizeof(buf), "%016llx", static_cast<unsigned long long>(kg::index::clangutil::fnv1a64(bytes)));
+    std::snprintf(buf, sizeof(buf), "%016llx", static_cast<unsigned long long>(symhow::index::clangutil::fnv1a64(bytes)));
     return std::string(buf);
 }
 
-bool tableExists(kg::db::Database& db, const std::string& name)
+bool tableExists(symhow::db::Database& db, const std::string& name)
 {
     bool found = false;
     db.run(
@@ -96,7 +96,7 @@ StoredNote noteFromRow(sqlite3_stmt* stmt)
     return n;
 }
 
-StoredNote noteFromBlock(kg::db::Database& db, const std::string& notesPath, const NoteBlock& b, const MatchOutcome& mo)
+StoredNote noteFromBlock(symhow::db::Database& db, const std::string& notesPath, const NoteBlock& b, const MatchOutcome& mo)
 {
     StoredNote n;
     n.serializedName = mo.serializedName;
@@ -122,11 +122,11 @@ StoredNote noteFromBlock(kg::db::Database& db, const std::string& notesPath, con
 
 }  // namespace
 
-NoteLookup openNotes(kg::db::Database& db)
+NoteLookup openNotes(symhow::db::Database& db)
 {
     NoteLookup lookup;
 
-    if (!tableExists(db, "kg_note"))
+    if (!tableExists(db, "symhow_note"))
     {
         return lookup;
     }
@@ -134,13 +134,13 @@ NoteLookup openNotes(kg::db::Database& db)
     db.run(
         "SELECT serialized_name, qualified_name, notes_path, heading_line, brief, what, how, signature_text, "
         "pre_json, post_json, bugs_json, suggestions_json, filled, note_hash, note_commit, current_body_hash, "
-        "stale, synced_at FROM kg_note",
+        "stale, synced_at FROM symhow_note",
         [&](sqlite3_stmt* stmt) {
             StoredNote n = noteFromRow(stmt);
             lookup.bySerializedName[n.serializedName] = std::move(n);
         });
 
-    const std::optional<std::string> notesDirOpt = kg::db::getMeta(db.handle(), "kg_notes_dir");
+    const std::optional<std::string> notesDirOpt = symhow::db::getMeta(db.handle(), "symhow_notes_dir");
     if (!notesDirOpt.has_value() || notesDirOpt->empty())
     {
         return lookup;
@@ -153,9 +153,9 @@ NoteLookup openNotes(kg::db::Database& db)
 
     // notes_path -> content_hash as of the last sync.
     std::unordered_map<std::string, std::string> lastSyncedHash;
-    if (tableExists(db, "kg_note_file"))
+    if (tableExists(db, "symhow_note_file"))
     {
-        db.run("SELECT notes_path, content_hash FROM kg_note_file", [&](sqlite3_stmt* stmt) {
+        db.run("SELECT notes_path, content_hash FROM symhow_note_file", [&](sqlite3_stmt* stmt) {
             lastSyncedHash[columnText(stmt, 0)] = columnText(stmt, 1);
         });
     }
@@ -217,4 +217,4 @@ NoteLookup openNotes(kg::db::Database& db)
     return lookup;
 }
 
-}  // namespace kg::notes
+}  // namespace symhow::notes

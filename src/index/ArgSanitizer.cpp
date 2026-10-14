@@ -1,17 +1,17 @@
-#include "kg/index/ArgSanitizer.h"
+#include "symhow/index/ArgSanitizer.h"
 
 #include <algorithm>
 #include <filesystem>
 #include <regex>
 #include <unordered_set>
 
-#include "kg/common/Glob.h"
+#include "symhow/common/Glob.h"
 
-#ifndef KG_DEFAULT_RESOURCE_DIR
-#define KG_DEFAULT_RESOURCE_DIR ""
+#ifndef SYMHOW_DEFAULT_RESOURCE_DIR
+#define SYMHOW_DEFAULT_RESOURCE_DIR ""
 #endif
 
-namespace kg::index
+namespace symhow::index
 {
 
 namespace
@@ -387,7 +387,7 @@ RewriteResult rewrite(
         bool userDropped = false;
         for (const auto& pattern : dropArgPatterns)
         {
-            if (kg::common::glob::match(pattern, args[i]))
+            if (symhow::common::glob::match(pattern, args[i]))
             {
                 userDropped = true;
                 break;
@@ -462,7 +462,7 @@ SanitizeResult sanitize(const CompileEntry& entry, const SanitizerOptions& optio
     std::string resourceDir = options.resourceDir;
     if (resourceDir.empty())
     {
-        resourceDir = KG_DEFAULT_RESOURCE_DIR;
+        resourceDir = SYMHOW_DEFAULT_RESOURCE_DIR;
     }
     out.push_back("-resource-dir=" + resourceDir);
 
@@ -502,4 +502,4 @@ SanitizeResult sanitize(const CompileEntry& entry, const SanitizerOptions& optio
     return result;
 }
 
-}  // namespace kg::index
+}  // namespace symhow::index
