@@ -17,6 +17,7 @@ fn samples_path() -> PathBuf {
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
+        .join("cpp")
         .join("test")
         .join("integration")
         .join("data")
