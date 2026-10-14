@@ -6,7 +6,7 @@ use symhow::index::arg_sanitizer::{sanitize, SanitizerOptions};
 use symhow::index::compile_db::{load, CompileDbOptions};
 
 /// The fixture lives at test/integration/data/cucs_cdb_samples.json, i.e.
-/// ../test/integration/data relative to the crate root (rust/), or resolved
+/// ../cpp/test/integration/data relative to the crate root (rust/), or resolved
 /// from SYMHOW_TEST_SOURCE_DIR when set.
 fn samples_path() -> PathBuf {
     if let Ok(dir) = std::env::var("SYMHOW_TEST_SOURCE_DIR") {

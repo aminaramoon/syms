@@ -15,8 +15,8 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo:rerun-if-changed=ffi/symhow_srctrldb_bridge.cpp");
     println!("cargo:rerun-if-changed=ffi/symhow_srctrldb_bridge.h");
-    println!("cargo:rerun-if-changed=../third_party/sourcetraildb/src");
-    println!("cargo:rerun-if-changed=../third_party/sourcetraildb/include");
+    println!("cargo:rerun-if-changed=../cpp/third_party/sourcetraildb/src");
+    println!("cargo:rerun-if-changed=../cpp/third_party/sourcetraildb/include");
 
     let flox_env = env::var("FLOX_ENV").ok();
     let flox_include = flox_env.as_ref().map(|e| PathBuf::from(e).join("include"));
@@ -46,9 +46,9 @@ fn main() {
         .cpp(true)
         .std("c++17")
         .flag_if_supported("-w") // vendored 2018-era code is noisy under clang 21
-        .include("../third_party/sourcetraildb/include")
-        .include("../third_party/sourcetraildb/cpp_sqlite")
-        .include("../third_party/sourcetraildb")
+        .include("../cpp/third_party/sourcetraildb/include")
+        .include("../cpp/third_party/sourcetraildb/cpp_sqlite")
+        .include("../cpp/third_party/sourcetraildb")
         .include(&sqlite_include)
         .include("ffi");
 
@@ -70,9 +70,9 @@ fn main() {
         "SymbolKind.cpp",
         "utility.cpp",
     ] {
-        build.file(format!("../third_party/sourcetraildb/src/{src}"));
+        build.file(format!("../cpp/third_party/sourcetraildb/src/{src}"));
     }
-    build.file("../third_party/sourcetraildb/cpp_sqlite/CppSQLite3.cpp");
+    build.file("../cpp/third_party/sourcetraildb/cpp_sqlite/CppSQLite3.cpp");
 
     // Our C ABI shim.
     build.file("ffi/symhow_srctrldb_bridge.cpp");

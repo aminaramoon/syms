@@ -17,7 +17,7 @@ use symhow::query::{
 };
 
 fn fixture_db_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../build/fixture.srctrldb".to_string())
+    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../cpp/build/fixture.srctrldb".to_string())
 }
 
 fn resolve_one(db: &Database, spec: &str) -> i64 {

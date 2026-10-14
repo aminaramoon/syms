@@ -3,7 +3,7 @@
 //! `env!("CARGO_BIN_EXE_symhow")` and assert on exit codes, stdout/stderr,
 //! the five `symhow.graph.*/1` JSON envelopes, and `--dot` file output.
 //! Like tests/query_fixture.rs, the fixture database is located via
-//! $SYMHOW_FIXTURE_DB with a `../build/fixture.srctrldb` fallback.
+//! $SYMHOW_FIXTURE_DB with a `../cpp/build/fixture.srctrldb` fallback.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -11,7 +11,7 @@ use std::process::Command;
 use serde_json::Value;
 
 fn fixture_db_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../build/fixture.srctrldb".to_string())
+    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../cpp/build/fixture.srctrldb".to_string())
 }
 
 /// Runs the real `symhow` binary and returns (exit code, stdout, stderr).

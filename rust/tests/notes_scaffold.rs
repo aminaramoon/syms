@@ -17,7 +17,7 @@ use symhow::notes::{
 };
 
 fn fixture_db_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../build/fixture.srctrldb".to_string())
+    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../cpp/build/fixture.srctrldb".to_string())
 }
 
 fn read_file(path: &str) -> String {
@@ -145,7 +145,7 @@ fn notes_scaffold_end_to_end_scaffold_fill_sync_file_subset_corruption_mismatch(
     // --- step 3: --fill-existing, then sync --------------------------------
     let fill = Command::new("python3")
         .args([
-            "../scripts/symhow-notes-fake.py",
+            "../cpp/scripts/symhow-notes-fake.py",
             "--fill-existing",
             &notes_dir_str,
             "--seed",

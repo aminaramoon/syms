@@ -1,9 +1,9 @@
 //! Port of test/unit/test_update_driver.cpp (fixture-dependent): exercises
 //! `symhow::update::run_update()` against COPIES of the real synthetic
 //! fixture database. The fixture CDB comes from env `SYMHOW_FIXTURE_CDB`
-//! (falling back to ../build/fixture_build/compile_commands.json, the
+//! (falling back to ../cpp/build/fixture_build/compile_commands.json, the
 //! C++ tree's fixture build), and the fixture DB from env
-//! `SYMHOW_FIXTURE_DB` (../build/fixture.srctrldb) -- the same env-var
+//! `SYMHOW_FIXTURE_DB` (../cpp/build/fixture.srctrldb) -- the same env-var
 //! pattern as tests/query_fixture.rs.
 //!
 //! The C++ file's SYMHOW_BINARY-guarded CLI smoke test (`symhow update
@@ -18,16 +18,16 @@ use symhow::update::{diff_snapshots, take_snapshot, Snapshot, SnapshotOptions};
 use symhow::update::{run_update, UpdateRunOptions, UpdateSummary};
 
 fn fixture_db_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../build/fixture.srctrldb".to_string())
+    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../cpp/build/fixture.srctrldb".to_string())
 }
 
 fn fixture_cdb_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_CDB").unwrap_or_else(|_| "../build/fixture_build/compile_commands.json".to_string())
+    std::env::var("SYMHOW_FIXTURE_CDB").unwrap_or_else(|_| "../cpp/build/fixture_build/compile_commands.json".to_string())
 }
 
 /// The symhow source tree's test/ directory (C++ SYMHOW_TEST_SOURCE_DIR).
 fn source_dir() -> String {
-    std::env::var("SYMHOW_TEST_SOURCE_DIR").unwrap_or_else(|_| "../test".to_string())
+    std::env::var("SYMHOW_TEST_SOURCE_DIR").unwrap_or_else(|_| "../cpp/test".to_string())
 }
 
 fn copy_fixture(tag: &str) -> String {

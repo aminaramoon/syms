@@ -15,12 +15,12 @@ use symhow::index::index_driver::{run_index, IndexRunOptions};
 use symhow::update::snapshot::{diff_snapshots, take_snapshot, SnapshotOptions};
 
 fn fixture_db_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../build/fixture.srctrldb".to_string())
+    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../cpp/build/fixture.srctrldb".to_string())
 }
 
 fn fixture_cdb_path() -> String {
     std::env::var("SYMHOW_FIXTURE_CDB")
-        .unwrap_or_else(|_| "../build/fixture_build/compile_commands.json".to_string())
+        .unwrap_or_else(|_| "../cpp/build/fixture_build/compile_commands.json".to_string())
 }
 
 /// Resolves the clang resource dir exactly like the C++ build's

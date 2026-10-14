@@ -17,7 +17,7 @@ use symhow::notes::{
 };
 
 fn fixture_db_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../build/fixture.srctrldb".to_string())
+    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../cpp/build/fixture.srctrldb".to_string())
 }
 
 fn read_file(path: &str) -> String {
@@ -188,7 +188,7 @@ fn notes_sync_end_to_end_sync_oracle_json_overlay_determinism() {
     let syms_path = tmp.join("symbols.json");
     write_file(&syms_path.to_string_lossy(), &syms_json);
 
-    let generator_path = "../scripts/symhow-notes-fake.py";
+    let generator_path = "../cpp/scripts/symhow-notes-fake.py";
     let gen = Command::new("python3")
         .args([
             generator_path,

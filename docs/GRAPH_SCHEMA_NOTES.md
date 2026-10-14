@@ -3,11 +3,11 @@
 Task-1 deliverable: what the Sourcetrail-schema SQLite database written by
 `symhow index` can (and cannot) supply for the five planned graph analyses.
 Everything below was verified against the real databases
-`build/fixture.srctrldb` (C++ synthetic corpus, 83 nodes / 106 edges) and
-`build/cuda_fixture.srctrldb` (CUDA corpus, 27 nodes / 29 edges), and
+`cpp/build/fixture.srctrldb` (C++ synthetic corpus, 83 nodes / 106 edges) and
+`cpp/build/cuda_fixture.srctrldb` (CUDA corpus, 27 nodes / 29 edges), and
 cross-checked against `rust/src/db/{database,enums,name_decode,meta}.rs`,
 `rust/src/query/{bfs,query_engine,results}.rs`, and the C++ indexer
-(`src/index/AstWalker.cpp`, `src/model/Facts.h`).
+(`cpp/src/index/AstWalker.cpp`, `cpp/src/model/Facts.h`).
 
 **Audience**: the petgraph-integration teammate. All SQL is copy-pasteable
 against either fixture DB.
@@ -68,7 +68,7 @@ bulk edge scans will be fast.
 
 ## 2. Enum tables (integer codes actually on disk)
 
-From `rust/src/db/enums.rs` (mirrors `third_party/sourcetraildb/include/*.h`).
+From `rust/src/db/enums.rs` (mirrors `cpp/third_party/sourcetraildb/include/*.h`).
 All kinds are **single bits**; symhow filters with `(col & mask) != 0`
 (see `bfs.rs:120`), so reuse that idiom.
 
@@ -378,7 +378,7 @@ feature required).
 
 ## 6. Fixture ground truth for tests
 
-Useful small graphs inside `build/fixture.srctrldb` (CALL edges), ideal for
+Useful small graphs inside `cpp/build/fixture.srctrldb` (CALL edges), ideal for
 unit tests of the new verbs:
 
 ```

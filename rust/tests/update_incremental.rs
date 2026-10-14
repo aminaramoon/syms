@@ -9,7 +9,7 @@ use symhow::db::Database;
 use symhow::index::provenance::{read_provenance, K_WALKER_VERSION};
 
 fn fixture_db_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../build/fixture.srctrldb".to_string())
+    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../cpp/build/fixture.srctrldb".to_string())
 }
 
 fn scalar_i64(db: &Database, sql: &str) -> i64 {

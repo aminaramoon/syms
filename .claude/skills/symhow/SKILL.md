@@ -7,32 +7,32 @@ description: Use when you need to explore or query the structure of a C++/CUDA c
 
 `symhow` is a CLI tool that indexes C++/CUDA source (via libclang, driven by a `compile_commands.json`) into a Sourcetrail-schema SQLite database (`.srctrldb`), then answers structural queries against it: call graphs, inheritance, references, definitions, fuzzy symbol search, file info, and stats. This skill is mostly about the **query** side — once a database exists, this is how an agent reads it.
 
-Project location: `/home/aaramoon/workspace/mine/knowledge_graph/symhow`. Binary: `build/symhow` (built via flox+CMake). Full design/limitations live in `docs/DESIGN.md`, `docs/JSON_SCHEMA.md`, `docs/KNOWN_LIMITATIONS.md` inside that repo — this skill distills what you need to actually drive it; read those docs directly if you need more depth than what's here.
+Project location: `/Users/aaramoon/Workspace/mine/ssearch/symhow`. Binary: `cpp/build/symhow` (built via flox+CMake). Full design/limitations live in `docs/DESIGN.md`, `docs/JSON_SCHEMA.md`, `docs/KNOWN_LIMITATIONS.md` inside that repo — this skill distills what you need to actually drive it; read those docs directly if you need more depth than what's here.
 
 ## Setup — every invocation needs the flox environment
 
 `symhow` links against a flox-provided libclang/sqlite, so **always** run it through `flox activate`, from the project directory:
 
 ```bash
-cd /home/aaramoon/workspace/mine/knowledge_graph/symhow
-flox activate -- ./build/symhow <args...>
+cd /Users/aaramoon/Workspace/mine/ssearch/symhow
+flox activate -- ./cpp/build/symhow <args...>
 ```
 
-(Or `flox activate` once to get a shell, then run `./build/symhow ...` directly for the rest of the session — cheaper if you're issuing many commands.)
+(Or `flox activate` once to get a shell, then run `./cpp/build/symhow ...` directly for the rest of the session — cheaper if you're issuing many commands.)
 
-If `build/symhow` doesn't exist yet, build it first: `flox activate -- bash -c 'cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j'`.
+If `cpp/build/symhow` doesn't exist yet, build it first: `flox activate -- bash -c 'cmake -S cpp -B cpp/build -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build cpp/build -j'`.
 
 Two ready-made databases already exist in this repo for practicing/sanity-checking queries without indexing anything yourself:
-- `build/cucs.srctrldb` — a real, large database (200 TUs, ~20k symbols, ~93k references) from the `cucascade` C++/CUDA project.
-- `build/fixture.srctrldb` — a small, synthetic test database (a tiny class hierarchy, overloads, templates, macros) — good for quick, easy-to-read sanity checks.
+- `cpp/build/cucs.srctrldb` — a real, large database (200 TUs, ~20k symbols, ~93k references) from the `cucascade` C++/CUDA project.
+- `cpp/build/fixture.srctrldb` — a small, synthetic test database (a tiny class hierarchy, overloads, templates, macros) — good for quick, easy-to-read sanity checks.
 
 ## Indexing (creating a database)
 
 ```bash
-flox activate -- ./build/symhow index -c /path/to/compile_commands.json -o mydb.srctrldb --force
+flox activate -- ./cpp/build/symhow index -c /path/to/compile_commands.json -o mydb.srctrldb --force
 ```
 
-Key flags: `--remap OLD=NEW` (repeatable path-prefix substitution — needed if the CDB was generated in a different location/container than where you're indexing from), `--include GLOB` / `--exclude GLOB` (limit which TUs are processed AND which headers are walked — when using `--include`, list the project's own header dirs too, e.g. `--include '/repo/src/**' --include '/repo/include/**'`), `--exclude-submodules` (skip every git submodule declared in the repo's `.gitmodules` — the quick way to leave vendored dependencies out; their symbols still show up as non-indexed targets when your code references them), `--cuda-mode auto|full|nowrapper|host-only|skip` (CUDA `.cu` files, default `auto` tries progressively degraded parsing strategies), `--limit N` (only process the first N TUs — useful for a quick smoke test on a big project), `--json` (print an `symhow.index-summary/1` JSON object with symbol/reference/error counts instead of just human text), `-v` (repeatable, verbose per-TU progress on stderr). Run `flox activate -- ./build/symhow index --help` for the full flag list (path remapping, arg sanitizing overrides, resource-dir/toolchain overrides, etc.).
+Key flags: `--remap OLD=NEW` (repeatable path-prefix substitution — needed if the CDB was generated in a different location/container than where you're indexing from), `--include GLOB` / `--exclude GLOB` (limit which TUs are processed AND which headers are walked — when using `--include`, list the project's own header dirs too, e.g. `--include '/repo/src/**' --include '/repo/include/**'`), `--exclude-submodules` (skip every git submodule declared in the repo's `.gitmodules` — the quick way to leave vendored dependencies out; their symbols still show up as non-indexed targets when your code references them), `--cuda-mode auto|full|nowrapper|host-only|skip` (CUDA `.cu` files, default `auto` tries progressively degraded parsing strategies), `--limit N` (only process the first N TUs — useful for a quick smoke test on a big project), `--json` (print an `symhow.index-summary/1` JSON object with symbol/reference/error counts instead of just human text), `-v` (repeatable, verbose per-TU progress on stderr). Run `flox activate -- ./cpp/build/symhow index --help` for the full flag list (path remapping, arg sanitizing overrides, resource-dir/toolchain overrides, etc.).
 
 Indexing a real project can take a while (the 200-TU `cucascade` corpus above takes ~100s). Prefer `--limit 5` or a narrow `--include` glob for a first smoke test before indexing everything; on a big multi-core project, add `-j 8` (or higher) to extract TUs concurrently — output is identical regardless of `-j`, only wall time improves.
 
@@ -43,7 +43,7 @@ Ctrl-C is safe: `symhow index` checkpoints every 25 TUs by default (`--commit-ev
 If a `.srctrldb` already exists for a repo and only a handful of files changed since it was indexed (e.g. after a `git pull`, or after making a small local edit), use **`symhow update`** instead of re-running `symhow index` from scratch — it re-indexes only what actually changed:
 
 ```bash
-flox activate -- ./build/symhow update -d mydb.srctrldb -v
+flox activate -- ./cpp/build/symhow update -d mydb.srctrldb -v
 ```
 
 No other flags are usually needed: the repo root, baseline commit, `compile_commands.json` path, and every `symhow index` option are all read back out of the database's own provenance. `symhow update` diffs the stored baseline against the current worktree (uncommitted edits included — it's always the worktree that gets indexed, not just `HEAD`), clears exactly the facts the changed files (and anything transitively `#include`ing them) invalidated, and re-indexes only the affected translation units.
@@ -61,7 +61,7 @@ Exit codes: `0` success, `1` a hard error, `2` refused (no usable provenance, in
 ## Querying — the main event
 
 ```bash
-flox activate -- ./build/symhow query <VERB> <SYMBOL-or-TEXT-or-PATH> -d path/to/db.srctrldb [flags...]
+flox activate -- ./cpp/build/symhow query <VERB> <SYMBOL-or-TEXT-or-PATH> -d path/to/db.srctrldb [flags...]
 ```
 
 `-d/--db` defaults to `$SYMHOW_DB` env var or `./symhow.srctrldb` if omitted — **always pass `-d` explicitly** unless you've set that up.
@@ -124,20 +124,20 @@ Shared flags: `-d/--db PATH` (or `$SYMHOW_DB`, or `./symhow.srctrldb`), `--json`
 | `slice` | `--criterion SYMBOL` (required), `--lines` | **What does this function depend on — everything that can affect it?** Backward slice: reverse transitive closure over USAGE+CALL edges, function granularity. `--lines` annotates each edge with its source-line sites (text + DOT). |
 | `path` | `--from SYMBOL`, `--to SYMBOL` (both required), `--weight hops\|calls\|lines` (default `hops`) | **What's the happy path from A to B?** Weighted shortest path (Dijkstra). An unreachable target prints "no path" and exits **0** — reachability is the answer, not an error. |
 
-Worked examples (verified against `build/fixture.srctrldb`):
+Worked examples (verified against `cpp/build/fixture.srctrldb`):
 
 ```bash
 cd <symhow repo>
 # Orchestrators / decision hubs, as JSON
-flox activate -- ./rust/target/debug/symhow graph centrality -d build/fixture.srctrldb --top 10 --json
+flox activate -- ./rust/target/debug/symhow graph centrality -d cpp/build/fixture.srctrldb --top 10 --json
 # Load-bearing logic reachable from the entry points (fallback seeds)
-flox activate -- ./rust/target/debug/symhow graph pagerank -d build/fixture.srctrldb --json
+flox activate -- ./rust/target/debug/symhow graph pagerank -d cpp/build/fixture.srctrldb --json
 # Execution backbone from one entry point, plus a DOT rendering
-flox activate -- ./rust/target/debug/symhow graph dominators -d build/fixture.srctrldb --entry '#206' --dot /tmp/dom.dot
+flox activate -- ./rust/target/debug/symhow graph dominators -d cpp/build/fixture.srctrldb --entry '#206' --dot /tmp/dom.dot
 # Everything a function depends on, with call-site line numbers
-flox activate -- ./rust/target/debug/symhow graph slice -d build/fixture.srctrldb --criterion level2 --lines
+flox activate -- ./rust/target/debug/symhow graph slice -d cpp/build/fixture.srctrldb --criterion level2 --lines
 # Happy path from A to B, weighted by call-site count
-flox activate -- ./rust/target/debug/symhow graph path -d build/fixture.srctrldb --from runChain --to level0 --weight calls
+flox activate -- ./rust/target/debug/symhow graph path -d cpp/build/fixture.srctrldb --from runChain --to level0 --weight calls
 ```
 
 JSON: `--json` emits `symhow.graph.centrality/1`, `symhow.graph.pagerank/1`, `symhow.graph.dominators/1`, `symhow.graph.slice/1`, `symhow.graph.path/1` — same envelope conventions as every other schema (`symhow_version`+`schema` first, `query` echo, `stats`, `truncated`, alphabetical keys). Ambiguous symbols reuse `symhow.ambiguous/1` (exit 2), not-found reuses `symhow.not-found/1` (exit 3). One deviation from the canonical node object: graph node objects carry only `{id, kind, name, qualified_name, signature, display_name?}` — they omit `indexed`/`definition_kind`/`location` (and `depth`/`seed`); join on `id` with `symhow.graph/1`/`symhow.definition/1` output when you need locations. Full field lists in `docs/JSON_SCHEMA.md`.
@@ -150,35 +150,35 @@ JSON: `--json` emits `symhow.graph.centrality/1`, `symhow.graph.pagerank/1`, `sy
 ## Real worked examples (verified against this repo's own databases)
 
 ```bash
-cd /home/aaramoon/workspace/mine/knowledge_graph/symhow
+cd /Users/aaramoon/Workspace/mine/ssearch/symhow
 
 # Sanity-check a DB first
-flox activate -- ./build/symhow query stats -d build/cucs.srctrldb --json
+flox activate -- ./cpp/build/symhow query stats -d build/cucs.srctrldb --json
 
 # Don't know the exact name? Fuzzy search first.
-flox activate -- ./build/symhow query search 'reslimpol' -d build/cucs.srctrldb --limit 5
+flox activate -- ./cpp/build/symhow query search 'reslimpol' -d build/cucs.srctrldb --limit 5
 
 # Class hierarchy, unlimited depth
-flox activate -- ./build/symhow query bases 'cucascade::memory::increase_reservation_limit_policy' -d build/cucs.srctrldb --depth 0
+flox activate -- ./cpp/build/symhow query bases 'cucascade::memory::increase_reservation_limit_policy' -d build/cucs.srctrldb --depth 0
 
 # Callers of a method, 2 hops, JSON for programmatic use
-flox activate -- ./build/symhow query callers 'cucascade::memory::reservation_limit_policy::get_policy_name' \
-  -d build/cucs.srctrldb --depth 2 --json
+flox activate -- ./cpp/build/symhow query callers 'cucascade::memory::reservation_limit_policy::get_policy_name' \
+  -d cpp/build/cucs.srctrldb --depth 2 --json
 
 # Everything referencing a type
-flox activate -- ./build/symhow query references 'cucascade::idata_representation' -d build/cucs.srctrldb --json
+flox activate -- ./cpp/build/symhow query references 'cucascade::idata_representation' -d build/cucs.srctrldb --json
 
 # Where is it actually defined
-flox activate -- ./build/symhow query definition 'cucascade::memory::reservation_limit_policy' -d build/cucs.srctrldb
+flox activate -- ./cpp/build/symhow query definition 'cucascade::memory::reservation_limit_policy' -d build/cucs.srctrldb
 
 # Everything in one file
-flox activate -- ./build/symhow query file /home/aaramoon/workspace/oss/cucs/include/cucascade/memory/memory_reservation.hpp \
-  -d build/cucs.srctrldb --occurrences
+flox activate -- ./cpp/build/symhow query file /home/aaramoon/workspace/oss/cucs/include/cucascade/memory/memory_reservation.hpp \
+  -d cpp/build/cucs.srctrldb --occurrences
 ```
 
 A resolved-ambiguous example (`Square` the class vs. `Square(double)` its own constructor, both leaf-named "Square" — resolve with `--kind`):
 ```bash
-flox activate -- ./build/symhow query bases 'Square' -d build/fixture.srctrldb --kind CLASS --depth 0
+flox activate -- ./cpp/build/symhow query bases 'Square' -d cpp/build/fixture.srctrldb --kind CLASS --depth 0
 ```
 
 ## JSON schema reference (for programmatic consumption)

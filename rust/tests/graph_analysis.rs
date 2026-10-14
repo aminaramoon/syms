@@ -1,6 +1,6 @@
 //! Integration tests for the petgraph-backed graph layer (src/graph/),
 //! following tests/query_fixture.rs's conventions: the fixture database is
-//! located via $SYMHOW_FIXTURE_DB with a `../build/fixture.srctrldb` fallback,
+//! located via $SYMHOW_FIXTURE_DB with a `../cpp/build/fixture.srctrldb` fallback,
 //! and assertions are pinned to the fixture ground truth documented in
 //! docs/GRAPH_SCHEMA_NOTES.md §6 (independently re-verified against the real
 //! database with SQL + a reference Brandes/PageRank/dominator implementation
@@ -20,7 +20,7 @@ use symhow::graph::{
 };
 
 fn fixture_db_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../build/fixture.srctrldb".to_string())
+    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../cpp/build/fixture.srctrldb".to_string())
 }
 
 fn open_fixture() -> Database {

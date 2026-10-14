@@ -19,19 +19,19 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUST_DIR="${REPO_ROOT}/rust"
-CDB="${1:-${REPO_ROOT}/build/fixture_build/compile_commands.json}"
+CDB="${1:-${REPO_ROOT}/cpp/build/fixture_build/compile_commands.json}"
 WORK="$(mktemp -d /tmp/symhow_parity.XXXXXX)"
 trap 'rm -rf "${WORK}"' EXIT
 
 echo "== parity: inputs"
 echo "   repo root : ${REPO_ROOT}"
 echo "   cdb      : ${CDB}"
-test -f "${CDB}" || { echo "error: compile_commands.json not found at ${CDB} (build the C++ tree first: cmake --preset dev && cmake --build --preset dev)"; exit 1; }
+test -f "${CDB}" || { echo "error: compile_commands.json not found at ${CDB} (build the C++ tree first: cd cpp && cmake --preset dev && cmake --build --preset dev)"; exit 1; }
 
 echo "== parity: build C++ backend"
 # Configure into a private build dir: never mutate the shared `build/` tree
 # (its CTest registrations and fixture DBs belong to the C++ test suite).
-cmake -S "${REPO_ROOT}" -B "${WORK}/cpp-build" -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSYMHOW_BUILD_TESTS=OFF >/dev/null
+cmake -S "${REPO_ROOT}/cpp" -B "${WORK}/cpp-build" -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSYMHOW_BUILD_TESTS=OFF >/dev/null
 cmake --build "${WORK}/cpp-build" >/dev/null
 CPP_BIN="${WORK}/cpp-build/symhow"
 test -x "${CPP_BIN}" || { echo "error: C++ binary missing"; exit 1; }

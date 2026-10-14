@@ -5,8 +5,8 @@ object to stdout (never split across lines, never mixed with any other
 stdout output) and set the same process exit code text mode would have used
 (0 ok, 2 ambiguous symbol, 3 not found, 4 db missing/unreadable, etc. -- see
 `symhow --help`). This document is the schema reference for that output,
-implemented by `symhow::out::json::JsonWriter` (`include/symhow/out/JsonWriter.h`,
-`src/out/JsonWriter.cpp`); the `symhow.graph.*` schemas at the bottom are the
+implemented by `symhow::out::json::JsonWriter` (`cpp/include/symhow/out/JsonWriter.h`,
+`cpp/src/out/JsonWriter.cpp`); the `symhow.graph.*` schemas at the bottom are the
 one exception -- they are produced by the Rust-only `symhow graph` subcommand
 (`rust/src/out/graph_writer.rs`) and have no C++ counterpart.
 
@@ -97,7 +97,7 @@ Every schema that includes an actual graph node (`symhow.graph/1`'s `nodes[]`,
 }
 ```
 
-Field-by-field, in terms of `symhow::db::DecodedName` (`include/symhow/db/NameDecode.h`):
+Field-by-field, in terms of `symhow::db::DecodedName` (`cpp/include/symhow/db/NameDecode.h`):
 
 - `name` -- the bare leaf element name only (no ancestors, no signature):
   `decoded.elements.back().name`.
@@ -527,7 +527,7 @@ here -- two database paths, not one, are the input).
 Each entry in `only_in_a`/`only_in_b` is prefixed with its category
 (`node|`, `edge|`, `location|`, `symbol|`, `file|`, `error|`,
 `local_symbol|`, `symbol_def|`, `tu|`, `note|`, `note_problem|`) followed by
-the "|"-joined key for that category -- see `include/symhow/update/Snapshot.h`
+the "|"-joined key for that category -- see `cpp/include/symhow/update/Snapshot.h`
 for the exact field list per category. `note` (Phase 4 of
 `docs/NOTES_DESIGN.md`) is keyed by `(serialized_name, notes_path, brief,
 what, how, filled, stale, note_hash)` from `symhow_note` (empty on both sides if
@@ -641,7 +641,7 @@ Notes:
   *how many* of `"deleted"`/`"changed"`/`"tus"."new"` were actually one
   side of a rename, for reporting. (Prior to Phase 4 this field was
   hardcoded to `0` -- a real gap, not a design choice; fixed alongside the
-  git-driven scenario test that caught it, `test/update/update_scenario.cmake`.)
+  git-driven scenario test that caught it, `cpp/test/update/update_scenario.cmake`.)
 - `"files"."cleared_paths"`/`"unmatched_paths"` are always present (possibly
   empty arrays), even when `"dry_run"` or the "nothing to do" case leaves
   every count at `0`.
@@ -657,7 +657,7 @@ Notes:
   `[k/N]` progress counter -- see `docs/KNOWN_LIMITATIONS.md`'s "Phase 9:
   duplicate CDB entries" section.
 - `"tus"."retried"` (Phase 4) is the count of CDB entries whose previous
-  `symhow_tu.status` (see `include/symhow/index/Provenance.h`'s `kSymhowTuDdl`) was
+  `symhow_tu.status` (see `cpp/include/symhow/index/Provenance.h`'s `kSymhowTuDdl`) was
   `"partial"` or `"failed"` -- i.e. a TU that produced no content, had a
   fatal diagnostic, or (CUDA only) only succeeded via a degraded fallback
   rung last time. These are folded into the same clear-and-reindex set as
@@ -687,7 +687,7 @@ Printed by `symhow notes lint --notes-dir DIR --json` (Phase 1 of
 `docs/NOTES_DESIGN.md`'s `symhow notes` feature -- see that doc for the
 markdown format). No DB involved at all: `lint` walks `DIR` recursively for
 `*.md` files and parses each with `symhow::notes::parseNotesFile`
-(`include/symhow/notes/Markdown.h`). No `"query"`/`"stats"` field (nothing was
+(`cpp/include/symhow/notes/Markdown.h`). No `"query"`/`"stats"` field (nothing was
 queried against a database).
 
 ```json
@@ -704,7 +704,7 @@ queried against a database).
   canonicalized).
 - `"files"`/`"blocks"`/`"filled"` are total counts across every `*.md` file
   found: `"blocks"` is every `##` block parsed, `"filled"` is how many of
-  those have `NoteBlock::filled() == true` (see `include/symhow/notes/NoteModel.h`
+  those have `NoteBlock::filled() == true` (see `cpp/include/symhow/notes/NoteModel.h`
   -- brief/what/how/pre/post/bugs/suggestions non-empty; `signature` doesn't
   count).
 - `"problems"[]` is every `symhow::notes::Problem` from every file, sorted by
@@ -732,9 +732,9 @@ comment a `##` block may carry right after its heading --
 Printed by `symhow notes sync -d DB [--notes-dir DIR] [--strict] [--json]`
 (Phase 2 of `docs/NOTES_DESIGN.md`). Rebuilds the `symhow_note`/`symhow_note_file`/
 `symhow_note_problem` cache tables from the markdown tree, matching every `##`
-block to exactly one symbol (see `include/symhow/notes/Sync.h`'s `matchBlock()`
+block to exactly one symbol (see `cpp/include/symhow/notes/Sync.h`'s `matchBlock()`
 doc for the matching algorithm) and recomputing each match's current body
-hash (`include/symhow/notes/BodyHash.h`).
+hash (`cpp/include/symhow/notes/BodyHash.h`).
 
 ```json
 { "symhow_version": "0.1.0", "schema": "symhow.notes-sync/1",
@@ -860,7 +860,7 @@ symbol (a `node` row with a `symbol` row), using the same overlay-aware
 
 Printed by `symhow notes symbols -d DB [--kind K]... [--file GLOB] [--json]`.
 Lists indexed symbols in exactly the shape
-`scripts/symhow-notes-fake.py --symbols-json` consumes (Phase 3's `scaffold`
+`cpp/scripts/symhow-notes-fake.py --symbols-json` consumes (Phase 3's `scaffold`
 shares this same code path).
 
 ```json
@@ -892,7 +892,7 @@ class/struct like `symhow query` and walks its members (`QueryEngine::members()`
 including out-of-line method definitions); `SYMBOL` resolves a single symbol
 like `symhow query` (same exit codes: `2` ambiguous, `3` not found/no definition
 location). Writing itself (`symhow::notes::scaffoldNotes()`) is idempotent and
-non-destructive -- see `include/symhow/notes/Scaffold.h`'s doc comment.
+non-destructive -- see `cpp/include/symhow/notes/Scaffold.h`'s doc comment.
 
 ```json
 { "symhow_version": "0.1.0", "schema": "symhow.notes-scaffold/1",
@@ -987,7 +987,7 @@ reported nodes).
 
 ```json
 { "symhow_version": "0.1.0", "schema": "symhow.graph.centrality/1",
-  "query": { "verb": "centrality", "db": "build/fixture.srctrldb",
+  "query": { "verb": "centrality", "db": "cpp/build/fixture.srctrldb",
              "top": 3, "include_unsolved": false },
   "truncated": true,
   "stats": { "node_count": 48, "edge_count": 39, "shown": 3,
@@ -1016,7 +1016,7 @@ same way `centrality` does.
 
 ```json
 { "symhow_version": "0.1.0", "schema": "symhow.graph.pagerank/1",
-  "query": { "verb": "pagerank", "db": "build/fixture.srctrldb",
+  "query": { "verb": "pagerank", "db": "cpp/build/fixture.srctrldb",
              "seeds": [], "seed_ids": [206, 211], "seeds_explicit": false,
              "damping": 0.85, "top": 2 },
   "truncated": true,
@@ -1048,7 +1048,7 @@ pick one with `--entry SYMBOL` or `--entry '#<id>'`.
 
 ```json
 { "symhow_version": "0.1.0", "schema": "symhow.graph.dominators/1",
-  "query": { "verb": "dominators", "db": "build/fixture.srctrldb",
+  "query": { "verb": "dominators", "db": "cpp/build/fixture.srctrldb",
              "entry": "#206", "entry_id": 206, "entry_explicit": true },
   "truncated": false,
   "stats": { "node_count": 48, "edge_count": 39, "dominated_count": 1,
@@ -1083,7 +1083,7 @@ statement-level dependence (local variables have no edges at all).
 
 ```json
 { "symhow_version": "0.1.0", "schema": "symhow.graph.slice/1",
-  "query": { "verb": "slice", "db": "build/fixture.srctrldb",
+  "query": { "verb": "slice", "db": "cpp/build/fixture.srctrldb",
              "criterion": "level2", "criterion_id": 149, "lines": true },
   "truncated": false,
   "stats": { "member_count": 4, "edge_count": 3, "elapsed_ms": 0 },
@@ -1118,7 +1118,7 @@ database.
 
 ```json
 { "symhow_version": "0.1.0", "schema": "symhow.graph.path/1",
-  "query": { "verb": "path", "db": "build/fixture.srctrldb",
+  "query": { "verb": "path", "db": "cpp/build/fixture.srctrldb",
              "from": "runChain", "from_id": 155,
              "to": "level0", "to_id": 151, "weight": "calls" },
   "truncated": false,

@@ -1,6 +1,6 @@
 //! Port of test/unit/test_parallel_fixture.cpp: `--parallel`/`-j`
 //! equivalence tests -- indexes the real synthetic fixture CDB (env
-//! SYMHOW_FIXTURE_CDB, falling back to ../build/fixture_build/
+//! SYMHOW_FIXTURE_CDB, falling back to ../cpp/build/fixture_build/
 //! compile_commands.json) through run_index() with different `parallel`
 //! values into separate temp databases, and asserts the RESULT is
 //! identical regardless of N -- both at the logical-snapshot level
@@ -15,7 +15,7 @@ use symhow::index::index_driver::{run_index, IndexRunOptions};
 use symhow::update::snapshot::{diff_snapshots, take_snapshot, Snapshot, SnapshotOptions};
 
 fn fixture_cdb_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_CDB").unwrap_or_else(|_| "../build/fixture_build/compile_commands.json".to_string())
+    std::env::var("SYMHOW_FIXTURE_CDB").unwrap_or_else(|_| "../cpp/build/fixture_build/compile_commands.json".to_string())
 }
 
 fn test_output_dir(name: &str) -> String {
