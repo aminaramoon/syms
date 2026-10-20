@@ -11,8 +11,8 @@ diff), and stateless single-file parsing.
 - Line numbers are 1-based in output; columns 0-based (bytes).
 - DB default location: `<repo>/.symwhere/index.db`.
 - Repo-relative paths with `/` separators are stored.
-- All builds/tests run via: `flox activate -- bash -c 'cargo ...'` (workdir
-  `/Users/aaramoon/Workspace/mine/ssearch/symwhere`).
+- All builds/tests run via: `flox activate -- bash -c 'cargo ...'` from the
+  `symwhere/` directory.
 
 ## Module contracts (src/)
 
@@ -44,7 +44,7 @@ diff), and stateless single-file parsing.
   Use `(#set! ...)` predicates only if needed; keep queries robust (avoid
   failing on minor grammar version drift).
 - Study helix's `runtime/queries/{c,cpp,rust}/{locals,highlights}.scm` at
-  /Users/aaramoon/Workspace/mine/ssearch/helix for node names.
+  a Helix checkout's `runtime/queries/{c,cpp,rust}` files for node names.
 
 ### walk.rs + index.rs — parallel indexer (owner: indexer agent)
 - `walk.rs`:
