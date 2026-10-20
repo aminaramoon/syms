@@ -1,0 +1,131 @@
+## Flox Environment Manifest -----------------------------------------
+##
+##   _Everything_ you need to know about the _manifest_ is here:
+##
+##   https://flox.dev/docs/reference/command-reference/manifest.toml/
+##
+## -------------------------------------------------------------------
+# Flox manifest version managed by Flox CLI
+schema-version = "1.16.0"
+
+
+## Install Packages --------------------------------------------------
+##  $ flox install gum  <- puts a package in [install] section below
+##  $ flox search gum   <- search for a package
+##  $ flox show gum     <- show all versions of a package
+## -------------------------------------------------------------------
+[install]
+gcc.pkg-path      = "gcc"
+gcc.version       = "^15"
+gcc.systems       = ["x86_64-linux", "aarch64-linux"]
+cmake.pkg-path    = "cmake"
+ninja.pkg-path    = "ninja"
+pkg-config.pkg-path = "pkg-config"
+
+cargo.pkg-path    = "cargo"
+rustc.pkg-path    = "rustc"
+rustfmt.pkg-path  = "rustfmt"
+clippy.pkg-path   = "clippy"
+
+libclang.pkg-path = "llvmPackages_21.libclang"
+libclang.outputs  = ["dev", "lib"]
+
+sqlite.pkg-path   = "sqlite"
+sqlite.outputs    = ["bin", "dev", "out"]
+
+nlohmann_json.pkg-path = "nlohmann_json"
+
+catch2.pkg-path   = "catch2_3"
+
+git.pkg-path      = "git"
+
+
+## Environment Variables ---------------------------------------------
+##  ... available for use in the activated environment
+##      as well as [hook], [profile] scripts and [services] below.
+## -------------------------------------------------------------------
+[vars]
+SYMHOW_CUCS_DIR = "/home/aaramoon/workspace/oss/cucs"
+CMAKE_EXPORT_COMPILE_COMMANDS = "1"
+
+
+## Activation Hook ---------------------------------------------------
+##  ... run by _bash_ shell when you run 'flox activate'.
+## -------------------------------------------------------------------
+[hook]
+on-activate = '''
+  export LIBCLANG_INCLUDE_DIR="$FLOX_ENV/include"
+  export LIBCLANG_LIBRARY_DIR="$FLOX_ENV/lib"
+  # clang-sys (the Rust libclang FFI) dlopens libclang at runtime; point it at
+  # the flox-provided libclang.dylib.
+  export LIBCLANG_PATH="$FLOX_ENV/lib"
+  # SYMHOW_RESOURCE_DIR must be what clang's own -resource-dir flag expects: the
+  # *parent* of the include/ directory that holds builtin headers like
+  # stddef.h (i.e. exactly what `clang -print-resource-dir` reports), NOT
+  # the include/ directory itself. Passing the include/ dir one level too
+  # deep silently breaks header discovery for any TU that pulls in a system
+  # header (e.g. `#include <string>`) -- found and fixed in Phase 3.
+  for d in "$FLOX_ENV"/lib/clang/*; do
+    [ -f "$d/include/stddef.h" ] && export SYMHOW_RESOURCE_DIR="$d"
+  done
+  if [ -x "$SYMHOW_CUCS_DIR/.pixi/envs/default/bin/nvcc" ]; then
+    export SYMHOW_CUDA_PATH="$SYMHOW_CUCS_DIR/.pixi/envs/default"
+  fi
+  export CMAKE_PREFIX_PATH="$FLOX_ENV${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
+'''
+
+
+## Profile script ----------------------------------------------------
+## ... sourced by _your shell_ when you run 'flox activate'.
+## -------------------------------------------------------------------
+[profile]
+# common = '''
+#   gum style \
+#   --foreground 212 --border-foreground 212 --border double \
+#   --align center --width 50 --margin "1 2" --padding "2 4" \
+#     $INTRO_MESSAGE
+# '''
+## Shell-specific customizations such as setting aliases go here:
+# bash = ...
+# zsh  = ...
+# fish = ...
+
+
+## Services ---------------------------------------------------------
+##  $ flox services start             <- Starts all services
+##  $ flox services status            <- Status of running services
+##  $ flox activate --start-services  <- Activates & starts all
+## ------------------------------------------------------------------
+[services]
+# myservice.command = "python3 -m http.server"
+
+
+## Include ----------------------------------------------------------
+## ... environments to create a composed environment
+## ------------------------------------------------------------------
+[include]
+# environments = [
+#     { dir = "../common" }
+# ]
+
+
+## Build and publish your own packages ------------------------------
+##  $ flox build
+##  $ flox publish
+## ------------------------------------------------------------------
+[build]
+# [build.myproject]
+# description = "The coolest project ever"
+# version = "0.0.1"
+# command = """
+#   mkdir -p $out/bin
+#   cargo build --release
+#   cp target/release/myproject $out/bin/myproject
+# """
+
+
+## Other Environment Options -----------------------------------------
+[options]
+systems = ["x86_64-linux", "aarch64-linux", "aarch64-darwin", "x86_64-darwin"]
+# Uncomment to disable CUDA detection.
+# cuda-detection = false

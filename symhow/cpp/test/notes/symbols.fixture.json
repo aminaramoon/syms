@@ -1,0 +1,70 @@
+[
+  {
+    "source_path": "src/planner/query.cpp",
+    "qualified_name": "sirius::planner::query::get_pipeline",
+    "signature": "sirius::pipeline::sirius_pipeline *get_pipeline(op::sirius_physical_operator *)",
+    "body_hash": "a1b2c3d4e5f60718"
+  },
+  {
+    "source_path": "src/planner/query.cpp",
+    "qualified_name": "sirius::planner::query::optimize",
+    "signature": "void optimize(op::sirius_physical_operator *)",
+    "body_hash": "0011223344556677"
+  },
+  {
+    "source_path": "src/planner/query.cpp",
+    "qualified_name": "sirius::planner::query::bind",
+    "signature": "int bind(int)"
+  },
+  {
+    "source_path": "src/planner/query.cpp",
+    "qualified_name": "sirius::planner::query::bind",
+    "signature": "int bind(double)",
+    "body_hash": "89abcdef01234567"
+  },
+  {
+    "source_path": "src/exec/pipeline.cpp",
+    "qualified_name": "sirius::exec::pipeline::run",
+    "signature": "void run()",
+    "body_hash": "fedcba9876543210"
+  },
+  {
+    "source_path": "src/exec/pipeline.cpp",
+    "qualified_name": "sirius::exec::pipeline::finalize",
+    "signature": "void finalize()"
+  },
+  {
+    "source_path": "src/exec/pipeline.cpp",
+    "qualified_name": "sirius::exec::pipeline::reset",
+    "signature": "void reset(bool)",
+    "body_hash": "1234567890abcdef"
+  },
+  {
+    "source_path": "src/exec/pipeline.cpp",
+    "qualified_name": "sirius::exec::pipeline::step",
+    "signature": "bool step(int)"
+  },
+  {
+    "source_path": "src/exec/pipeline.cpp",
+    "qualified_name": "sirius::exec::pipeline::step",
+    "signature": "bool step(double)",
+    "body_hash": "cafebabedeadbeef"
+  },
+  {
+    "source_path": "src/util/lorem.cpp",
+    "qualified_name": "sirius::util::lorem::shuffle",
+    "signature": "void shuffle(int *, int)",
+    "body_hash": "0badf00d1badf00d"
+  },
+  {
+    "source_path": "src/util/lorem.cpp",
+    "qualified_name": "sirius::util::lorem::normalize",
+    "signature": "std::string normalize(const std::string &)"
+  },
+  {
+    "source_path": "src/util/lorem.cpp",
+    "qualified_name": "sirius::util::lorem::hash",
+    "signature": "std::uint64_t hash(std::string_view)",
+    "body_hash": "deadbeefcafebabe"
+  }
+]

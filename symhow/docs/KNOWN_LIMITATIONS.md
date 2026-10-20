@@ -1,0 +1,1654 @@
+# Known limitations
+
+## Incremental-update performance improvements
+
+- Update planning now shares a single operation-scoped normalization cache
+  across matching and TU selection. Each original spelling is resolved at
+  most once; symlink resolution and exact DB/CDB output spellings are
+  unchanged. The cache is not shared across updates or indexing workers.
+- `symhow_file_fingerprint(file_node_id, sha256)` is optional optimization
+  state, foreign-keyed to `file(id)` with cascading deletion. SHA-256
+  fingerprints describe the exact buffers returned by
+  `clang_getFileContents()`, not a later read of disk or the vendored
+  writer's newline-normalized `filecontent`. They are flushed alongside
+  TU status at checkpoints, including interrupted runs.
+- Normal git/worktree updates compare only content-derived change
+  candidates with these fingerprints before adding compiler-argument changes
+  and retry seeds. Unchanged dirty/untracked source or header bytes can
+  therefore produce exit 5 without parsing or invalidation; a later edit
+  or revert still triggers indexing, even with identical size/mtime.
+  `--files`, explicit `--from`/`--to` revisions, option divergence,
+  new TUs, deletions, renames, and failed/partial retries retain their
+  previous behavior.
+- Missing/unknown fingerprints and unreadable/non-regular files never
+  suppress indexing. Older databases remain supported and acquire hashes
+  when their file facts are rebuilt; no walker/provenance version bump is
+  required. Surviving shared-header facts are only certified when their
+  prior fingerprint matches the parsed bytes. Different snapshots within
+  a session or across a partial append disable skipping rather than
+  certifying possibly mixed old/new facts.
+- This is still git-driven change detection, not a filesystem watcher.
+  Changes git does not report (for example ignored generated dependencies)
+  still need explicit invalidation. Avoid editing source during indexing:
+  per-file fingerprints do not make a multi-TU build an atomic snapshot.
+  Logical `symhow dbdiff` intentionally ignores this acceleration state.
+
+## Phase 1
+
+- No indexing: `symhow_index` is a stub target with no libclang-based indexing
+  logic yet. `symhow` only supports `--version` and `--help`.
+- No querying: `symhow_query` / `symhow_out` are stub targets.
+- No database read/write helpers beyond the vendored SourcetrailDB writer
+  library itself (`symhow_db` is a stub).
+- `symhow_integration_tests` is a placeholder executable; the real cucs-corpus
+  integration test lands in Phase 6.
+- `third_party/sourcetraildb` is built at C++17, not the project-wide
+  C++20; see `third_party/sourcetraildb/PROVENANCE.md` for rationale.
+
+## Phase 3
+
+Real libclang-backed indexing (`symhow index`, without `--dry-run`) is now
+implemented (`symhow::index::NameBuilder`, `TuParser`, `FileRegistry`,
+`AstWalker`, `SrctrldbBackend`, `IndexDriver`), writing an actual
+Sourcetrail-schema (storage_version 25) `.srctrldb` file. Known gaps/caveats
+for the Phase 4 (read-only query engine) implementer:
+
+- **Vendored-writer "unsolved symbol" node**: every `UNSOLVED` reference
+  (e.g. a call/member-access dependent on an unresolved template parameter)
+  is recorded via `SourcetrailDBWriter::recordReferenceToUnsolvedSymhol`,
+  which internally creates a shared node named "unsolved symbol" that the
+  vendored writer itself never assigns a `SymbolKind` to -- it is the ONE
+  legitimate, unavoidable `node.type = 1` (`NodeKind::UNKNOWN`) row you
+  should expect to see in any database that contains at least one unsolved
+  reference (there is exactly one such node, shared by ALL unsolved
+  references, since the vendored writer dedups nodes by `serialized_name`
+  and every unsolved-symbol node has the same literal name). Any OTHER
+  `node.type = 1` row is a real bug, not this.
+- **Local symbols never become edge endpoints.** Parameters, local
+  variables, and template parameters are recorded purely as
+  `local_symbol` + `LOCAL_SYMBOL`-kind occurrences (highlighted together
+  when one is clicked); they are never a `reference`/`edge` source or
+  target. Don't expect to find call/usage edges into/out of a local symbol
+  node -- there's no such thing in this schema.
+- **File-kind "symbols" reuse the file's own node id.** `INCLUDE` edges and
+  `MACRO_USAGE` reference contexts point at the exact same `node.id` that
+  `file.id` uses for that path (there is no separate "file symbol" node);
+  `SrctrldbBackend` special-cases this in `ensureSymbolNode()`.
+- **Template instantiations collapse by display name.** `NameBuilder` does
+  not include template argument lists in a symbol's `Name` (only function
+  parameter *types* are included, for overload distinctness) -- so e.g.
+  `std::vector<int>` and `std::vector<long>` both serialize to
+  `::std::vector` and get merged into one node by the
+  `SrctrldbBackend::ensureSymbolNode()` residual-collision safety net
+  (`symbol.nameCollisions` in the `IndexSummary` counts these; expect a
+  non-trivial number on template-heavy corpora like CCCL/thrust -- this is
+  expected, not a bug).
+- **`DefinitionKind::Implicit` is currently unused.** Only `Explicit` (via
+  `clang_isCursorDefinition`) and `None` are ever produced; there's no
+  detection of compiler-implicit special members (default ctor/dtor/copy,
+  etc.) yet.
+- **`clang_Cursor_getArgumentType` does not exist** in this libclang C API
+  version; `NameBuilder`'s function-signature postfix uses
+  `clang_Cursor_getArgument(c,i)` + `clang_getCursorType()` instead (same
+  result).
+- **`-resource-dir` semantics fixed in this phase**: `LibClang_RESOURCE_DIR`
+  / `$SYMHOW_RESOURCE_DIR` now mean the *parent* of clang's builtin-header
+  `include/` directory (matching `clang -print-resource-dir`), not the
+  `include/` directory itself -- see `cmake/FindLibClang.cmake` and
+  `.flox/env/manifest.toml` (the previous, one-level-too-deep convention
+  silently broke parsing of any TU that included a system header, e.g.
+  `<string>`; this was never exercised before Phase 3 since Phase 1/2 only
+  ever printed argv in `--dry-run` mode).
+
+## Phase 4
+
+The read-only query engine (`symhow query`) is now implemented: `symhow::db::
+Database`/`Enums`/`NameDecode`, `symhow::query::Bfs`/`SymbolResolver`/
+`FuzzyMatcher`/`QueryEngine`, and `symhow::out::TextWriter`. JSON output is
+explicitly out of scope (Phase 5). Notes for that implementer:
+
+- **`runBfs()` always includes the seed nodes themselves in `BfsResult::
+  nodes`, at `depth == 0`** (per its own documented contract: "hydrate every
+  visited node ... 0 for seeds"). `QueryEngine::bases()`/`derived()`/
+  `callers()`/etc. do NOT strip them back out -- a BFS-based verb's rendered
+  tree shows the seed(s) as the root(s). This is deliberate (useful for text
+  rendering: it's "the thing you asked about"), but it means "X's bases" as
+  a SET literally includes X at depth 0; `test_query_fixture.cpp` filters to
+  `depth > 0` when asserting "exactly {A,B,C}". If Phase 5's JSON shape wants
+  a `results` array that's cleanly just the SEED's bases/derived/etc.
+  excluding the seed, that filtering needs to happen at serialization time
+  (or a new QueryEngine option added) -- it is NOT done today.
+- **`resolveSymbol()`'s bare-leaf-name match can be legitimately Ambiguous
+  in a way that surprises first-time users**: a class and its own
+  constructor share the same leaf `.name` (e.g. `Square` the class node and
+  `Square(double)` the constructor node both have leaf name "Square"), so
+  `symhow query bases Square` (no `--kind`) resolves Ambiguous, not Unique --
+  verified against the real fixture. This is intentional/correct (a real
+  name collision, shown to the user with kind + location so they can add
+  `--kind CLASS` or `#<id>`), not a bug, but it's the one case in the
+  fixture where a "plain English" query doesn't resolve on the first try.
+- **`clang_getOverriddenCursors()` is NOT transitive**: it only reports the
+  IMMEDIATE overridden method(s) in each direct base (see `AstWalker.cpp`'s
+  `visitFunctionLikeDecl`). In the fixture's diamond-less multiple-inheritance
+  hierarchy, `Square::area` overrides `Polygon::area` and `Colored::area`
+  directly (NOT `Shape::area`); only `Polygon::area`/`Colored::area`
+  themselves have a direct OVERRIDE edge to `Shape::area`. So exactly 2
+  OVERRIDE edges target `Shape::area` directly, not 3 -- the "3" only shows
+  up if you walk the OVERRIDE-edge subgraph transitively (unlimited depth),
+  where you'll find all 3 overriding methods reachable. `QueryEngine::
+  overriddenBy()` is fixed at depth=1 per its own contract (mirroring
+  Sourcetrail's own "overridden by" UI, which shows one hop), so it only
+  ever returns the direct overriders.
+- **`DecodedName::qualifiedName()`/`displayName()`/`namePath()` are three
+  deliberately different strings** (see `include/symhow/db/NameDecode.h`):
+  `namePath()` is the bare `"A::B::C"` path (names only, no signature);
+  `qualifiedName()` appends the LAST element's postfix verbatim (so it
+  includes both a function's parameter-list AND Phase 3's hidden TU-local
+  disambiguator, when present -- this is what makes a USR-collision
+  candidate's own `qualifiedName()` round-trip uniquely through
+  `resolveSymbol()`); `displayName()` is `qualifiedName()` with just the
+  disambiguator suffix stripped. `SymbolResolver::resolveSymbol()`'s exact-
+  match check compares a spec against all three PLUS the bare leaf name
+  (4 forms) so both "give me the fully-qualified/disambiguated thing" and
+  "give me the plain unqualified thing" work as expected. If Phase 5's JSON
+  schema wants a single canonical "name" field per node, `namePath()` is
+  almost certainly the right default (it's what most tools call a
+  "qualified name"); reserve `qualifiedName()`/`signature()` for a
+  disambiguation-specific field.
+- **The LIKE pre-filter in `resolveSymbol()` had to be narrowed to the
+  leading identifier-shaped run of the spec's last segment**, not the whole
+  segment: a spec that round-trips `qualifiedName()` (e.g.
+  `"helper() [tu_a.cpp#317677a3]"`) glues the postfix directly onto the name
+  with no delimiter, but the ON-DISK `serialized_name` has the writer's own
+  `"\tp"`/`"\ts"` delimiter bytes in between -- so a naive `LIKE
+  '%<wholespec>%'` silently finds nothing. Caught by
+  `test_query_fixture.cpp`'s USR-collision round-trip test; fixed in
+  `SymbolResolver.cpp`'s `likePrefilterKey()`. Worth remembering if Phase 5
+  (or anyone) adds another spec-shaped LIKE query elsewhere.
+- **`QueryEngine::definition()`'s SCOPE-vs-TOKEN preference is an "either
+  the SCOPE rows, or (if none) the TOKEN rows" selection**, not a merged/
+  interleaved list -- see the comment above the `chosen` variable in
+  `QueryEngine.cpp`. The one-sentence spec for this verb ("prefer SCOPE,
+  fall back to TOKEN, but if genuinely both exist return both") is
+  ambiguous about whether "both" means "both kinds, mixed" or "both SCOPE
+  rows, if there happen to be more than one" -- this implementation chose
+  the latter reading. Flag for review if a real corpus surfaces a symbol
+  where that choice actually matters (e.g. a template-collapsed node per
+  the Phase 3 nameCollisions note above, which could plausibly have more
+  than one SCOPE location).
+- **Determinism**: every `QueryEngine` result list is explicitly sorted
+  before being returned (nodes by `(depth,kind,serializedName,id)`, edges by
+  `(kind,source,target,id)`, locations by `(filePath,startLine,startColumn,
+  id/fileId)`, search hits by `(-score,textLength,displayName,id)`) --
+  `runBfs()` itself also sorts its raw output the same way, so the two never
+  disagree, but QueryEngine is the one whose sort order is the actual
+  contract. `FileResult::occurrences` is sorted by `(startLine,startColumn,
+  elementId)` (not literally one of the four generic list shapes above,
+  since it's a per-file occurrence listing, not a node/edge/location/search
+  list) -- worth a second look if Phase 5 wants it to match the others'
+  shape exactly.
+- **`ReferenceHit`/`FileOccurrence` can reference a non-`node` element_id**:
+  an `occurrence.element_id` can point at an `edge` id (Sourcetrail records
+  where a *reference* token appears, separately from where the referenced
+  *symbol* appears) or a `local_symbol` id. `ReferenceHit::hasEdge`
+  disambiguates the edge case explicitly; `FileOccurrence::elementKind == 0`
+  is the (slightly implicit) "this wasn't a `node` row at all" signal for
+  the file-occurrence case -- Phase 5 may want a cleaner tri-state enum
+  instead of overloading `elementKind == 0` (0 is not a valid `NodeKind`
+  value, so it's unambiguous today, just not self-documenting).
+
+(Phase 5, the `--json` output layer, added no new entries here -- its own
+implementation notes/quirks are documented inline in `docs/JSON_SCHEMA.md`
+next to the relevant schema instead, e.g. the `display_name`-only-when-
+different rule, the `DECLARATION`-is-synthetic note on `symhow.references/1`, and
+the SCOPE-vs-TOKEN `location` selection rule.)
+
+## Phase 6 (final)
+
+Final-phase work: a hermetic synthetic CUDA fixture test (always runs, needs
+no CUDA toolkit), a real end-to-end integration test against the cucs
+(cuCascade) corpus, and this documentation pass. `symhow` is now considered
+feature-complete against the original 6-phase design; see the project
+status summary in the Phase 6 completion report for the full picture. Notes
+for future maintainers:
+
+### The hermetic CUDA fixture header (`test/fixtures/cuda/fake_cuda.h`)
+
+Getting clang's `-x cuda -nocudainc -nocudalib --cuda-host-only` mode (the
+"nowrapper" rung -- `symhow::index::cuda::synthesize()`) to accept a
+`kernel<<<grid,block>>>(args)` launch with zero real CUDA toolkit installed
+took three iterations against clang directly (`clang -x cuda -nocudainc
+-nocudalib --cuda-host-only -fsyntax-only -include fake_cuda.h kernels.cu`,
+run standalone before anything was wired into `symhow`/CTest -- see the Phase 6
+completion report for the full transcript), converging on:
+
+1. **`threadIdx`/`blockIdx`/`blockDim`/`gridDim` are NOT provided
+   automatically** in this mode. `-nocudainc` specifically disables clang's
+   own bundled CUDA wrapper headers (the ones that normally declare these as
+   compiler-magic builtins) -- they must be hand-declared (as ordinary
+   `__device__`-space `extern` globals of a hand-rolled `uint3`/`dim3`; no
+   real storage/intrinsic backing is needed since `--cuda-host-only` never
+   generates device code).
+2. **The `<<<>>>` launch lowers to a call to `cudaConfigureCall(dim3, dim3,
+   size_t sharedMem = 0, cudaStream_t stream = 0)`**, and this exact
+   signature is required -- `size_t` (not `unsigned long`, even though
+   they're the same underlying type on this platform), and BOTH trailing
+   parameters defaulted (omitting the defaults produces "too few execution
+   configuration arguments to kernel function call, expected 4, have 2",
+   since `<<<grid,block>>>` only supplies 2 of the 4 arguments explicitly).
+   Deleting the declaration reproduces "use of undeclared identifier
+   'cudaConfigureCall'" directly (not `__cudaPushCallConfiguration`),
+   empirically confirming this specific stub-header/bare-mode scenario uses
+   the older `cudaConfigureCall`-shim lowering path, not the newer
+   `__cudaPushCallConfiguration`/`__cudaPopCallConfiguration` ABI.
+   **Caveat**: this is specific to the no-real-headers scenario. When a real
+   `cuda_runtime.h` IS available (the Full rung against an actual CUDA
+   toolkit -- see below), clang's own `__clang_cuda_runtime_wrapper.h`
+   declares `__cudaPushCallConfiguration` instead, and THAT lowering path is
+   used automatically; both paths produce a libclang cursor shaped
+   identically for `AstWalker`'s purposes (next point), so this distinction
+   doesn't matter for `symhow`'s own correctness, only for what a stub header
+   needs to declare.
+3. **`size_t` itself needs `#include <cstddef>`** -- `-nocudainc
+   -nocudalib` only disables CUDA-specific header search paths, not ordinary
+   C++ standard headers, so this is a one-line fix, not a hand-rolled
+   typedef.
+
+A standalone libclang cursor dump (a throwaway ~60-line C program against
+`clang-c/Index.h`, linked directly against the flox-provided `libclang.so`
+-- `c-index-test` wasn't usable here, its cached prebuilt binaries in this
+environment are linked against `libclang.so.13`, not this project's
+`libclang.so.21`) confirmed that a `kernel<<<grid,block>>>(args)` call --
+regardless of which of the two lowering paths above is active -- appears to
+libclang as an ordinary `CXCursor_CallExpr` (clang's internal
+`CUDAKernelCallExpr` AST node, a `CallExpr` subclass, has no distinct
+libclang cursor kind) whose `clang_getCursorReferenced()` resolves DIRECTLY
+to the kernel's `FunctionDecl`, with the `cudaConfigureCall`/
+`__cudaPushCallConfiguration` call as a separate nested `CallExpr` child
+(itself also recorded as its own, separate CALL edge). **This means
+`symhow::index::AstWalker::handleCallExpr()` needed zero CUDA-specific
+special-casing** to record a real launcher-\>kernel `CALL` edge -- it was
+verified to already work correctly by construction, not patched to handle
+this case.
+
+### Real cucs corpus CUDA outcome (as of this phase)
+
+Toolchain versions at time of writing: `symhow 0.1.0, libclang 21.1.8, sqlite
+3.53.3, srctrldb v4.db25.p1` (`symhow --version`); cucs's pixi-managed CUDA
+toolkit is `Cuda compilation tools, release 13.2, V13.2.51` (`nvcc
+--version`, `$SYMHOW_CUCS_DIR/.pixi/envs/default/bin/nvcc`). The flox
+environment's `on-activate` hook auto-derives `SYMHOW_CUDA_PATH` from that same
+nvcc's location when it's present.
+
+Against the real corpus, `symhow index`'s default `--cuda-mode auto` retry
+ladder resolved the corpus's one `.cu` file
+(`test/memory/test_gpu_kernels.cu`) on the **first rung (Full)** --
+`-x cuda --cuda-path=<cucs's pixi CUDA toolkit> --cuda-gpu-arch=sm_120
+--cuda-host-only`, i.e. clang 21 parsing the REAL `cuda_runtime.h` (via its
+own compatibility wrapper, not the raw header) successfully despite the
+toolkit (13.2) being considerably newer than clang 21's own CUDA-version
+awareness. Both `__global__` kernels (`gpu_memory_work_kernel`,
+`gpu_memory_verification_kernel`) and both `extern "C"` host launchers
+(`performGpuMemoryWork`, `verifyGpuMemoryWork`) are indexed as `FUNCTION`
+nodes with real `CALL` edges from launcher to kernel. One non-fatal error IS
+recorded from this TU's parse (`__clang_cuda_runtime_wrapper.h:388:10:
+error: 'texture_fetch_functions.h' file not found`), but it's attributed to
+that clang-bundled wrapper header, not to `test_gpu_kernels.cu` itself, and
+doesn't prevent the TU from producing content (`anyFatal` stays false for a
+non-`CXDiagnostic_Fatal` severity diagnostic -- see `IndexDriver.cpp`'s
+`tryRung()`). This result isn't guaranteed to reproduce on a different
+machine/toolkit-version combination -- that's exactly why
+`test/integration/test_cucs.cpp`'s assertion 10 is written as an XOR over
+BOTH possible real-world outcomes (rung succeeds with a real CALL edge, or
+every rung fails and the `.cu` file itself gets an `error` row) rather than
+hardcoding today's specific outcome.
+
+### Other things found while writing the integration test
+
+- **`error.translation_unit` is always the empty string.** The vendored
+  `SourcetrailDBWriter::recordError()` hardcodes `StorageErrorData(message,
+  "", fatal, true)` -- the empty string IS `translation_unit`, unconditionally,
+  for every error this vendored writer ever records (not something `symhow`
+  itself controls or could easily fix without patching vendored code). To
+  determine which file an error actually belongs to, join through the
+  occurrence it's given instead: `recordError()` always calls
+  `addSourceLocation(errorId, location, LocationKind::INDEXER_ERROR)`, so
+  `error.id = occurrence.element_id -> occurrence.source_location_id =
+  source_location.id -> source_location.file_node_id = file.id` recovers the
+  real file. `symhow::query::StatsResult::errors`/`symhow.stats/1`'s `errors[]`
+  still surface the (always-empty) `translation_unit` field verbatim from
+  the `error` table, since that's a faithful reflection of what's on disk --
+  a consumer that needs the real file should do the same join, or `symhow`
+  could add a dedicated field for it in a future `symhow.stats/2`.
+- **Per-TU CUDA rung is not exposed via any JSON schema.**
+  `symhow::model::TuFactBatch::stats.parsedRungIndex` exists internally
+  (`IndexDriver.cpp` uses it for the `-v` per-TU stderr progress line, e.g.
+  `test_gpu_kernels.cu: ok (cuda rung 1)`) but isn't threaded into
+  `symhow.index-summary/1` or any other JSON schema. `test_cucs.cpp` recovers it
+  today by grepping the captured `-v` stderr text for the `.cu` file's
+  progress line, which works but is exactly the kind of thing a real
+  machine-readable field would obsolete. Flagged as a nice-to-have
+  follow-up, not implemented this phase (out of scope -- would need a
+  `symhow.index-summary/2` or a new `per_tu` array field).
+- **The `disk_data_representation` / `reservation_limit_policy` /
+  `idata_representation` line numbers cited in `docs/JSON_SCHEMA.md`'s
+  worked examples and in the original Phase 6 design doc were re-verified
+  against the live corpus and found still accurate** (76/113/131/149 for
+  the base class and its three derived classes in
+  `memory_reservation.hpp`; 104/122/140/164 for `get_policy_name`'s pure
+  virtual declaration and its three overrides; 37/42 for
+  `disk_data_representation`/`idata_representation`) -- and the corpus's TU
+  count (200) likewise hadn't changed. Nothing needed adapting; noted here
+  only because the design doc explicitly asked for this to be re-checked
+  empirically rather than trusted.
+
+## Phase 1 (incremental-update groundwork for a future `symhow update`)
+
+This phase does NOT add the `symhow update` command -- it lands the write-path
+correctness fixes and persisted state a future incremental indexer needs,
+while every current `symhow index` run stays a full index.
+
+- **AstWalker version bumped to 2 (`symhow::index::kWalkerVersion`).** The
+  implicit "1" (no version existed before this phase) is bumped because of
+  the DefinitionKind semantic change below -- a database produced by the
+  old walker is not equivalent to one produced by the new one for the same
+  inputs, so a future `symhow update` must refuse to incrementally update a
+  database whose `symhow_walker_version` meta value doesn't match the running
+  binary's (and fall back to a full re-index instead).
+- **`DefinitionKind::Explicit` semantic change: a symbol's own declaration
+  in an indexed file now counts as "defined", matching real Sourcetrail
+  behavior.** Previously only `clang_isCursorDefinition()` (i.e., only an
+  out-of-line `.cpp` definition, or an in-class definition) marked a symbol
+  Explicit; a function *declared* in a header and defined out-of-line in a
+  `.cpp` got no `symbol` row at all and showed as `[not indexed]` in `symhow
+  query search`/`symhow query definition` -- a real, user-visible bug (see the
+  `get_policy_name` example in the Phase 1 task description). Now every
+  visited declaration/definition of a symbol in an indexed file marks it
+  Explicit (`AstWalker::markDeclaredHere()`, called from `visitScopeDecl`,
+  `visitFunctionLikeDecl`, `handleSimpleDecl`, `handleMacroDefinition`).
+  This only ever *adds* `symbol` rows / upgrades definition_kind relative to
+  the old behavior -- it can't make a previously-indexed symbol
+  "not-indexed".
+- **New symhow-private tables** (created inside `SrctrldbBackend::finish()`'s
+  post-write transaction, `CREATE TABLE IF NOT EXISTS`, so they're additive
+  and harmless on a DB written by the real Sourcetrail indexer too):
+  - `symhow_symbol_def(node_id, file_node_id)` -- WITHOUT ROWID, PK on both
+    columns: which indexed files declare/define each symbol, as observed in
+    this run. Populated from `SymbolFact::declFiles` (set via the new
+    `FactSink::declaredIn()`), resolved to real node ids, and written
+    `INSERT OR IGNORE` so re-running never duplicates a pair. NOT
+    necessarily complete for symbols with no declaration site symhow visited at
+    all (pure reference-only/system symbols) -- those simply have zero
+    rows, which is expected, not a bug.
+  - `symhow_tu(path PRIMARY KEY, args_hash, file_node_id, status, entry_count)`
+    -- one row per distinct indexed PATH (NOT per CDB entry: a path can have
+    more than one CDB entry, see the "Phase 9: duplicate CDB entries"
+    section below for `args_hash`'s real, combined recipe and what
+    `entry_count` means -- this original description undersold that from
+    Phase 1 through Phase 8, back when every path really did have exactly
+    one entry in every CDB this project's own tests exercised). `args_hash`
+    is a 64-bit FNV-1a hash (lowercase hex, 16 chars) built from each
+    entry's own hash (`symhow::index::computeArgsHash()`, `CompileDb.h`/`.cpp`),
+    itself computed over `entry.directory + '\0' + join(entry.args, '\0')`
+    on the REMAPPED-but-otherwise-raw `CompileEntry` (i.e., after
+    `CompileDb::load()`'s remap/include/exclude step, but BEFORE
+    `sanitize()` rewrites/drops/injects anything) -- this is deliberate: it
+    makes the hash sensitive to a real CDB change (new/changed compiler
+    flags) but independent of symhow's own sanitizer version, which will keep
+    changing across phases without the underlying compile command changing.
+    `file_node_id` is the `file` row id for `entry.file` (looked up by exact
+    string equality against `file.path` after the write; null if that TU
+    produced no file row at all, e.g. a total parse failure).
+- **Persisted provenance in `meta`** (`symhow::index::Provenance`,
+  `include/symhow/index/Provenance.h`): `symhow_provenance_version` (currently `1`),
+  `symhow_version`, `symhow_walker_version`, `symhow_cdb_path` (absolute), a single
+  `symhow_options_json` blob (remaps/include/exclude/system_file_rows/
+  drop_args/extra_args/resource_dir/gcc_toolchain/std/c_std/cuda_path/
+  cuda_mode -- every sanitizer/CDB-loading option that affects indexed
+  output),
+  `symhow_repo_root`/`symhow_repo_commit`/`symhow_dirty_paths` (via `git`, resolved by
+  the CLI layer through the new `symhow::common::process::run()` subprocess
+  helper -- never a shell; empty/best-effort if git isn't available or the
+  directory isn't a repo, which is a warning at `-v`, never a hard error),
+  and `symhow_indexed_at`/`symhow_last_update_at` (ISO-8601 UTC; `symhow_last_update_at`
+  is always empty until a future `symhow update` sets it). Written by
+  `symhow::index::writeProvenance()`/read by `readProvenance()`; a database
+  indexed before this change has no `symhow_provenance_version` row at all, so
+  `readProvenance()` returns `std::nullopt` for it -- **such a database has
+  no way to be incrementally updated later; it must be re-indexed from
+  scratch once `symhow update` exists.**
+- **`symhow index` gained `--repo DIR`** to pin the provenance repo root
+  explicitly instead of relying on `git -C <dirname of -c PATH> rev-parse
+  --show-toplevel` discovery.
+- **Four write-path correctness fixes**, all in `SrctrldbBackend`:
+  1. `consume()` now attaches range-less `ErrorFact`s to the TU's own main
+     file node (`batch.stats.tuFile`, resolved via `ensureFileNodeByPath()`)
+     instead of an arbitrary first file of the batch -- never `file_node_id
+     = 0` anymore.
+  2. OVERRIDE (`visitFunctionLikeDecl`) and INHERITANCE (`handleBase
+     Specifier`) edges now go through the same null-spelling-range ->
+     zero-width-point-range fallback (`AstWalker::spellingRangeOrPoint()`,
+     refactored out of the two ad-hoc fallbacks that already existed for
+     `handleDeleteExpr`/`handleTypeOrTemplateRef`) instead of silently
+     dropping the occurrence when `clang_Cursor_getSpellingNameRange()`
+     returns null. Invariant after this phase: every non-MEMBER edge symhow
+     emits has >= 1 occurrence (verified by a `[fixture]` test).
+  3. `node.type`/`symbol.definition_kind` are no longer pushed through the
+     vendored writer's `recordSymbolKind()` (unconditional `UPDATE`) /
+     `recordSymbolDefinitionKind()` (first-write-wins `INSERT OR IGNORE`) at
+     `finish()` time. Both are unsafe once a symbol can be re-observed
+     across separate `symhow index`/`symhow update` runs: unconditional overwrite
+     can downgrade a real kind back to a weaker fallback, and first-write-
+     wins can never upgrade Implicit to Explicit on a later run. Instead,
+     `finish()` now applies both via `symhow::db::WritableDb` with explicit
+     upgrade-only semantics: `node.type` only changes if the existing
+     stored kind was Unknown/Type-fallback (never downgrades a real kind
+     back to a fallback; equal-rank changes like class<->struct still
+     apply), and `symbol.definition_kind` is `INSERT ... ON CONFLICT(id) DO
+     UPDATE SET definition_kind = max(definition_kind, excluded.
+     definition_kind)`.
+- **New `symhow_db` write-path infrastructure**: `symhow::db::WritableDb` (RAII
+  read-write `sqlite3*` wrapper mirroring `symhow::db::Database`'s `run()`
+  binder/row-callback style, plus `exec`/`begin`/`commit`/`rollback`/
+  `changes`/`tableExists`) and `symhow::db::Meta` (`getMeta`/`setMeta`/
+  `deleteMeta`, where `setMeta` is DELETE-then-INSERT since `meta.key` has
+  no UNIQUE constraint in the Sourcetrail schema). `symhow::db::ensureIndices()`
+  and `SrctrldbBackend::finish()`'s post-write fixup section were both
+  migrated onto `WritableDb` (behavior-preserving refactor).
+- **New `symhow_common` subprocess helper**: `symhow::common::process::run()`
+  (`include/symhow/common/Process.h`), a `posix_spawnp`-based runner (never a
+  shell) used so far only for the `git` calls behind `symhow index`'s
+  provenance collection.
+
+## Phase 2 (symhow update: pure/testable pieces + equivalence testing)
+
+Like Phase 1, this phase does NOT add the `symhow update` command itself (that's
+Phase 3) -- it adds the parts of it that can be built and unit-tested
+without touching invalidation SQL: git diff/status parsing, changed-file
+classification against a database/CDB, and a logical-equivalence snapshot
+tool, all under a new `symhow_update` static library
+(`include/symhow/update/`, `src/update/`).
+
+- **`WritableDb::run()`'s two-overload footgun (see Phase 1's note, now
+  removed) was fixed by splitting it into four unambiguous entry points**:
+  `exec(sql)` (unparameterized, `sqlite3_exec`), `execBound(sql, Binder)`
+  (bind + step, no rows expected), `query(sql, RowFn)` (no bind, read
+  rows), `query(sql, Binder, RowFn)` (bind + read rows). There is no longer
+  a `run()` member at all, so the old silently-ambiguous-but-compiling
+  bind-vs-onRow call shape can't be written by accident. All Phase 1 call
+  sites (`SrctrldbBackend.cpp`, `IndexDriver.cpp`, `Meta.cpp`,
+  `test_writable_db.cpp`, `test_provenance.cpp`) were migrated.
+- **`symhow::update::GitDiff`** (`include/symhow/update/GitDiff.h`): pure,
+  process-free parsers for `git diff --name-status -z --find-renames`
+  (`parseNameStatusZ`) and `git status --porcelain -z --untracked-files=all`
+  (`parseStatusPorcelainZ`) output, verified byte-for-byte against real git
+  2.55 output (see below) before being unit-tested against hand-written NUL
+  strings.
+- **`symhow::update::Git`** (`include/symhow/update/Git.h`): thin
+  `symhow::common::process::run()` wrappers (`revParse`, `topLevel`,
+  `diffNameStatusZ`, `statusPorcelainZ`) plus `collectChanges()`, which
+  combines a `git diff` and (when diffing against the working tree) a `git
+  status` into one `ChangeSet{changes, dirtyPaths}` -- `git diff` alone
+  never reports untracked files, so `collectChanges()` adds every `??`
+  status entry as `ChangeKind::Added` itself. This duplicates (in spirit,
+  not by sharing code) the git-shelling already inlined in
+  `symhow::cli::buildProvenance` (`src/cli/Cli.cpp`, from Phase 1) -- Phase 2
+  does not refactor that existing code to use the new wrapper; a future
+  phase could.
+- **`symhow::update::FileMatcher`** (`include/symhow/update/FileMatcher.h`):
+  classifies a `ChangeSet` against a target database's known TU paths and a
+  freshly-loaded CDB into `changedInDb`/`newTus`/`deleted`/`unmatched`.
+  Matching is always done via `normalizePath()` (absolute +
+  `weakly_canonical()` if the path exists on disk, else `lexically_normal()`)
+  on both sides, but every `MatchResult` field preserves the ORIGINAL
+  spelling from whichever side matched (the DB's `symhow_tu.path`/`file.path`
+  spelling, or the CDB's `file` spelling) -- never git's spelling -- because
+  Phase 3's invalidation SQL and `CompileDb::load()`-based re-indexing need
+  to match by exact string equality against those tables/structures.
+- **`symhow::update::Snapshot`** (`include/symhow/update/Snapshot.h`): a logical,
+  id-independent snapshot of a `.srctrldb` (9 categories: nodes, edges,
+  locations, symbols, files, errors, local_symbols, `symhow_symbol_def`-derived
+  symbol_defs, `symhow_tu`-derived tus -- each a `std::set<std::string>` of
+  "|"-joined content keys, never a sqlite row id) and `diffSnapshots()`,
+  a symmetric set-difference used to verify that an incrementally-updated
+  database is logically identical to a full `symhow index` re-run. Built on
+  ordinary read-only `symhow::db::Database` queries; `symhow_symbol_def`/`symhow_tu`
+  categories are silently empty (not an error) against a pre-Phase-1
+  database that lacks those tables.
+- **New hidden CLI command `symhow dbdiff A B [--json] [--limit N]`** (dispatched
+  in `src/cli/Cli.cpp` next to `index`/`query`, deliberately NOT listed in
+  `symhow --help`'s usage text): exit `0` if the two databases are logically
+  equivalent, `3` if they differ (first `--limit` entries per side printed
+  in text mode; full lists in `--json`), `4` if either database can't be
+  opened at all. See `docs/JSON_SCHEMA.md`'s `symhow.dbdiff/1` section.
+- **Git output shape, verified empirically against git 2.55 (via `flox
+  activate`) on this machine** (documented here since it's exactly what
+  `GitDiff.cpp`'s parsers assume): `git diff --name-status -z` emits
+  `STATUS\0path\0` per ordinary entry and `R<score>\0old\0new\0` /
+  `C<score>\0old\0new\0` for renames/copies -- the status token itself is
+  NUL-terminated, NOT tab-separated from the path as in the (very similar-
+  looking) non-`-z` output. `git status --porcelain -z` emits `XY path\0`
+  per entry (two status chars + one literal space + path, all before the
+  NUL), with rename/copy entries as `XY new\0old\0` (two NUL-separated
+  tokens) and untracked files as `?? path\0`.
+
+## Phase 3 (symhow update: invalidation + the command itself)
+
+Adds the two remaining pieces of `symhow update` to the `symhow_update` library:
+`symhow::update::Invalidator` (`include/symhow/update/Invalidator.h`,
+`src/update/Invalidator.cpp`) -- the SQL that clears exactly the facts a set
+of changed files invalidated, plus a post-index GC sweep -- and
+`symhow::update::UpdateDriver` (`include/symhow/update/UpdateDriver.h`,
+`src/update/UpdateDriver.cpp`) -- the orchestration that reads a database's
+Phase 1 provenance, works out what changed (via git or `--files`), calls
+the invalidator, and re-indexes only the affected TUs via
+`symhow::index::runIndex()`'s existing `appendToExisting`/`presetEntries`
+machinery. `symhow update` itself is now a real, non-hidden CLI subcommand
+(`src/cli/Cli.cpp`).
+
+- **Algorithm (all inside one `BEGIN...COMMIT`, temp tables, rollback +
+  rethrow on any exception -- see `Invalidator.cpp` for the exact SQL)**:
+  0. seed = `file` rows whose path is in the changed-or-deleted set.
+  1. reverse-INCLUDE closure: any file that `#include`s a seed file is
+     added too (run to a fixpoint -- transitively, an include of an
+     include also gets pulled in).
+  2. header pruning: a header (never a TU) all of whose includers are
+     already in the clear set gets pruned too (also to a fixpoint) -- this
+     is what makes clearing a leaf header also clear headers-that-only-
+     that-header-used, and is why the `include/shapes.hpp` fixture test
+     ends up clearing not just `shapes.hpp`/`ns.cpp`/`overloads.cpp` but
+     also `macros.hpp` and even `<string>` (both are included ONLY by
+     `overloads.cpp`/`ns.cpp`, both now cleared).
+  3. candidates: every non-file element with an occurrence in a cleared
+     file, closed over edge endpoints and MEMBER-edge ancestors (so e.g. a
+     class defined in an untouched header but with one member defined in a
+     cleared `.cpp` still gets reconsidered).
+  4. definition-kind reset: a `symhow_symbol_def` row is Phase 1's per-(symbol,
+     declaring-file) bookkeeping; a symbol that loses every declaring file
+     this way has its `symbol` row DELETED (not `UPDATE`d to
+     `definition_kind=0`/`NONE`) -- deletion is the correct equivalent of "no
+     definition anywhere", because a fresh `symhow index` run never emits a
+     `symbol` row for a node with `DefinitionKind::None` in the first place
+     (see `symhow::model::IndexBackend`'s writer); leaving a
+     `definition_kind=0` row behind would make an incrementally-updated
+     database diverge from a fresh index's `symbol` table shape, exactly
+     the kind of drift `symhow dbdiff`/`Snapshot` exist to catch. (Phase 8
+     added a sibling step here, 4b: `node.type` is ALSO reset to UNKNOWN
+     for every node that lost >= 1 declaring file this way, not just ones
+     that lost all of them -- see the Phase 8 section's "Design" list for
+     why `node.type`'s own upgrade-only write needs this to let a genuine
+     kind-changing source edit, e.g. `class` -> `struct`, actually take
+     effect on `symhow update`.)
+     Also: after this step (and after the dead-node fixpoint further down),
+     `invalidate()`/`sweepOrphans()` DELETE any `symhow_symbol_def` row whose
+     `node_id`/`file_node_id` no longer points at a live `node`/`file`, and
+     NULL out any `symhow_tu.file_node_id` that no longer points at a live
+     `file` -- neither table has a real `FOREIGN KEY` (`symhow_symbol_def` has
+     none at all; `symhow_tu.file_node_id` is a plain nullable column), so
+     without this a dangling row would silently "inherit" a completely
+     unrelated symbol/TU the next time sqlite reuses that dead rowid for a
+     freshly re-indexed row.
+  5. delete the cleared `file`/`element` rows themselves -- cascades take
+     care of `filecontent`, their `source_location`s, and any
+     INCLUDE/MACRO_USAGE edge touching them.
+  6. delete candidate non-MEMBER edges left with zero occurrences, then
+     purge orphaned `source_location` rows (`file_node_id` no longer a real
+     node -- this also incidentally cleans up any legacy `file_node_id=0`
+     row).
+  7-9. dead-node/local-symbol/error/non-indexed-file/orphan-`element` sweep
+     (`sweepOrphans()` reuses this, unrestricted, as a post-index belt-and-
+     braces pass).
+- **Why GC must run to completion BEFORE any re-indexing write**:
+  `element.id` is a plain sqlite `INTEGER PRIMARY KEY` (an ordinary rowid),
+  so a deleted id WILL be reused by the next `INSERT`. If invalidation and
+  re-indexing interleaved (or GC were deferred), a freshly-written row could
+  silently collide with a not-yet-GC'd stale row's id, corrupting the
+  database in a way that would only show up as wrong query results, not a
+  constraint violation. `UpdateDriver` therefore always fully commits
+  `invalidate()` (and closes that `WritableDb`) before opening a fresh
+  connection for `symhow::index::runIndex()`.
+- **The temp-copy naming/commit protocol**: by default `symhow update` copies
+  `<dir>/<stem>.incr-<pid><ext>` (NOT the real file), does all of the above
+  against that copy, then `std::filesystem::rename()`s it over the original
+  (same directory, atomic on a POSIX filesystem) only once indexing +
+  post-index GC + `ANALYZE` have all succeeded. On any failure the temp
+  copy (and its `.srctrlprj` sidecar -- the vendored writer derives that
+  name via `rfind('.')` on the WHOLE output path, so the temp copy gets its
+  own `<stem>.incr-<pid>.srctrlprj`, cleaned up alongside it) is deleted;
+  the real database is never touched. `--in-place` instead sets
+  `symhow_update_in_progress=1` on the real file directly before doing any of
+  the above and clears it on success; if `symhow update --in-place` is killed
+  mid-run, the next `symhow update` (in-place or not) refuses to run at all
+  until the database is re-indexed from scratch (there is deliberately no
+  automatic recovery from a partially-invalidated, never-reindexed
+  in-place database).
+- **Refusal conditions (exit 2)**: no provenance at all (pre-Phase-1 db, or
+  one written by the real Sourcetrail indexer); stored
+  `symhow_walker_version` != this binary's `kWalkerVersion` (a walker semantic
+  change makes old facts and new facts incomparable -- see Phase 1's note
+  on `AstWalker`); stored `system_file_rows == all` (that mode gives every
+  transitively-reachable system header its own `file` row, which the
+  reverse-INCLUDE closure isn't validated against and could make pruning
+  wildly over- or under-shoot); `symhow_update_in_progress` set; no repo root
+  available (neither `--repo` nor a stored `symhow_repo_root`) AND no `--files`
+  given. `symhow update -c/--repo/--include/--exclude/--cuda-mode/
+  --system-file-rows` overrides are accepted but print a warning that the
+  resulting database will diverge from what a fresh `symhow index` with those
+  options would produce (the stored options are exactly what a fresh index
+  would need, and `symhow update` doesn't re-verify old facts against new
+  options).
+- **The flag-change/retry heuristics, and where incremental provably ≠
+  fresh on the fixture, resolved**:
+  - Flag change detection recomputes each CDB entry's `symhow_tu.args_hash`
+    recipe (moved from a private helper in `IndexDriver.cpp` into
+    `symhow::index::computeArgsHash()`, `CompileDb.h`/`.cpp`, so `IndexDriver`
+    and `UpdateDriver` share exactly one implementation) and treats a
+    mismatch as a Modified change, and a `symhow_tu` row whose path has no CDB
+    entry anymore as a Deleted change.
+  - The "retry" heuristic (files whose node has an `INDEXER_ERROR`
+    occurrence, or NO outgoing INCLUDE edge at all) is intentionally
+    conservative but provably OVER-broad: a TU with genuinely zero
+    `#include`s (in the fixture: `chain.cpp`, `templates.cpp`, `tu_a.cpp`,
+    `tu_b.cpp`) has no outgoing INCLUDE edge for a perfectly innocent
+    reason and gets retried on EVERY `symhow update` run, not just ones where
+    it actually changed. This was verified empirically (`symhow update --files
+    chain.cpp` always also re-indexes those other three files) and is
+    deliberately left as-is rather than "fixed" by, say, tracking a
+    per-TU success flag: it's idempotent (re-indexing unchanged source
+    reproduces identical facts, confirmed by the `dbdiff`-empty fixture
+    tests) and only costs extra work, never correctness, and a more
+    precise signal (e.g. a dedicated `symhow_tu.ok` column) is a natural Phase
+    4/5 follow-up rather than a Phase 3 blocker.
+  - **A real, load-bearing bug this surfaced and fixed**: `matchChanged()`
+    (Phase 2) only classifies a changed path against `symhow_tu` paths and CDB
+    entries -- by design, a changed HEADER with no CDB entry of its own
+    always lands in `unmatched`. The first `--files shapes.hpp` cut of
+    `UpdateDriver` fed ONLY `match.changedInDb` into `computeClearSet()`'s
+    seed, so a changed header was silently dropped from the seed entirely
+    and nothing downstream of it was ever cleared (the reverse-INCLUDE
+    closure had nothing to close over). Fixed by resolving every entry in
+    the raw `changes` list (not just `matchChanged()`'s TU-only
+    classification) against `file.path` via `normalizePath()` and feeding
+    every match into the seed directly -- `computeClearSet()`'s SQL matches
+    its seed against `file.path` with an EXACT string comparison, so this
+    resolution step also fixes the (much rarer) case where `symhow_tu.path`'s
+    spelling disagrees textually with `file.path`'s.
+- **Docs**: this section; `docs/JSON_SCHEMA.md`'s new `symhow.update-summary/1`
+  section; `README.md`'s new `### Updating` subsection.
+
+Left for Phase 4/5: a git-driven scenario test with real commits (edit a
+`.cpp`, edit a shared header, delete a file, add a file, rename a file, a
+compiler-flag-only change) rather than Phase 3's `--files`-only fixture
+tests; `--in-place` end-to-end coverage; a less over-broad retry signal
+(e.g. persisting per-TU success in `symhow_tu` itself); polishing the
+`### Updating` README section once the git-driven scenarios exist to
+document against.
+
+## Phase 4 (symhow update: precise retry tracking + a real git-driven scenario test)
+
+Replaces Phase 3's over-broad "no outgoing INCLUDE edge, or an
+INDEXER_ERROR occurrence" retry heuristic with exact per-TU status
+tracking, and adds the git-driven acceptance test Phase 3 explicitly left
+open (`test/update/update_scenario.cmake`).
+
+- **`symhow_tu` gained a `status` column** (`symhow::index::kSymhowTuDdl`,
+  `include/symhow/index/Provenance.h`): `'ok'` (produced content, no fatal
+  diagnostic, and -- for a CUDA TU resolved via the Auto retry ladder --
+  the winning rung was the first one tried, not a degraded fallback),
+  `'partial'` (content but >=1 fatal diagnostic, or a CUDA TU that only
+  succeeded on a degraded fallback rung), `'failed'` (no content at all).
+  Populated in `IndexDriver.cpp`'s main indexing loop (index-aligned with
+  `entries`, passed into `writeProvenanceAndTus()` as `tuStatuses`) from
+  the same `hasContent()`/`stats.diagFatal`/`rungIndex` values that were
+  already being computed for the per-TU `-v` stderr line and
+  `symhow.index-summary/1`'s `failed_tus`/`tus_failed` counts -- no new
+  computation, just persisted per-path instead of discarded.
+- **`symhow::update::UpdateDriver`'s retry set is now `symhow_tu` rows with
+  `status != 'ok'`**, replacing the two-clause heuristic (`filesWithIndexerError`/
+  `filesWithOutgoingInclude`, both removed). This fixes the exact bug Phase
+  3 documented and deliberately left unfixed: a genuinely include-free TU
+  (`chain.cpp`, `templates.cpp`, `tu_a.cpp`, `tu_b.cpp` in the synthetic
+  fixture) no longer gets retried on *every* `symhow update` run forever --
+  only when its own previous run actually produced partial/no content.
+  Verified by `test_update_driver.cpp`'s "a second no-op `--files
+  chain.cpp` run retries nothing" case (`tus.retried == 0`, `tus.to_index
+  == 1` on the second run, where a Phase-3 `symhow update` would have reported
+  `tus.retried == 3` -- the other three include-free TUs -- forever).
+- **A database whose `symhow_tu` table predates this column is treated as
+  legacy and refused (exit `2`)**: `UpdateDriver` runs `PRAGMA
+  table_info(symhow_tu)` and checks for a `status` column before doing
+  anything else with `symhow_tu`; there is no in-place `ALTER TABLE ... ADD
+  COLUMN` migration path (Phase 3's own `symhow_tu` table -- `path`,
+  `args_hash`, `file_node_id`, no `status` -- can't be retry-classified
+  correctly after the fact, since the column simply doesn't exist yet for
+  any row written before this phase). Re-index from scratch to pick up
+  per-TU status tracking.
+- **A real, load-bearing bug the scenario test caught**: `UpdateDriver`
+  builds its `changes` list from up to three independent sources -- `git
+  diff`/`git status` (`collectChanges()`), stored `symhow_dirty_paths`
+  reconciliation, and CDB-vs-`symhow_tu` flag-change/deletion detection (args
+  hash mismatch -> Modified, `symhow_tu` row with no CDB entry -> Deleted).
+  For a file that's BOTH really deleted via git AND absent from the CDB
+  (true for every ordinary `git rm` of a tracked TU), the git-diff path and
+  the CDB-flag-deletion path each independently pushed their own Deleted
+  entry for the exact same path, so `files.deleted` (and the invalidation
+  seed set derived from it) silently double-counted. The scenario test's
+  step c (`git rm src/overloads.cpp`) caught this immediately:
+  `files.deleted == 2`, not `1`. Fixed by de-duplicating `changes` by
+  `(kind, normalizePath(oldPath), normalizePath(newPath))` right after all
+  three sources have contributed, before any downstream counting or seed-
+  set construction (`UpdateDriver.cpp`, just before the `renamedCount`
+  computation below). The same de-dup also protects the (rarer, untested
+  by the scenario -- see below) case of a TU whose content AND compile
+  flags both change in the same commit, which would otherwise double-count
+  as two separate Modified entries.
+- **`files.renamed` was hardcoded to the literal `0`** in
+  `symhow.update-summary/1`'s JSON output (`UpdateDriver.cpp`, both the
+  "nothing to do" and the normal-completion JSON blocks) -- a real gap,
+  not a placeholder-by-design: `UpdateSummary` had no field tracking it at
+  all. Fixed by adding `UpdateSummary::renamedCount` (counted from `git
+  diff`-detected `ChangeKind::Renamed` entries in `changes`, after
+  de-duplication) and wiring it into the JSON. `symhow update` itself still
+  processes a rename as an independent delete-old + index-new pair
+  internally (`matchChanged()` isn't changed by this -- there's still no
+  "just relabel, skip re-parsing" fast path for a pure rename with
+  identical content), so this is a reporting fix only, not a performance
+  one; see `docs/JSON_SCHEMA.md`'s updated `symhow.update-summary/1` notes.
+- **`test/update/update_scenario.cmake`**: a git-driven acceptance test
+  (registered as the `update_scenario` CTest test, `LABELS "update"`,
+  `TIMEOUT 600`, `SKIP_RETURN_CODE 77` if `git`/`sqlite3` aren't found at
+  configure time), driving a real throwaway git repo (a copy of
+  `test/fixtures/synthetic`, rewritten to `file(GLOB_RECURSE ...)` its
+  sources so add/delete/rename need no `CMakeLists.txt` edits) through a
+  commit sequence -- edit a `.cpp`, edit a shared header, delete a file,
+  add a file, rename a file, a project-wide compiler-flag change, an
+  uncommitted-then-reverted edit, "nothing changed", and a final
+  `--in-place` update -- verifying after EVERY step that the incrementally
+  updated database is logically identical to a full `symhow index` re-run
+  (`symhow dbdiff`, exit `0`) and that `symhow.update-summary/1`'s counts match
+  what actually happened. Every step passed on first correct run except
+  step c above (the deletion double-count bug, fixed, not worked around).
+  Two subtleties worth flagging for a future reader of the script:
+  - **Node-id stability is only asserted for a file untouched by the step
+    in question.** A cleared file's symbols are deleted and re-created
+    with fresh ids (no attempt to preserve old ids across a real
+    clear+reindex of their own declaring file -- see Phase 3's note on why
+    GC must fully commit before any re-indexing write), so `fixture::Shape`'s
+    id is only checked stable across step a (which never touches
+    `shapes.hpp`), and `level0`'s id (declared only in `chain.cpp`) is
+    checked stable across steps b/c/d/e (none of which touch `chain.cpp`)
+    but NOT across step f (the flag change touches every TU, including
+    `chain.cpp` itself, so `level0` legitimately gets a new id there --
+    re-baselined immediately after).
+  - **`--in-place` end-to-end coverage** (final step) asserts
+    `symhow_update_in_progress` is absent from `meta` after a successful
+    `--in-place` run (queried directly via `sqlite3`) and that the result
+    still `dbdiff`s clean against a fresh `symhow index` of the same commit.
+- **Docs**: this section; `docs/JSON_SCHEMA.md`'s `symhow.update-summary/1`
+  section (`renamed`/`retried` semantics); `README.md`'s `### Updating`
+  section (exit codes, the worktree-not-a-commit note, the legacy-DB
+  refusal).
+
+Remaining inexactness, deliberately not addressed this phase (candidates
+for a future phase, not blockers):
+
+- **TU-dependent header facts.** A fact that depends on WHICH TU a header
+  was included from (e.g. a macro whose expansion differs by include
+  order/definitions, or a symbol whose visible declaration differs under
+  different `#ifdef` combinations across TUs) is reconciled the same way a
+  full `symhow index` reconciles it -- last-TU-processed-wins/merge, per
+  `SrctrldbBackend`'s existing per-symbol upgrade-only rules -- but `symhow
+  update` only re-processes the TUs the invalidation closure decided were
+  affected. If a header's *observed* facts differ by includer and only
+  SOME includers get re-indexed in a given `symhow update` run (e.g. because
+  only one includer's own content changed, not the header's), the
+  database can end up reflecting a mix of "this run's" and "a previous
+  run's" per-includer observations for that header's symbols, rather than
+  what a full re-index of every includer together would produce. Not
+  observed on the synthetic fixture or scenario test (neither has
+  TU-dependent header facts to exercise this with) -- flagged from reading
+  the algorithm, not from a failing test.
+- **Excluded-includer blind spot.** The reverse-INCLUDE closure (Phase 3's
+  `computeClearSet()` step 1) only walks `file`/`INCLUDE`-edge rows that
+  already exist in the database. A file excluded from indexing entirely
+  (`--exclude`, or never matched by the CDB) that starts or stops
+  including a changed header produces no signal `symhow update` can see --
+  there was never a `file` row or `INCLUDE` edge for it to begin with. This
+  is inherent to the closure being DB-driven rather than filesystem/CDB-
+  driven, and was already true in Phase 3 (not a Phase 4 regression);
+  noted here because the scenario test's `add_compile_definitions`-based
+  flag-change step made it easy to double check the *included* side stays
+  exact.
+- **`--system-file-rows all` stays refused (exit `2`), not supported
+  incrementally**, unchanged from Phase 3: that mode gives every
+  transitively-reachable system header its own `file` row, and the
+  reverse-INCLUDE closure isn't validated against a database built that
+  way (system headers rarely change, but the closure's fixpoint over a
+  much larger `file`/`INCLUDE` graph hasn't been verified not to mis-prune
+  or under-prune). Re-index from scratch is still the only supported path
+  for a `--system-file-rows=all` database.
+
+## Phase 5 (final): `symhow update` validated against the real cucs corpus
+
+Adds `test/update/cucs_update_scenario.cmake` (registered as the
+`cucs_update_integration` CTest test, labels `integration;update`) --
+`update_scenario`'s (Phase 4) real-git-commit correctness contract, but
+against the REAL cucs corpus (the same 200-TU corpus `cucs_integration`
+indexes fresh) over a real commit range in that repo's own history, inside
+a throwaway `git clone --shared --no-checkout` (never the user's real
+checkout). Two things validated at real scale: (a) `symhow update` FROM..HEAD
+reproduces a fresh `symhow index` of HEAD exactly (`symhow dbdiff`), and (b) a
+single-`.cpp` `symhow update` is dramatically faster than a full re-index. See
+the script's own header comment for the exact clone/remap/symlink protocol
+(cucs's CDB references two absolute roots -- `/mnt/workspace/oss/cucs` for
+`.pixi`/toolchain paths and the real checkout path for source/`directory`
+-- both remapped onto the clone; `.pixi` and `build` are symlinked into the
+clone rather than copied, and gitignored via `.git/info/exclude` so `symhow
+update`'s worktree diff doesn't see them as permanently "added").
+### What the real corpus actually showed, and the rules now in force
+
+The first real-corpus runs were nowhere near equivalent: `symhow dbdiff
+inc.srctrldb full_head.srctrldb` reported **441 rows only in the
+incrementally-updated database and 18 rows only in the fresh one**. Every
+one of those was chased to a root cause by querying both databases
+directly (no guessing); the findings, and the code that now encodes them:
+
+**1. Three GC rules were deleting rows a fresh `symhow index` legitimately
+keeps** (the 18 "only in fresh" rows). The GC's problem is that after a
+partial re-index it cannot tell "leftover of a fact nobody produces any
+more" from "fact the current index genuinely produces", because the shapes
+are identical. Measured on `full_head.srctrldb` (a fresh 200-TU index of
+cucs):
+
+```sql
+-- nodes with no occurrence, no non-MEMBER edge and no outgoing MEMBER edge,
+-- i.e. exactly what the dead-node sweep deletes: 6 rows, ALL legitimate
+select count(*) from node n
+ where n.id not in (select id from file)
+   and not exists (select 1 from occurrence o where o.element_id=n.id)
+   and not exists (select 1 from edge e where e.type<>1 and (e.source_node_id=n.id or e.target_node_id=n.id))
+   and not exists (select 1 from edge e where e.type=1 and e.source_node_id=n.id);
+```
+
+Those 6 are implicit template instantiations such as
+`cucascade::exec::future::then_try<(lambda at .../prefetching_cache.cpp:768:17)>`
+and `std::filesystem::is_regular_file(const path&, error_code&)`:
+`AstWalker::ensureSymbol()` registers a referenced symbol's whole
+semantic-parent chain, so the node (and its `MEMBER` edge from its parent)
+is created even when nothing ever anchors the node itself with an
+occurrence. A fresh index keeps them; an unrestricted sweep deleted them.
+The same applies to edge-less, occurrence-less **non-indexed `file` rows**
+(`.pixi/.../kvikio/file_handle.hpp`, `.pixi/.../cudf/version_config.hpp`,
+libstdc++'s `<random>`), which `FileRegistry`'s `--system-file-rows` policy
+creates and the walker then never describes.
+
+The fix is to give the sweep the one piece of information it was missing:
+**what the indexing pass that just ran actually produces.**
+`SrctrldbBackend::finish()` now writes a `symhow_touched(node_id)` table from
+`m_byKey`/`m_fileNodeIdByPath` (plus a MEMBER-ancestor closure, because the
+vendored writer materializes intermediate `NameHierarchy` elements itself
+and only hands back the leaf id, and plus the writer's shared "unsolved
+symbol" node when this pass produced an unsolved reference). For a full
+`symhow index` that table is *every node in the database* -- asserted by
+`test/unit/test_incremental_fixture.cpp` and by the cucs scenario itself --
+so every rule below is a **provable no-op on a freshly indexed database**.
+`invalidate()` empties `symhow_touched` before the re-index, so a stale entry
+can never protect a dead node. The rules now in force, all in
+`deadNodeAndOrphanSweep()`:
+
+| rule | predicate | why it is safe |
+| --- | --- | --- |
+| dangling non-MEMBER edge | `type<>1`, source is not a `file` row, source not in `symhow_touched`, source has no occurrence | a fresh index has 0 such rows (asserted); the source symbol is one the current pass no longer produces, so its outgoing edges (which describe its body) are dead |
+| dead node (fixpoint) | not a `file`, not in `symhow_touched`, no occurrence, no non-MEMBER edge, no outgoing MEMBER edge, **and** restricted to clearing candidates | 0 rows on a fresh index (asserted); an unguarded version deletes 5-6 legitimate rows on this corpus (the scenario reports that number every run) |
+| local symbols / errors | no occurrence | unchanged from Phase 3 |
+| orphan `element` / orphan `source_location` | no backing `node`/`edge`/`local_symbol`/`error`; no backing `occurrence` | pure cleanup, invisible to `Snapshot` either way |
+| ~~stale non-indexed `file` rows~~ | **removed** | a fresh index legitimately produces edge-less non-indexed file rows, and the re-index cannot be relied on to re-create one (its contributing TU may not be in the re-index set) |
+
+The dead-node sweep is additionally **always** restricted to a candidate
+set, never run over the whole database: `symhow_cand` in `invalidate()`'s
+pre-index pass, and a new `symhow_pending_cand(serialized_name)` table in the
+post-index `sweepOrphans()` pass. Candidates have to be carried across the
+re-index **by `serialized_name`, not by id** -- `element.id` is a plain
+sqlite rowid the re-index can hand out again -- so `invalidate()` persists
+the candidate node names into a real (not `TEMP`) table and `sweepOrphans()`
+consumes and drops it.
+
+**2. An occurrence could land inside a file symhow was told not to index** (the
+`cuda.h` / `cuda_runtime.h` locations in the first run). `AstWalker::visit()`
+gates *cursors* on `FileRegistry::Info::indexed`, but a cursor in an indexed
+`.cpp` can still have a spelling/reference *range* that resolves into a
+non-indexed header -- macro expansions resolve to the macro's definition
+site, implicit instantiations resolve into the template's own header. The
+rule now enforced is: **a fact is emitted only if its own range's file is
+indexed** (`AstWalker::rangeFileIndexed()`, called from every handler that
+creates a reference edge, plus a backstop inside
+`emitOccurrenceForRange()`). Indexer errors are exempt -- they attach to the
+TU's main file by design (`source_location.type = 6`). Asserted on fresh
+databases (fixture + cucs) by:
+
+```sql
+select count(*) from source_location l join file f on f.id=l.file_node_id
+ where f.indexed=0 and l.type<>6;   -- was 64, must now be 0
+```
+
+`kWalkerVersion` is bumped 2 -> 3 for this (one bump, covering all the
+walker changes in this phase); a database indexed by an older walker is
+rejected by `symhow update` with a "re-index from scratch" error.
+
+**3. `node.type` was last-writer-wins for equal-ranked kinds**, i.e.
+dependent on TU processing order. `SrctrldbBackend::finish()`'s
+upgrade-only `UPDATE node SET type=...` guard used `rank(stored) <=
+rank(new)`; libstdc++'s `std::pair` is reached both as a `ClassTemplate`
+(-> `CLASS`) and as a `StructDecl` (-> `STRUCT`), both rank 2, so a 200-TU
+full index and a 1-TU `symhow update` on top of it disagreed. Now `<` (first
+real kind wins), with the virgin-`UNKNOWN` -> `TYPE` case kept explicitly.
+
+**4. The corpus was indexing the CUDA toolkit and its vendored
+dependencies as first-party code.** cucs's CDB reaches `.pixi/...` (CUDA,
+cudf, rmm, kvikio) and `build/release/_deps/...` (Catch2) with plain `-I`,
+not `-isystem`, so `clang_Location_isInSystemHeader()` is false and symhow
+walked ~20k-line toolkit headers from every one of the ~200 TUs. That is
+symhow's `-I`-vs-`-isystem` classification working as designed, but it is not
+the realistic configuration for this corpus, and it accounted for the large
+majority of the remaining divergence. `test/update/cucs_update_scenario.cmake`
+now passes `--exclude '**/.pixi/**' --exclude '**/_deps/**'` to `symhow index`;
+`symhow update` inherits them from the database's stored provenance
+(`Provenance.cpp`'s `symhow_db_options` meta), which the scenario exercises
+implicitly. Worth considering (deliberately NOT changed here): defaulting
+to treating headers outside the repo root / the CDB's `directory` tree as
+non-indexed.
+
+### The one residual divergence: occurrence locations in shared headers
+
+With all of the above, the default `HEAD~1..HEAD` run is down to **42
+differences, all of them `location` rows, all one-sided (nothing is ever
+lost -- `only_in_b` is 0 and the scenario asserts that hard)**; the
+`HEAD~3..HEAD` run is down to 2. They are all TYPE_USAGE occurrences inside
+repo-local *shared* headers (`memory_space.hpp`, `memory_reservation_manager.hpp`,
+...) whose own content did NOT change in the range.
+
+This is inherent to symhow's fact granularity, not a bug that can be swept
+away. A fact's only provenance in the Sourcetrail schema is the **file its
+`source_location` lives in** -- not the **TU that produced it**. Template
+instantiation makes those two differ: walking `data_batch.cpp` records
+TYPE_USAGE occurrences whose cursors land in `memory_space.hpp` (the
+instantiated pattern's own text) with a context symbol from a third file
+entirely. Verified by direct inspection: `memory_space.hpp:178:15` carries
+5 distinct edges' occurrences in the FROM-indexed database and only 3 in a
+fresh HEAD index, while the header itself is byte-identical at both
+commits. When `data_batch.cpp` changes, `symhow update` clears and re-walks
+`data_batch.cpp`, but the occurrences its OLD content contributed *inside*
+`memory_space.hpp` are not `data_batch.cpp`'s to clear: the header is
+unchanged and still included by ~100 TUs that were correctly not
+re-indexed, so clearing it would destroy THEIR facts instead. Fixing this
+properly requires per-fact TU provenance (a row per occurrence per
+producing TU) -- i.e. persisting the fully un-deduplicated fact volume,
+an order-of-magnitude database-size increase -- and is explicitly out of
+scope here.
+
+**`symhow dbdiff --ignore shared-header-locations`** was therefore added, and
+is the *only* relaxation in the test. It drops `locations` rows whose file
+is the target of `INCLUDE` edges from two or more distinct includers
+(`SnapshotOptions::ignoreSharedHeaderLocations`, implemented in
+`takeSnapshot()`). It is narrow by construction:
+
+- it ignores **only** occurrence locations. `node`, `edge`, `symbol`,
+  `file`, `error`, `local_symbol`, `symbol_def` and `tu` rows are never
+  ignored, in either direction.
+- it ignores them **only** inside multiply-included headers. A header with
+  a single includer cannot carry this divergence at all: if its one
+  includer is cleared, `computeClearSet()`'s header-pruning step clears the
+  header with it.
+- the scenario still runs the **strict, no-exclusions** diff first and
+  fails hard if `only_in_b` is non-zero (`symhow update` may never lose
+  anything) or if any surviving difference is anything other than a
+  `location` row. Only then does it accept the `--ignore` run, which must
+  be exactly empty. The single-file speed run's `symhow dbdiff` is still
+  checked with **no** `--ignore` at all, and is exactly equivalent.
+
+### Results
+
+Default range (`SYMHOW_CUCS_UPDATE_FROM` unset -> `HEAD~1`), 200-TU corpus:
+
+| measurement | value |
+| --- | --- |
+| `T_full_from` (full `symhow index` @ FROM) | 87 s |
+| `T_update` (`symhow update` FROM -> HEAD, 46 TUs re-indexed) | 74 s |
+| `T_full_head` (full `symhow index` @ HEAD, dbdiff baseline) | 92 s |
+| `T_small` (`symhow update --files memory_reservation.cpp`) | 6 s |
+| strict `symhow dbdiff` | 42 only in A (all `location` rows in shared headers), 0 only in B |
+| `symhow dbdiff --ignore shared-header-locations` | equivalent |
+
+`SYMHOW_CUCS_UPDATE_FROM=HEAD~3` (38 changed files, 56 TUs re-indexed):
+`T_full_from` 84 s, `T_update` 76 s, `T_full_head` 85 s, `T_small` 5 s,
+strict diff 2 `location` rows / 0 lost, `--ignore` run equivalent.
+
+Note that `T_update` is only modestly below `T_full_head` for these ranges:
+re-indexing 46 of 200 TUs costs ~80% of a full index because the changed
+files are widely-included headers *and* because a full index parallelizes
+across all TUs while an update has fewer to spread over. The single-file
+case (`T_small`, the realistic edit-loop scenario) is the one that matters
+and is ~15x faster than a full re-index -- the scenario asserts `T_small <
+T_full_head` hard and warns below the `1/5` bar.
+
+**Docs**: this section; `README.md`'s `## Testing` (`ctest -L update`,
+`SYMHOW_CUCS_UPDATE_FROM`); `test/CMakeLists.txt`'s `cucs_update_integration`
+registration comment.
+
+## Phase 7: `symhow index` progress display + `--parallel`/`-j`
+
+Two independent additions to `symhow index` (and, for `--parallel`/`-j` only,
+`symhow update`'s re-index step): a right-aligned `[ k/N] Ts  status  path`
+per-TU progress line plus a periodic running-summary line (replacing the
+old unconditional `path: status` line), and a `--parallel N`/`-j N` flag
+that extracts N TUs concurrently while keeping the single-threaded
+`SrctrldbBackend`/SQLite writer.
+
+### Determinism: the reorder buffer
+
+`SrctrldbBackend::consume()` (the vendored SourcetrailDB writer underneath
+it) is not thread-safe and, more fundamentally, *shouldn't* be made
+concurrent even if it could: node ids, name-collision resolution order, and
+`symhow_tu` row order are all a function of the ORDER `consume()` is called in.
+Parallelizing extraction without also controlling consumption order would
+make every downstream artifact (ids in particular) depend on which worker
+thread happened to finish first -- a foot-gun for anyone diffing two
+databases indexed with different `-j` values.
+
+`runIndex()`'s parallel path avoids this with a bounded reorder buffer: N
+worker threads pull CDB indices from a shared counter and each run the
+full, self-contained `sanitize -> parse (own `CXIndex`) -> walk -> fresh
+`BatchSink`` pipeline (including the CUDA rung-retry loop, kept per-TU).
+The MAIN thread is the only consumer: it drains completed `TuOutcome`s
+strictly in CDB order (index 0, 1, 2, ...), blocking on a condition
+variable until each one is ready, and only that thread ever calls
+`backend.consume()`, updates the running counters, or prints a progress
+line. Workers are blocked from getting more than `2*N` indices ahead of the
+consumer (a simple `nextDispatch - nextConsume < 2*N` gate), bounding peak
+memory to roughly `N x (largest in-flight TU's AST + fact batch)`.
+
+Net effect: **the observable result of a `symhow index -j N` run is
+byte-for-byte identical to `-j 1` for any N**, verified by
+`test/unit/test_parallel_fixture.cpp` (the synthetic fixture, `-j 1` vs
+`-j 4` vs `-j 0`, snapshot diff empty AND raw `node(id, serialized_name)`
+rows identical) and by `cucs_integration`'s own `-j 8` step (`symhow dbdiff`
+against the sequential run on the real corpus, strict/no `--ignore`, must
+be empty). Only wall-clock time should ever differ between `-j` values --
+if a future change makes that assertion start failing, the bug is a
+determinism regression in the reorder buffer (or a newly-introduced piece
+of shared mutable state in the extraction path), not a test to relax.
+
+### Thread-safety audit (extraction path)
+
+Every module `processEntry()` touches was checked for shared/global
+mutable state that a worker-thread pool would race on:
+
+- **libclang**: `TuParser::parseTU()` already creates one `CXIndex` (and
+  one `CXTranslationUnit`) per call, never shared across TUs -- confirmed
+  this stays true when called from N worker threads simultaneously (each
+  thread's `CXIndex`/`CXTranslationUnit` pair is used only by that thread,
+  which is exactly libclang's own concurrency contract: distinct indices
+  may be used concurrently from distinct threads).
+- **`AstWalker`/`NameBuilder`/`FileRegistry`/`ArgSanitizer`/`CudaSupport`/
+  `TuParser`**: no `static`/namespace-scope mutable state anywhere in these
+  (checked directly, not assumed) -- every one of them is either pure
+  functions over their arguments or a small object (`FileRegistry`,
+  `BatchSink`) constructed fresh per TU by `processEntry()`.
+- **stderr writes**: only `SrctrldbBackend::consume()`/`finish()` (verbose
+  collision warnings, VACUUM/ANALYZE warnings) and `IndexDriver`'s own
+  progress/summary lines write to stderr during a `symhow index` run, and both
+  only ever run on the single consumer thread -- no worker thread writes to
+  stderr/stdout at all, so there is no interleaving to guard against.
+- **`IndexSummary` counters / `nameCollisions`**: exclusively updated inside
+  `SrctrldbBackend::consume()`/`finish()`, i.e. on the consumer thread only.
+- **no `chdir`** anywhere in the indexing path (confirmed); `getenv`/
+  `std::filesystem` calls are all read-only/thread-safe for this usage.
+- **exceptions**: `processEntry()` wraps the entire extraction pipeline in
+  a `try`/`catch (...)` (on top of the pre-existing per-step handling in
+  `sanitize()`/the CUDA ladder) so a worker thread can never let an
+  exception escape and terminate the process -- it is turned into that
+  TU's own `failed` `TuOutcome` instead.
+
+No shared mutable state needed removing: extraction was already
+TU-isolated by construction (Phase 1's own `FileRegistry`/`BatchSink`
+design), which is what made this seam usable for parallelism at all without
+a rewrite.
+
+### Provenance
+
+`--parallel`/`-j` is deliberately **not** recorded in `symhow_options_json`
+(`Provenance`/`UpdateRunOptions`): it does not change what gets indexed,
+only how fast, so a later `symhow update` run with a different `-j` value must
+not be treated as an "option changed" event.
+
+**Docs**: this section; `README.md`'s `### Indexing`; `--help`'s `index`/
+`update` option lists; `.claude/skills/symhow/SKILL.md`.
+
+## Phase 8: checkpoints & resume (crash-safe, resumable indexing)
+
+Before this phase, `symhow index` wrote an entire run in ONE SQLite
+transaction and only wrote provenance/`symhow_tu` rows at the very end
+(`IndexDriver`'s old `writeProvenanceAndTus()`) -- a Ctrl-C at minute 40 of
+a 60-minute run lost everything (the hot journal rolls the whole
+transaction back to empty). This phase makes `symhow index` checkpoint
+periodically and resumable via `symhow update`.
+
+### Design
+
+- **`--commit-every N`** (default 25; `0` = one transaction, the pre-Phase-8
+  behavior). After every N consumed TUs -- and once more at the end --
+  `IndexDriver` calls `SrctrldbBackend::checkpoint()`, which: (a) commits
+  the writer's currently-open transaction; (b) via a SECOND `WritableDb`
+  connection to the same file (safe: the writer's own transaction is closed
+  at this point), in one transaction, flushes everything buffered since the
+  last checkpoint -- the upgrade-only `node.type` UPDATE / `definition_kind`
+  UPSERT, `symhow_symbol_def` (INSERT OR IGNORE), the `symhow_touched` delta, and
+  the checkpointed TUs' `symhow_tu` upserts; (c) reopens a new writer
+  transaction for subsequent `consume()` calls. `finish()` (reader indices,
+  non-indexed-file cleanup, ANALYZE/VACUUM, clearing
+  `symhow_index_in_progress`) always runs immediately after the caller's own
+  final `checkpoint()` call -- for `--commit-every 0` that final call is
+  the ONLY checkpoint, covering the whole run, making the result
+  byte-for-byte equivalent to the old single-flush `finish()`.
+- **Tie semantics: fully order-independent, not just "preserved exactly".**
+  Originally (and through most of this phase's development) the `node.type`
+  UPDATE's guard was `WHERE ... rank(stored) < newRank OR stored = UNKNOWN`,
+  strict (`<`) on rank alone -- a stored kind was only ever replaced by a
+  STRICTLY higher-ranked one, so an equal-rank tie (e.g. CLASS vs STRUCT,
+  FUNCTION vs METHOD, GLOBAL_VARIABLE vs FIELD -- all rank 2 under
+  `kindRank()`) kept whichever kind was written FIRST. That was fine
+  *within* a single checkpoint/session (same guard applied once or N times
+  against progressively-updated state gives the same answer either way),
+  but it was NOT fine *across* sessions: which TU counts as "first" depends
+  on which subset/order of TUs a given `symhow index`/`symhow update` invocation
+  happened to process, so a full 200-TU `symhow index` and a 26+174-TU `symhow
+  update` resume on top of an interrupted run could -- and, on the real
+  cucs corpus, DID (see the subsection below) -- disagree about `node.type`
+  for a rank-tied symbol. Fixed by extending the guard to a full
+  `kindOrder(kind) = (kindRank(kind), nodeKindInt(kind))` total order:
+  `WHERE ((CASE type ... rank(stored) ...) < newRank OR (rank(stored) =
+  newRank AND type < newKindInt))` (`SrctrldbBackend::flushPending()`'s
+  `kUpdateNodeTypeSql`), with the matching order applied in memory too
+  (`bufferKindDef()`, which now also tie-breaks on `nodeKindInt()` instead
+  of "first buffered wins") and in `BatchSink`'s per-TU merge
+  (`symhow::model::symbolKindBeats()`, `src/model/Enums.cpp`, used instead of a
+  bare `kindRank() >` comparison). The final `node.type` for any node is
+  now a pure function of the SET of kinds ever observed for it, independent
+  of processing order or session boundaries -- ties are no longer
+  "preserved", they're **eliminated** (there is always exactly one correct
+  answer for a given set of observations, regardless of order).
+  `symbol.definition_kind` still uses `max()` (order-independent either
+  way, unaffected by this change). Verified by
+  `test_resume_fixture.cpp`'s `--commit-every 1` vs `25` vs `0` equivalence
+  test (snapshot diff AND raw `node(id, serialized_name)` rows identical),
+  `test_parallel_fixture.cpp`'s `-j 4` + `--commit-every 3` case
+  (checkpointing interacting with the Phase 7 reorder buffer), and the new
+  `test_kind_determinism.cpp` (`[fixture]`: indexing the synthetic fixture
+  CDB with its entries in REVERSE order produces an identical
+  `serialized_name -> type` mapping and an empty `diffSnapshots()`).
+- **`symhow update`'s invalidation now resets `node.type` for every node whose
+  declaring file was cleared, not just ones that lost EVERY declaring
+  file.** `node.type` is upgrade-only (previous bullet), which is exactly
+  right for correctness across independent OBSERVATIONS -- but wrong for a
+  genuine source EDIT that changes a symbol's own kind (e.g. `class Square`
+  -> `struct Square`): without a reset, the stale CLASS `node.type` a prior
+  session already wrote would never be replaced by the re-index's own
+  STRUCT observation (CLASS and STRUCT rank equally under `kindRank()`, and
+  even the new `kindOrder()` tie-break above only decides between
+  DIFFERENT, still-live observations -- it doesn't know the CLASS
+  observation is now stale/gone). `Invalidator::invalidate()`'s step 4
+  (`src/update/Invalidator.cpp`) already computes `symhow_lost` -- every node
+  that lost >= 1 `symhow_symbol_def` row to this clear -- for the `symbol` row
+  deletion described below; it now ALSO does `UPDATE node SET type =
+  <NodeKind::UNKNOWN's int> WHERE id IN (SELECT node_id FROM symhow_lost)`
+  right after that, letting the re-index that's about to run re-derive
+  `node.type` from scratch via the normal upgrade-only ladder, exactly like
+  a fresh `symhow index` of the same edited source would. Verified by
+  `test/update/update_scenario.cmake`'s new step 4b2 (`class Square ->
+  struct Square`, asserting `node.type` is STRUCT's int post-update, and
+  `symhow dbdiff` against a fresh index of the same commit is empty).
+  **Residual caveat** (same TU-provenance limitation class as every other
+  gap in this section): if a node's declaration is deleted outright and it
+  survives ONLY as a reference target from an untouched TU (not itself
+  being reindexed this run), nothing re-derives its kind this run, and it
+  can be left at UNKNOWN where a from-scratch `symhow index` would show
+  whatever kind that untouched TU's reference implies. Not exercised by any
+  current test (would need a scenario that deletes a declaration while
+  leaving a reference-only user untouched); flagged here rather than
+  silently accepted.
+- **`symhow_touched`** (used by `symhow update`'s post-index GC sweep) is
+  DROP+recreated exactly ONCE per session -- the first flush, not every
+  checkpoint -- then every later flush in the same session only INSERTs its
+  delta. Dropping it on every checkpoint would un-protect nodes from
+  earlier, already-committed chunks of the SAME run.
+- **Non-indexed-file cleanup** (`UPDATE file SET indexed=0,complete=0`,
+  `DELETE FROM filecontent`) also moved from finish()-only into every
+  flush: a system header first (and only) reached by a TU in an
+  already-checkpointed chunk must not be left with the vendored writer's
+  default `indexed=1/complete=1` just because the run never reached a
+  normal `finish()` (see "Resume via `symhow update`" below).
+- **Provenance up front.** `symhow_provenance_version`/`symhow_version`/
+  `symhow_walker_version`/`symhow_cdb_path`/`symhow_options_json`/`symhow_repo_root`/
+  `symhow_repo_commit`/`symhow_dirty_paths`/`symhow_indexed_at`, plus a new
+  `symhow_index_in_progress="1"` key, are written via their own tiny
+  `WritableDb` transaction right after `SrctrldbBackend::begin()` (which now
+  only opens the file/creates the schema -- it no longer starts the
+  writer's transaction itself; `startTransaction()` does that, called
+  AFTER provenance is durable) -- so provenance survives even a run
+  interrupted before a single TU is consumed. `symhow_index_in_progress` is
+  deleted by `finish()` on success, or by `symhow update` once it completes a
+  resumed run.
+- **Graceful Ctrl-C.** A `sig_atomic_t` flag (no I/O in the handler) is set
+  by SIGINT/SIGTERM; the consumer loop (both the sequential and the
+  parallel/reorder-buffer path) checks it once per consumed TU. On
+  interrupt: no new TUs are dispatched (the parallel path freezes
+  `nextDispatch` at its current value and still drains whatever was already
+  in flight, bounded by the `2*N` reorder window), a final checkpoint runs
+  via `SrctrldbBackend::finishInterrupted()` (same flush as `checkpoint()`,
+  but then CLOSES the writer instead of reopening a transaction -- no
+  reader indices/ANALYZE/VACUUM/`symhow_index_in_progress`-clearing; those are
+  `symhow update`'s job when it eventually finishes the run), and the process
+  prints `symhow index: interrupted after K/N TUs -- completed work is saved;
+  resume with: symhow update -d <db>` and exits **130**. A hidden
+  `--stop-after K` flag (checked the same way, driven by a plain consumed-
+  TU counter instead of a signal) gives tests an EXACT, deterministic
+  interruption point instead of racing a real `SIGINT`.
+- **Resume via `symhow update`.** A database with `symhow_index_in_progress="1"` is
+  no longer refused by `symhow update` -- it logs "resuming interrupted index"
+  and adds every CDB entry with NO `symhow_tu` row at all (not just ones a `git
+  diff` happened to flag as `Added`) to the retry set, on top of the
+  existing `status != 'ok'` retry set. This is necessary because ordinary
+  new-TU detection (`symhow::update::matchChanged`'s `newTus`) is entirely
+  git-diff-driven: a CDB entry the interrupted run never reached, but that
+  nothing in git touched, would otherwise be invisible to `symhow update` (its
+  `file` row might not even exist yet, or -- the more interesting case --
+  it might already have one, reached only as a header by an earlier,
+  completed TU, despite never itself being indexed as a TU). Because
+  checkpoints commit `symhow_tu` rows for a contiguous CDB prefix (the Phase 7
+  reorder buffer's ordering guarantee holds regardless of `-j`), "the
+  untracked suffix" is exactly this "no `symhow_tu` row" set -- no CDB-order
+  bookkeeping needed beyond that. `symhow update` clears
+  `symhow_index_in_progress` unconditionally (idempotent) once it finishes.
+  `symhow query` on an in-progress database still works (read-only) but prints
+  a one-line stderr notice, `symhow query: index incomplete (interrupted) --
+  run `symhow update` to finish`, suppressed by `-q`/`--json`. `symhow index`
+  itself now refuses (exit 2, not the generic exit 1) an existing output
+  with `symhow_index_in_progress` set, pointing at `symhow update -d <db>` or
+  `--force`.
+
+### Known imprecision: `symhow_touched` after a resumed run
+
+`symhow_touched` always describes "every node THIS indexing pass produced" --
+for a full, uninterrupted `symhow index` that's every node in the database; for
+any partial re-index (an ordinary `symhow update`, OR `symhow update` finishing an
+interrupted `symhow index`) it's only the nodes the reindexed TUs still
+produce. A database resumed this way therefore ends up with `symhow_touched`
+reflecting only the LAST chunk `symhow update` reindexed (e.g. 3 TUs out of an
+original 1000), not the full original run's nodes -- exactly the same
+imprecision an ordinary single-TU `symhow update` already has relative to the
+full index it's built on. It is not a NEW gap Phase 8 introduces: nodes
+from the earlier, already-committed chunks remain protected from GC by
+`Invalidator`'s occurrence/edge-based rules regardless (see the Phase 5
+section above); `symhow_touched` is only a supplementary signal for purely
+structural, occurrence-less scope nodes. Accepted rather than engineered
+around, given how narrow the affected node population is.
+
+### Order-dependence bugs found (and fixed) by the real-corpus resume test
+
+`test_cucs.cpp`'s Step 4 (`symhow update` resuming a real, SIGINT'd `symhow index -j
+4` run on the full cucs corpus) found that the resumed-then-completed
+database was NOT always strictly `symhow dbdiff`-empty against a fresh `-j 8`
+index. This used to be reported here as a single "pre-existing residual-
+collision (`m_byName`)" limitation with `test_cucs.cpp` only WARNING (not
+hard-failing) on it; a closer forensic pass -- diffing the actual dbdiff
+output row-by-row rather than assuming the cause -- found that explanation
+was wrong (or at least incomplete) for what this corpus actually exercises,
+and turned up two distinct, genuinely fixable order-dependence bugs
+instead. Both are now fixed, `test_cucs.cpp`'s Step [13] is a hard
+assertion again (no WARNING fallback), and a real `symhow dbdiff` between a
+fresh `-j 8` cucs index and a `--stop-after`-interrupted, `symhow update`-
+resumed one is empty.
+
+1. **Node-kind (`node.type`) ties broke first-observed-wins, not
+   order-independently.** `SrctrldbBackend::bufferKindDef()` kept the
+   in-memory buffered kind on an EQUAL-`kindRank()` tie (e.g. CLASS vs
+   STRUCT, FUNCTION vs METHOD, GLOBAL_VARIABLE vs FIELD -- all rank 2), and
+   `flushPending()`'s `kUpdateNodeTypeSql` UPDATE was strict `<` on rank
+   alone, so it never re-decided a rank tie already committed to disk
+   either. Both meant "whichever TU/session observed a real kind FIRST"
+   decided the final `node.type` for any name whose observers disagreed at
+   equal rank -- and "first" depends on which TU subset/order a given `symhow
+   index`/`symhow update` invocation happened to process, which differs between
+   a single 200-TU session and a 26+174-TU resume. Fixed by extending the
+   comparison to the full `kindOrder(kind) = (kindRank(kind),
+   nodeKindInt(kind))` total order everywhere a kind is merged
+   (`bufferKindDef()`, `kUpdateNodeTypeSql`, and `BatchSink`'s per-TU merge
+   via the new `symhow::model::symbolKindBeats()`) -- see the "Tie semantics"
+   bullet above for the exact SQL. This alone eliminated the overwhelming
+   majority of the real dbdiff rows this test was seeing (a ~200-TU repro
+   at one point showed 586/531 differing node/edge/location/symbol rows;
+   most were a handful of ambiguous system typedefs' node.type disagreeing,
+   fixed by this change alone -- see point 2 below for why the typedefs'
+   NAMES also disagreed, a separate bug).
+2. **`NameBuilder`'s ancestor-chain and identity/disambiguator strings
+   embedded TU-as-spelled (unnormalized) file paths**, in two different
+   ways, both making a symbol's NameHierarchy (and therefore its node
+   identity) depend on which TU happened to construct it first in a given
+   session:
+   - `ancestorChainRootToLeaf()`/`AstWalker::ensureSymbol()` included
+     `CXCursor_LinkageSpec` (`extern "C" { ... }`) ancestors in a symbol's
+     name/registration chain. libclang's semantic-parent walk does not
+     reliably agree, across separately-parsed TUs, on whether a given
+     system typedef (observed: glibc's `int32_t`/`int64_t`, CUDA's
+     `CUuuid_st`) is reached through such a block at all -- each TU's own
+     macro/header state can genuinely nest the identical logical
+     declaration differently -- so the resulting `NameHierarchy` gained (or
+     didn't gain) a spurious empty-name element depending on which TU's
+     view "won" the session's `m_byKey`/`m_byName` cache. Fixed by skipping
+     `CXCursor_LinkageSpec` entirely in both places: it isn't a named C++
+     scope to begin with (`extern "C" { void f(); }` names `::f`, not
+     `::<something>::f`), so this is a correctness fix, not just a
+     determinism one.
+   - Declaration-file paths embedded in a translation-unit-local entity's
+     disambiguator (`disambiguatorFor()`) and identity key
+     (`buildSymbolIdentity()`'s local-scope/no-USR branches), and paths
+     libclang itself prints inside a synthesized lambda closure-type
+     spelling (`"(lambda at <path>:<line>:<col>)"`, which can end up
+     embedded in a NameElement's postfix via a function parameter's printed
+     type, e.g. `std::thread::thread(F&&)`), were used verbatim as
+     libclang/that TU spelled them. The exact same physical header,
+     `#include`d with two different relative spellings by two different
+     TUs (real corpus case: cucs's `src/data/io_worker.hpp`, reached both
+     directly and via `test/data/../../src/data/io_worker.hpp`), therefore
+     produced two different disambiguator/identity strings for the exact
+     same TU-local lambda. Fixed by normalizing every such embedded path
+     via `symhow::common::paths::normalize()` before it becomes part of any
+     identity/disambiguator string (`NameBuilder.cpp`'s new
+     `normalizedFileName()` helper, and `normalizeLambdaPathsInText()` for
+     the synthesized-lambda-spelling case specifically).
+
+Both fixes are order-independence fixes at the *identity* layer (which
+node a given real-world entity resolves to, and what NameHierarchy it
+gets), complementary to the `node.type` merge-order fix documented above
+(which kind a given, already-identified node ends up with). Verified: (a)
+`test_kind_determinism.cpp` (reverse-CDB-order equivalence on the synthetic
+fixture) and `test/update/update_scenario.cmake`'s new `class Square ->
+struct Square` commit (the node.type reset in Invalidator's step 4, see
+below, is what makes THAT specific edit take effect at all); (b) directly
+against the real cucs corpus, per the "Tests" section below.
+
+### Tests
+
+`test/unit/test_resume_fixture.cpp` ("[fixture][resume]"): commitEvery
+equivalence (1 vs 25 vs 0, snapshot + raw node-id diff), and the full
+interrupt/resume scenario (`--stop-after 3` with `--commit-every 2` on the
+6-TU synthetic fixture -- exit 130, no hot journal, `symhow_index_in_progress`
+set, exactly 3 `symhow_tu` rows, `symhow index` without `--force` refuses with exit
+2, `symhow query stats` succeeds and prints the notice, then `symhow update`
+completes it with a strict-empty `dbdiff` against the canonical fixture
+database). `test/unit/test_parallel_fixture.cpp` gained a `-j 4` +
+`--commit-every 3` equivalence case. `test/unit/test_kind_determinism.cpp`
+("[fixture]", new): indexes the synthetic fixture CDB in forward vs
+REVERSED entry order and asserts both an empty `diffSnapshots()` and an
+identical raw `serialized_name -> type` mapping -- the direct regression
+test for the `node.type` merge-order fix above.
+`test/update/update_scenario.cmake` gained step 4b2 (`class Square ->
+struct Square`), asserting `node.type` reflects the edit (not the stale
+CLASS kind) and `symhow dbdiff` against a fresh index of the same commit is
+empty -- the regression test for the `Invalidator` `symhow_lost` node.type
+reset above. `test/integration/test_cucs.cpp`'s Step 4 sends a REAL
+`SIGINT` to a `symhow index -j 4 --commit-every 5` run against the full cucs
+corpus (via a small bash wrapper -- `std::system()` itself can't signal a
+child), asserts exit 130 and no hot journal, then `symhow update -d`s it to
+completion and `symhow dbdiff`s the result against a fresh `-j 8` index
+(strict, no `--ignore`) -- a HARD assertion (must be empty; no longer a
+WARNING fallback, now that the two bugs above are fixed).
+
+**Docs**: this section; `README.md`'s `### Indexing`; `--help`'s
+`--commit-every`; `.claude/skills/symhow/SKILL.md`.
+
+## Phase 9: duplicate CDB entries (one path, several args)
+
+### The bug
+
+Real `compile_commands.json` files can list the SAME `file` path more than
+once -- typically because a source is compiled into several targets/configs
+with different flags (e.g. Sirius's real CDB: 975 entries after symhow's own
+excludes, for only 738 distinct `file` paths -- 237 files appear twice).
+`symhow_tu` is (and stays) `path TEXT PRIMARY KEY`, so it can only ever hold ONE
+row per path -- but before this fix, `args_hash` was whichever entry's
+`computeArgsHash()` happened to be UPSERTed LAST during that indexing pass
+(`IndexDriver`'s `chunkTuRows.push_back(...)` used the CURRENT entry's own
+hash, and the `symhow_tu` UPSERT unconditionally overwrote the stored value).
+On the NEXT `symhow update`, comparing EVERY CDB entry's own hash against that
+one stored value meant one of the path's two entries would, deterministically,
+never match -- "flag changed" -- so ALL of that path's entries got
+re-indexed, on EVERY SINGLE run, forever, regardless of what `--files` (or
+git) actually said changed. Observed on a real corpus: a one-file `--files`
+update re-indexed 475 TUs (237 duplicated files x 2 entries each, plus the
+one file actually requested).
+
+A secondary, cosmetic (not fixed, just documented) confusion: `symhow index`'s
+progress counter (`[k/N]`) counts CDB ENTRIES (975 in the Sirius example),
+while `symhow_tu` counts distinct PATHS (738) -- `N` in the progress line and
+`SELECT count(*) FROM symhow_tu` will legitimately disagree whenever the CDB has
+any duplicated path. `symhow.update-summary/1`'s `tus.to_index` (and the
+in-process `UpdateSummary::tusToIndex`) similarly counts ENTRIES, not
+distinct paths -- re-indexing a duplicated path re-indexes ALL of its
+entries together (see below), so this can exceed the number of distinct
+files being touched.
+
+### The fix: one combined, order-independent hash per path
+
+`symhow_tu` gains an `entry_count INTEGER NOT NULL DEFAULT 1` column
+(`symhow::index::kSymhowTuDdl`, `include/symhow/index/Provenance.h`) and `args_hash`'s
+recipe changes from "one CDB entry's `computeArgsHash()`" to "the COMBINED
+hash of every CDB entry that currently shares this path" --
+`symhow::index::pathArgsHashes()` (`CompileDb.h`/`.cpp`), the single source of
+truth both `IndexDriver` (writes `symhow_tu` rows) and `UpdateDriver`
+(flag-change detection) now share:
+
+1. Group the (already remapped/include/exclude-filtered) CDB entries by
+   `file` path.
+2. For each path, compute `computeArgsHash()` for every one of its entries,
+   sort the resulting hex strings, and de-duplicate (two entries with
+   byte-identical args collapse to one).
+3. FNV-1a-64 over the sorted, deduped hashes joined with `'\0'` separators,
+   hex-encoded the same way `computeArgsHash()` is.
+4. `entry_count` is the raw (non-deduplicated) number of CDB entries
+   observed for that path.
+
+This makes the stored `args_hash` a pure function of the SET of
+compile-flag variants a path currently has, independent of (a) which entry
+happens to be consumed/compared first, and (b) the ORDER the CDB lists that
+path's entries in (which can legitimately vary run to run -- e.g. after
+`cmake --build` regenerates `compile_commands.json` -- without any entry's
+actual content changing).
+
+- **`IndexDriver`**: computes `pathArgsHashes(entries)` ONCE, up front, from
+  the full (already limit-applied) entry list, and additionally tracks
+  `remainingEntriesByPath` -- each path's `entryCount`, decremented every
+  time one of its entries is consumed. A path's `PendingTuRow` (combined
+  `argsHash`/`entryCount`, and `status` = the WORST seen so far across that
+  path's entries consumed THIS session, `"failed" > "partial" > "ok"`,
+  tracked in `worstStatusByPath`) is only ever pushed into `chunkTuRows`
+  once that decrement reaches 0 -- i.e. once the path's LAST entry, in CDB
+  order, has actually been consumed -- NOT re-upserted speculatively on
+  every earlier entry. This is deliberate, not just "the simplest option
+  that happens to work": since `consumeOutcome()` runs strictly in CDB
+  order (true both for the sequential path and for the parallel path's
+  reorder-buffer consumer), gating the UPSERT on "last entry consumed"
+  guarantees a `symhow_tu` row only ever exists for a path once EVERY one of
+  its entries has genuinely been processed in THIS run -- see "Interrupted
+  `symhow index` + a split duplicated path" below for why that matters.
+- **`UpdateDriver`**: flag-change detection now compares each PATH's
+  combined hash (from `pathArgsHashes(cdb)`, the freshly-loaded CDB) against
+  its stored `symhow_tu.args_hash` exactly ONCE per path (not once per CDB
+  entry) -- both of a duplicated path's entries flag (or don't flag)
+  together, and a path is never double-counted in `files.flag_changed`.
+  "Removed" (a `symhow_tu` path with no CDB entry left) and "new" (a CDB path
+  with no `symhow_tu` row) detection are unaffected -- they were already
+  path-keyed. The re-index set (`selectEntries()`, `FileMatcher.cpp`)
+  already operated on PATHS, not entry identities, and therefore already
+  picked up every one of a flagged path's entries once that path was
+  queued for re-indexing -- no change needed there.
+- **A database whose `symhow_tu` table predates `entry_count` is treated as
+  legacy and refused (exit `2`)**, same as the existing `status`-column
+  check: `UpdateDriver` runs `PRAGMA table_info(symhow_tu)` and requires BOTH
+  columns before doing anything else with `symhow_tu` -- a pre-`entry_count`
+  `args_hash` is a single entry's hash, not the new combined one, and can't
+  be compared against `pathArgsHashes()`'s output correctly.
+
+### Fixed: interrupted `symhow index` + a split duplicated path
+
+An earlier version of this fix UPSERTed a path's `symhow_tu` row (with the
+FULL combined hash/entry_count, computed up front from the WHOLE CDB) the
+moment ANY ONE of that path's entries was consumed -- not only once ALL of
+them were. That was simple and correct for an uninterrupted run (every
+entry gets consumed before the process exits, so the row's `status`
+converges to the true worst-of-all-entries value by the time the run
+ends), but NOT correct for the Phase 8 "resume an interrupted `symhow index`"
+path if the interrupt happened to land strictly BETWEEN two entries of the
+SAME duplicated path: the first entry's consumption would already have
+written a `symhow_tu` row for that path, so `UpdateDriver`'s "no `symhow_tu` row at
+all" resume-retry check (`resumingInterruptedIndex`'s branch in
+`runUpdate()`) would incorrectly treat the WHOLE path -- including the
+sibling entry that was NEVER actually consumed -- as already fully
+indexed, and silently skip re-indexing that sibling entry forever.
+
+Fixed by gating the `symhow_tu` UPSERT on "this path's LAST entry (in CDB
+order) was just consumed" instead of "any entry was just consumed" (see
+`remainingEntriesByPath` in the `IndexDriver` bullet above). Consequences:
+
+- An interrupt (real `SIGINT`/`SIGTERM`, or `--stop-after`) that lands
+  strictly between two entries of a duplicated path now leaves NO `symhow_tu`
+  row for that path at all -- not a stale one, not one that wrongly claims
+  completeness. The facts/checkpoint already written for the FIRST entry
+  are still durably on disk (`SrctrldbBackend::checkpoint()`'s usual
+  crash-safety guarantee is unaffected -- only the `symhow_tu` bookkeeping row
+  is deferred, not the actual indexed content).
+- `symhow update`'s Phase 8 resume then correctly sees "no `symhow_tu` row" for
+  that path and re-indexes it -- and, since `selectEntries()`
+  (`FileMatcher.cpp`) already selects whole paths rather than individual
+  entries, that means BOTH of the path's CDB entries get re-consumed, even
+  though the first one was already (partially) processed before the
+  interrupt. Re-processing it a second time is harmless: it produces
+  byte-identical facts, and `SrctrldbBackend`'s node/symbol dedup
+  (`m_byKey` et al.) is idempotent for identical input -- confirmed by the
+  regression test below, whose post-resume `dbdiff` against a fresh full
+  index is strictly empty.
+- An uninterrupted `symhow index`, or a `symhow update` re-index of an
+  already-fully-indexed database, are both unaffected either way (every
+  entry of every path gets consumed regardless of when the `symhow_tu` row is
+  written).
+
+### Tests
+
+`test/unit/test_compiledb_dupes.cpp` (new): `pathArgsHashes()` unit
+coverage -- order independence, sensitivity to any one entry's flags
+changing, `entry_count` counting raw entries (not deduped hashes), and
+per-path isolation. `test/fixtures/synthetic/CMakeLists.txt` gained a
+`fixture_lib_dup` target compiling `templates.cpp` a second time with
+`-DKG_DUP=1` (unused by the source -- same AST content, different flags,
+matching what a real duplicated-but-differently-configured TU usually looks
+like), giving the fixture CDB 8 entries for 7 distinct paths.
+`test/unit/test_incremental_fixture.cpp` gained an `entry_count` assertion
+(templates.cpp = 2, everything else = 1) and its existing `symhow_tu` row-count
+test's comment was corrected (7 PATHS, not "7 CDB entries" -- the CDB now
+has 8). `test/unit/test_update_driver.cpp` gained the actual regression
+test: updating an UNRELATED file (`chain.cpp`) via `--files` must report
+`files.flag_changed == 0` and leave templates.cpp's `symhow_tu` row (hash +
+entry_count) byte-for-byte untouched, both on the first run and a repeated
+one. `test/unit/test_resume_fixture.cpp`'s `--stop-after 3` scenario's
+`tus.to_index` assertion was updated (4 -> 5 CDB entries: the fixture's 8th
+entry, templates.cpp's duplicate, is now part of the never-indexed
+suffix) with a comment explaining the new arithmetic. `test/unit/
+test_resume_fixture.cpp` also gained the direct regression test for the
+"interrupted `symhow index` + a split duplicated path" fix above:
+`--stop-after 4` (chosen so it lands exactly between templates.cpp's two
+CDB entries, at indices 3 and 7) asserts NO `symhow_tu` row exists for
+templates.cpp right after the interrupt, then that `symhow update` completes
+the database with an empty `dbdiff` against a fresh full index and the
+final `symhow_tu` row's `entry_count` is 2.
+
+**Docs**: this section; `docs/JSON_SCHEMA.md`'s `tus.to_index` note
+(entries, not distinct files, per the `[k/N]` progress-counter confusion
+above).
+
+## Notes (`symhow notes`, docs/NOTES_DESIGN.md)
+
+- **Matching is by qualified name + signature, not a stable symbol id.** A
+  `##` heading resolves through the exact same `resolveSymbol()` path `symhow
+  query` uses; when more than one candidate shares a heading, narrowing is
+  purely textual (`### signature` normalized and compared, first the full
+  signature then just the parameter-list suffix -- see `Sync.h`'s
+  `matchBlock()`). A note can therefore silently attach to the WRONG
+  overload if two overloads' signatures happen to normalize identically
+  (extremely rare in practice, since normalization only collapses
+  whitespace and a trailing `;`) -- `notes status --problems` surfaces the
+  matching decision (`ambiguous`/`signature-mismatch`) but does not attempt
+  semantic disambiguation beyond that.
+- **The staleness hash covers only the symbol's OWN definition span** (the
+  SCOPE occurrence with the largest line span, or the TOKEN line if the
+  symbol has no SCOPE location -- see `BodyHash.h`). This is deliberate: a
+  note is a claim about what the noted function does, and only an edit to
+  that function's own body invalidates the claim. A caller of a noted
+  function that itself changes (its callee's signature, its own logic) is
+  NOT detected -- e.g. if `foo()`'s note says "always returns a non-null
+  pointer" and a callee `foo()` depends on changes to sometimes return
+  `nullptr`, `foo()`'s own note does NOT go stale, because `foo()`'s body
+  text is unchanged. `symhow query context` surfaces the callee's OWN
+  `stale`/`filled` state on that callee's node, which is the closest
+  built-in mitigation (an agent re-reading a note for `foo` sees at a
+  glance whether ITS callees have their own fresh/stale notes), but there
+  is no propagated/transitive staleness.
+- **Declaration-only symbols hash the TOKEN line, not a body.** A pure
+  virtual method (`virtual T f() const = 0;`) or any other symbol with no
+  SCOPE (definition) location falls back to hashing its single declaration
+  line. Any whitespace-insignificant edit to that exact line (e.g.
+  reformatting, adding a trailing comment) changes the hash and marks the
+  note stale even though nothing about the symbol's contract changed --
+  this is the same "definition span" rule applied to the only span such a
+  symbol has.
+- **The overlay (`openNotes()`) is read-only and per-process.** A notes
+  markdown file edited on disk after the last `symhow notes sync` is detected
+  (via `symhow_note_file`'s stored mtime/content-hash vs disk) and re-parsed
+  in memory for that one call, with a "notes cache out of date -- run `symhow
+  notes sync`" hint on stderr -- but the overlay is recomputed from scratch
+  on every invocation (no cross-process cache), and nothing is ever written
+  back to the `.srctrldb` outside of `symhow notes sync`/`accept`/`symhow update`'s
+  own post-update sync. Two concurrent `symhow query`/`symhow notes show` processes
+  against the same out-of-date file each redundantly re-parse it; this is
+  intentionally simple (notes files are small, sync is fast -- see the
+  cucs-corpus timing assertion in `cucs_update_scenario.cmake`, well under
+  2s even on a ~20k-symbol database) rather than adding any kind of daemon
+  or file-watch cache.
+- **A TU-local (`static`, anonymous-namespace, or file-scope `main`)
+  symbol's identity is NOT stable across two independently-`symhow index`d
+  worktrees at different filesystem paths.** `serialized_name` for such a
+  symbol embeds a hidden disambiguator (`NameBuilder.cpp`'s
+  `disambiguatorFor()`) derived from `weakly_canonical()`-normalized,
+  ABSOLUTE declaration file path -- by design, so the same TU-local entity
+  reached via two different `#include` spellings within one index run still
+  gets one consistent identity. But that absolute path differs between two
+  worktrees checked out at different locations (e.g. two `git worktree`s,
+  or a CI runner vs a developer's machine), so a note on a `static`
+  function or one declared inside an anonymous namespace will NOT reliably
+  carry over via `serialized_name` alone the way a normal (externally
+  linked) function's note does -- `symhow dbdiff --only note` between two such
+  worktrees will show these as one-sided differences even though the
+  underlying markdown is byte-identical. `test/update/
+  notes_cross_worktree.cmake` documents and works around this by only
+  exercising the cross-worktree identity guarantee on `chain.cpp`'s
+  externally-linked functions, which is the overwhelmingly common case for
+  anything worth writing a note about.
+- **`symhow query context`'s union of callers/callees/overrides/bases/derived
+  is not itself deduplicated against a node-kind filter** the way a single
+  BFS verb is -- `--kind` still narrows which nodes are RETURNED (each
+  sub-traversal applies it independently), but a node reachable by more
+  than one leg (e.g. a function that is both a caller and an override
+  target) is deduplicated by id with the FIRST leg's `BfsNode` (and hence
+  its `depth`) winning; the other legs' `depth` for that same node is
+  silently discarded. This only affects the reported `depth`/tree
+  indentation in text mode, never which nodes/edges are present -- every
+  edge from every leg survives the merge.

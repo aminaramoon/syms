@@ -1,0 +1,29 @@
+# Build output (C++ tree lives under cpp/ since the repo split)
+/build/
+/build_verify/
+/build-*/
+/cpp/build/
+/cpp/build_verify/
+/cpp/build-*/
+compile_commands.json
+
+# CTest/Dart scratch (created by cmake configure runs)
+/Testing/
+/cpp/Testing/
+
+# Rust backend: cargo build output (source, Cargo.lock and parity.sh ARE tracked)
+/rust/target/
+
+# Databases produced by running symhow (index outputs, not source)
+*.srctrldb
+*.srctrlprj
+
+# Editor / tooling caches
+/.cache/
+.vscode/
+*.swp
+*~
+*.log
+
+# flox: env/ (manifest.toml, manifest.lock, env.json) is intentionally tracked;
+# .flox/.gitignore already excludes run/, cache/, lib/, log/ within .flox/.
