@@ -1,0 +1,948 @@
+#!/usr/bin/env python3
+"""symx — agent-oriented recipes on top of symhow (.srctrldb) + symwhere (tree-sitter).
+
+Each subcommand fills a gap found while exercising the raw CLIs on folly/velox/ucx:
+
+  status                 freshness + trust report for the repo's indexes
+  at FILE:LINE[-END]     enclosing function + every symbol the line(s) reference,
+                         resolved to the exact overload/field/enum (+ its definition)
+  tree SYM --callers|--callees [--depth N]
+                         correct parent->child call tree (the symhow text tree
+                         indents by depth, not by parent) with call-site lines,
+                         STL noise hidden, virtual/lambda/fn-ptr dead-ends flagged
+  overriders SYM         full transitive override tree (symhow's overridden-by is
+                         one hop) + fallback for class templates, where symhow
+                         records no OVERRIDE edges at all
+  writes FIELD           every write site of a field (symhow can't tell reads
+                         from writes; symx classifies each reference token)
+  includers HEADER       transitive includers + number of TUs a header change rebuilds
+  dispatch FUNC          C function-pointer bridge: ops-table registration ->
+                         field -> code that calls through the field
+  changed [REV]          git diff (incl. worktree) -> changed functions -> callers/overrides
+  chain SYM --entry E    mandatory waypoints from E to SYM (dominator chain)
+  reach SRC DST          cheapest path that also follows virtual dispatch (base ==> overrider),
+                         class-template overrides (heuristic), and optionally fn-pointer
+                         fields (--fnptr) and callback registration (--usage)
+  tests SYM [--depth N]  which test functions (Catch2/gtest/test dirs) reach SYM through callers
+                         (incl. override->base hops); only for indexes built WITH tests (sirius, ucx)
+  name ID...             decode node ids (for raw SQL work)
+
+DB discovery: the repo containing the cwd (or --repo NAME|PATH) is matched against
+$SYMX_DBS/<name>/how/*.srctrldb (meta symhow_repo_root) and
+$SYMX_DBS/<name>/where/symwhere.db (meta root). Default SYMX_DBS is ~/explorer.
+Binaries symhow/symwhere are found on $PATH; override with $SYMHOW / $SYMWHERE.
+Exit codes: 0 ok, 1 usage/error, 2 ambiguous symbol (candidates printed), 3 not found.
+"""
+import argparse, glob, json, os, re, sqlite3, subprocess, sys
+from collections import defaultdict
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+DBS = os.environ.get("SYMX_DBS", os.path.expanduser("~/explorer"))
+SYMHOW = os.environ.get("SYMHOW", "symhow")
+SYMWHERE = os.environ.get("SYMWHERE", "symwhere")
+
+# node kinds (bit masks) and edge kinds, see symhow docs/GRAPH_SCHEMA_NOTES.md
+NK = {1: "UNKNOWN", 2: "TYPE", 4: "BUILTIN_TYPE", 8: "MODULE", 16: "NAMESPACE", 32: "PACKAGE", 64: "STRUCT",
+      128: "CLASS", 256: "INTERFACE", 512: "ANNOTATION", 1024: "GLOBAL_VARIABLE", 2048: "FIELD",
+      4096: "FUNCTION", 8192: "METHOD", 16384: "ENUM", 32768: "ENUM_CONSTANT", 65536: "TYPEDEF",
+      131072: "TYPE_PARAMETER", 262144: "FILE", 524288: "MACRO", 1048576: "UNION"}
+EK = {1: "MEMBER", 2: "TYPE_USAGE", 4: "USAGE", 8: "CALL", 16: "INHERITANCE", 32: "OVERRIDE",
+      64: "TYPE_ARGUMENT", 128: "TEMPLATE_SPECIALIZATION", 256: "INCLUDE", 512: "IMPORT",
+      2048: "MACRO_USAGE", 4096: "ANNOTATION_USAGE"}
+FUNC_MASK = 4096 | 8192
+CLASS_MASK = 64 | 128 | 1048576
+NOISE = re.compile(r"^(std|__gnu_cxx|__cxx11|boost|fmt|__gnu_debug|__detail)::|^(memcpy|memset|memmove|strlen|malloc|free)$")
+CATCH2_RE = re.compile(r"CATCH2_INTERNAL_TEST_\d+|____C_A_T_C_H____T_E_S_T____\d+")
+DISAMBIG = re.compile(r" \[[^\]\[]*#[0-9a-f]{8}\]")
+
+
+def die(msg, code=1):
+    print(f"symx: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------- discovery
+class Repo:
+    def __init__(self, name, root, how, where):
+        self.name, self.root, self.how, self.where = name, root, how, where
+        self._con = None
+
+    @property
+    def con(self):
+        if self._con is None:
+            if not self.how:
+                die(f"no symhow database for repo '{self.name}'")
+            self._con = sqlite3.connect(f"file:{self.how}?mode=ro", uri=True)
+        return self._con
+
+    def rel(self, path):
+        p = os.path.normpath(path)
+        return p[len(self.root) + 1:] if p.startswith(self.root + "/") else p
+
+
+def meta(db, key, table="meta"):
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        r = con.execute(f"SELECT value FROM {table} WHERE key=?", (key,)).fetchone()
+        return r[0] if r else None
+    except sqlite3.Error:
+        return None
+
+
+def discover(repo_arg):
+    repos = {}
+    for d in sorted(glob.glob(os.path.join(DBS, "*"))):
+        name = os.path.basename(d)
+        how = (glob.glob(os.path.join(d, "how", "*.srctrldb")) or [None])[0]
+        where = os.path.join(d, "where", "symwhere.db")
+        where = where if os.path.exists(where) else None
+        root = (how and meta(how, "symhow_repo_root")) or (where and meta(where, "root"))
+        if root:
+            repos[name] = Repo(name, os.path.normpath(root), how, where)
+    if repo_arg:
+        if repo_arg in repos:
+            return repos[repo_arg]
+        target = os.path.realpath(repo_arg)
+    else:
+        target = os.path.realpath(os.getcwd())
+    for r in repos.values():
+        if target == r.root or target.startswith(r.root + "/"):
+            return r
+    die(f"no index found for {target}; known repos: {', '.join(f'{k} ({v.root})' for k, v in repos.items())}"
+        " — cd into one or pass --repo NAME")
+
+
+# ---------------------------------------------------------------- name decoding
+def decode(sn, keep_disambig=False):
+    """serialized_name -> (qualified_name, signature_postfix). Files -> (path, '')."""
+    if "\tm" not in sn:
+        return sn, ""
+    delim, rest = sn.split("\tm", 1)
+    names, post = [], ""
+    for el in rest.split("\tn"):
+        name, _, pp = el.partition("\ts")
+        _, _, post = pp.partition("\tp")
+        names.append(name)
+    q = delim.join(names)
+    if delim == "/":
+        return os.path.normpath(q.replace("//", "/")), ""
+    if not keep_disambig:
+        post = DISAMBIG.sub("", post)
+        q = DISAMBIG.sub("", q)
+    return q, post
+
+
+class Graph:
+    def __init__(self, repo):
+        self.r, self.c = repo, repo.con
+        self._names, self._loc = {}, {}
+
+    def node(self, nid):
+        if nid not in self._names:
+            row = self.c.execute("SELECT type, serialized_name FROM node WHERE id=?", (nid,)).fetchone()
+            if not row:
+                self._names[nid] = ("?", f"#{nid}", "")
+            else:
+                q, post = decode(row[1])
+                self._names[nid] = (NK.get(row[0], str(row[0])), q, post)
+        return self._names[nid]
+
+    def label(self, nid, sig=True):
+        k, q, post = self.node(nid)
+        if sig and CATCH2_RE.search(q):
+            return q + post + self.test_name(nid)
+        return q + (post if sig else "")
+
+    def test_name(self, nid):
+        """Catch2 test functions are opaque (CATCH2_INTERNAL_TEST_22); recover TEST_CASE("name") from source."""
+        l = self.loc(nid)
+        if not l:
+            return ""
+        path = l[0] if os.path.isabs(l[0]) else os.path.join(self.r.root, l[0])
+        try:
+            with open(path, errors="replace") as fh:
+                lines = fh.read().splitlines()
+        except OSError:
+            return ""
+        text = " ".join(lines[max(0, l[1] - 1): l[1] + 2])
+        m = re.search(r'\b(?:TEST_CASE|SCENARIO|TEMPLATE_TEST_CASE\w*|TEST_CASE_METHOD\s*\(\s*[^,]+,)\s*\(?\s*"([^"]*)"', text)
+        return f' [TEST_CASE "{m.group(1)}"]' if m else ""
+
+    def loc(self, nid):
+        """best definition location: largest SCOPE span, else first TOKEN, else None."""
+        if nid not in self._loc:
+            rows = self.c.execute(
+                "SELECT f.path, l.start_line, l.end_line, l.type FROM occurrence o "
+                "JOIN source_location l ON l.id=o.source_location_id JOIN file f ON f.id=l.file_node_id "
+                "WHERE o.element_id=? AND l.type IN (0,1) ORDER BY l.type DESC, (l.end_line-l.start_line) DESC LIMIT 1",
+                (nid,)).fetchone()
+            self._loc[nid] = (self.r.rel(rows[0]), rows[1], rows[2], rows[3]) if rows else None
+        return self._loc[nid]
+
+    def where(self, nid):
+        l = self.loc(nid)
+        if not l:
+            return "(no location: not indexed / external / template instantiation)"
+        return f"{l[0]}:{l[1]}" + (f"-{l[2]}" if l[3] == 1 and l[2] != l[1] else "")
+
+    def in_body(self, caller, sites):
+        """filter (relpath, line) call sites to those inside caller's SCOPE span (symhow sometimes attaches
+        macro-expansion locations from unrelated lines to an edge)."""
+        l = self.loc(caller)
+        if not l or l[3] != 1:
+            return sites
+        good = [s for s in sites if s[0] == l[0] and l[1] <= s[1] <= l[2]]
+        return good or sites
+
+    def file_ids(self, path):
+        """file node ids for a path; tolerant of uncanonical stored paths (e.g. ucx contrib/../src)."""
+        ap = os.path.normpath(path if os.path.isabs(path) else os.path.join(os.getcwd(), path))
+        if not os.path.exists(ap):
+            alt = os.path.join(self.r.root, path)
+            if os.path.exists(alt):
+                ap = os.path.normpath(alt)
+        ids = [i for (i,) in self.c.execute("SELECT id FROM file WHERE path=?", (ap,))]
+        if ids:
+            return ids, ap
+        rel = self.r.rel(ap)
+        cands = self.c.execute("SELECT id, path FROM file WHERE path LIKE ?", ("%/" + os.path.basename(ap),)).fetchall()
+        ids = [i for i, p in cands if os.path.normpath(p) == ap or os.path.normpath(p).endswith("/" + rel)]
+        return ids, ap
+
+    def count(self, sql, *a):
+        return self.c.execute(sql, a).fetchone()[0]
+
+
+def resolve(repo, spec, allow_many=False):
+    """symbol spec ('#123', qualified name, leaf) -> list of node ids, via symhow's own resolver."""
+    if re.fullmatch(r"#\d+", spec):
+        return [int(spec[1:])]
+    p = subprocess.run([SYMHOW, "query", "definition", spec, "-d", repo.how, "--json"], capture_output=True, text=True)
+    try:
+        d = json.loads(p.stdout)
+    except json.JSONDecodeError:
+        die(f"symhow failed resolving '{spec}': {p.stderr.strip()[:300]}")
+    schema = d.get("schema", "")
+    if schema.endswith("definition/1"):
+        return [d["symbol"]["id"]]
+    if "ambiguous" in schema:
+        cands = d["candidates"]
+        if allow_many:
+            return [c["id"] for c in cands]
+        print(f"'{spec}' is ambiguous ({len(cands)} candidates) — re-run with '#ID' or --all:", file=sys.stderr)
+        for c in cands:
+            l = c.get("location") or {}
+            where = f"{repo.rel(l['file'])}:{l['start_line']}" if l else ""
+            print(f"  #{c['id']:<8} {c['kind']:<9} {c['qualified_name']}{(c.get('signature') or '').split(c['name'],1)[-1]}  {where}",
+                  file=sys.stderr)
+        sys.exit(2)
+    sugg = d.get("suggestions", [])[:8]
+    print(f"'{spec}' not found in {repo.name}. Suggestions:", file=sys.stderr)
+    for c in sugg:
+        print(f"  #{c['id']:<8} {c['kind']:<9} {c['qualified_name']}", file=sys.stderr)
+    sys.exit(3)
+
+
+def symhow_json(args):
+    p = subprocess.run([SYMHOW] + args + ["--json"], capture_output=True, text=True)
+    out = p.stdout.strip()
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        objs = [json.loads(l) for l in out.splitlines() if l.strip().startswith("{")]
+        if not objs:
+            die(f"symhow {' '.join(args[:2])} failed: {p.stderr.strip()[:300]}")
+        merged = {"nodes": [], "edges": []}
+        for o in objs:
+            merged["nodes"] += o.get("nodes", [])
+            merged["edges"] += o.get("edges", [])
+        return merged
+
+
+def run_symwhere(args):
+    p = subprocess.run([SYMWHERE] + args, capture_output=True, text=True)
+    return p.stdout
+
+
+def repo_is_cpp(repo):
+    if not repo.where:
+        return True
+    n = meta(repo.where, "h_as_cpp_patched_at")
+    if n:
+        return True
+    con = sqlite3.connect(f"file:{repo.where}?mode=ro", uri=True)
+    cpp = con.execute("SELECT count(*) FROM files WHERE lang='cpp' AND path NOT LIKE '%.h'").fetchone()[0]
+    c = con.execute("SELECT count(*) FROM files WHERE lang='c' AND path LIKE '%.c'").fetchone()[0]
+    return cpp > c
+
+
+# ---------------------------------------------------------------- status
+def cmd_status(repo, a):
+    print(f"repo     {repo.name}  root={repo.root}")
+    git = lambda *x: subprocess.run(["git", "-C", repo.root, *x], capture_output=True, text=True).stdout.strip()
+    head = git("rev-parse", "HEAD")
+    if repo.how:
+        c = repo.con
+        m = dict(c.execute("SELECT key, value FROM meta WHERE key IN ('symhow_repo_commit','symhow_indexed_at',"
+                           "'symhow_last_update_at','symhow_cdb_path')").fetchall())
+        commit = m.get("symhow_repo_commit", "")
+        tus = dict(c.execute("SELECT status, count(*) FROM symhow_tu GROUP BY status").fetchall())
+        files = c.execute("SELECT count(*), sum(indexed) FROM file").fetchone()
+        errs = c.execute("SELECT count(*) FROM error").fetchone()[0]
+        print(f"symhow   {repo.how}")
+        print(f"         indexed {m.get('symhow_indexed_at')}  last update {m.get('symhow_last_update_at') or '-'}")
+        print(f"         cdb {m.get('symhow_cdb_path')}")
+        print(f"         TUs by status {tus}  files {files[0]} ({files[1]} indexed)  unique errors {errs}")
+        if commit and head:
+            behind = git("rev-list", "--count", f"{commit}..HEAD") or "?"
+            changed = [l for l in git("diff", "--name-only", commit).splitlines() if re.search(r"\.(c|cc|cpp|cxx|h|hh|hpp|cu|cuh|inl|ipp|tcc)$", l)]
+            state = "FRESH" if behind == "0" and not changed else "STALE"
+            print(f"         {state}: indexed commit {commit[:12]}, HEAD {head[:12]}, {behind} commits behind, "
+                  f"{len(changed)} C/C++ files differ (incl. worktree)")
+            for f in changed[:10]:
+                print(f"           {f}")
+            if state == "STALE":
+                print("         -> refresh: symhow update -d DB (see skill), or treat results for changed files as stale")
+    if repo.where:
+        con = sqlite3.connect(f"file:{repo.where}?mode=ro", uri=True)
+        n, hc = con.execute("SELECT count(*), sum(lang='c' AND path LIKE '%.h') FROM files").fetchone()
+        syms = con.execute("SELECT count(*) FROM symbols").fetchone()[0]
+        print(f"symwhere {repo.where}\n         {n} files, {syms} symbols, head {(meta(repo.where, 'head') or '')[:12]}")
+        if repo_is_cpp(repo) and hc:
+            print(f"         WARNING: {hc} .h files parsed with the C grammar (C++ repo) -> header symbols missing; "
+                  f"run {HERE}/symwhere-h-as-cpp.py {repo.where} {repo.root}")
+
+
+# ---------------------------------------------------------------- at FILE:LINE
+def cmd_at(repo, a):
+    m = re.fullmatch(r"(.+?):(\d+)(?:-(\d+))?", a.spec)
+    if not m:
+        die("expected FILE:LINE or FILE:A-B")
+    path, lo = m.group(1), int(m.group(2))
+    hi = int(m.group(3) or lo)
+    g = Graph(repo)
+    fids, ap = g.file_ids(path) if repo.how else ([], path)
+    indexed = fids and g.count(f"SELECT count(*) FROM file WHERE indexed=1 AND id IN ({','.join(map(str, fids))})")
+    if indexed:
+        q = (f"SELECT DISTINCT o.element_id, n.type, l.start_line, l.end_line FROM source_location l "
+             f"JOIN occurrence o ON o.source_location_id=l.id JOIN node n ON n.id=o.element_id "
+             f"WHERE l.file_node_id IN ({','.join(map(str, fids))}) AND l.type=1 AND l.start_line<=? AND l.end_line>=? "
+             f"AND (n.type & ?)!=0 ORDER BY (l.end_line-l.start_line)")
+        encl = g.c.execute(q, (lo, hi, FUNC_MASK | CLASS_MASK | 16)).fetchall()
+        print(f"{repo.rel(ap)}:{lo}{'-' + str(hi) if hi != lo else ''}")
+        if any(NK.get(t) != "NAMESPACE" for _, t, _, _ in encl):
+            encl = [x for x in encl if NK.get(x[1]) != "NAMESPACE"]
+        if encl:
+            print("enclosing (innermost first):")
+            for nid, t, s, e in encl:
+                print(f"  #{nid:<8} {NK.get(t, t):<9} {g.label(nid)}  [{s}-{e}]")
+        else:
+            print("enclosing: (none at file scope / not inside a parsed definition)")
+        rows = g.c.execute(
+            f"SELECT l.start_line, l.start_column, e.type, e.target_node_id FROM source_location l "
+            f"JOIN occurrence o ON o.source_location_id=l.id JOIN edge e ON e.id=o.element_id "
+            f"WHERE l.file_node_id IN ({','.join(map(str, fids))}) AND l.start_line BETWEEN ? AND ? "
+            f"ORDER BY l.start_line, l.start_column", (lo, hi)).fetchall()
+        seen = set()
+        print("references on these lines (exact clang resolution):" if rows else "references: none recorded")
+        for ln, col, et, tid in rows:
+            key = (ln, et, tid)
+            if key in seen:
+                continue
+            seen.add(key)
+            k = g.node(tid)[0]
+            if not a.all and k in ("NAMESPACE",) or (not a.all and et == 2 and NOISE.search(g.label(tid, False))):
+                continue
+            print(f"  {ln}:{col:<4} {EK.get(et, et):<10} {k:<14} #{tid:<8} {g.label(tid)}  -> {g.where(tid)}")
+        unsolved = [r for r in rows if g.node(r[3])[1] == "unsolved symbol"]
+        if unsolved:
+            print(f"  note: {len(unsolved)} reference(s) are UNSOLVED (template-dependent); the graph is blind there")
+        if rows or any(NK.get(t) in ("FUNCTION", "METHOD", "CLASS", "STRUCT") for _, t, _, _ in encl):
+            return
+        print("note: indexed file but nothing semantic here -> likely an inactive #if/#ifdef branch "
+              "(or blank/comment lines). symwhere (all text, preprocessor-blind) view:")
+    else:
+        why = "file not in the symhow index" if not fids else "file present but not indexed (system/external)"
+        print(f"{path}:{lo}: {why} — semantic info unavailable (not compiled in this build config?). symwhere view:")
+    symwhere_within(repo, ap if os.path.exists(ap) else os.path.join(repo.root, path), lo, hi)
+
+
+def symwhere_within(repo, path, lo, hi):
+    args = ["symbols", path, "--within", f"{lo}-{hi}" if hi != lo else str(lo), "--spans"]
+    if path.endswith(".h") and repo_is_cpp(repo):
+        args += ["-l", "cpp"]
+    p = subprocess.run([SYMWHERE] + args, capture_output=True, text=True)
+    lines = p.stdout.rstrip().splitlines()
+    if "no symbols enclose" in p.stderr:
+        print(f"  (no symbol encloses line {lo}; first entries of the file outline:)")
+        lines = lines[:12] + ([f"  … {len(lines) - 12} more"] if len(lines) > 12 else [])
+    print("\n".join("  " + l for l in lines) or "  (no symbols)")
+
+
+# ---------------------------------------------------------------- tree
+def cmd_tree(repo, a):
+    g = Graph(repo)
+    ids = resolve(repo, a.symbol, allow_many=a.all)
+    verb = "callers" if a.callers else "callees"
+    d = symhow_json(["query", verb, f"#{ids[0]}" if len(ids) == 1 else a.symbol, "-d", repo.how,
+                     "--depth", str(a.depth), "--max-nodes", str(a.max_nodes)] + (["--all-matches"] if len(ids) > 1 else []))
+    nodes = {n["id"]: n for n in d.get("nodes", [])}
+    kids = defaultdict(list)
+    for e in d.get("edges", []):
+        parent, child = (e["target"], e["source"]) if a.callers else (e["source"], e["target"])
+        caller = e["source"]
+        raw = [(repo.rel(l["file"]), l["start_line"]) for l in e.get("locations", [])]
+        sites = [f"{f}:{ln}" for f, ln in dict.fromkeys(g.in_body(caller, raw))]
+        kids[parent].append((child, sites, e.get("kind")))
+    hidden = [0]
+    ov_in = lambda nid: g.count("SELECT count(*) FROM edge WHERE target_node_id=? AND type=32", nid)
+    ov_out = lambda nid: g.c.execute("SELECT target_node_id FROM edge WHERE source_node_id=? AND type=32", (nid,)).fetchall()
+
+    ncallers = lambda nid: g.count("SELECT count(DISTINCT source_node_id) FROM edge WHERE target_node_id=? AND type=8", nid)
+    ncallees = lambda nid: g.count("SELECT count(DISTINCT target_node_id) FROM edge WHERE source_node_id=? AND type=8", nid)
+
+    def flags(nid):
+        f = []
+        lbl = g.label(nid, False)
+        if not kids.get(nid):
+            n = ncallers(nid) if a.callers else ncallees(nid)
+            if n:   # not expanded because of --depth / --max-nodes, not because there is nothing
+                return f"   <+{n} more {'callers' if a.callers else 'callees'}: raise --depth or symx tree '#{nid}'>"
+        if ov_in(nid):
+            f.append(f"virtual: {ov_in(nid)} direct overrider(s) -> symx overriders #{nid}")
+        if "(lambda at" in lbl:
+            f.append("lambda")
+        if lbl == "unsolved symbol":
+            f.append("UNSOLVED template-dependent call(s)")
+        if a.callers and not kids.get(nid):
+            ups = ov_out(nid)
+            if ups:
+                f.append("no static callers; overrides " + ", ".join(f"#{u} {g.label(u, False)}" for (u,) in ups)
+                         + " -> continue from the base")
+            elif "(lambda at" in lbl:
+                f.append("no callers: passed as a callback; continue from the enclosing function in its name")
+            else:
+                f.append("ROOT in this build: public API used by tests/clients, entry point, callback/fn-pointer target, or caller is #if-disabled — grep / symwhere to find external users")
+        return f"   <{'; '.join(f)}>" if f else ""
+
+    printed = set()
+
+    def walk(nid, depth, sites, prefix):
+        lbl = g.label(nid)
+        if not a.keep_std and depth > 0 and NOISE.search(g.label(nid, False)):
+            hidden[0] += 1
+            return
+        at = f"  @{','.join(sites[:3])}{'…' if len(sites) > 3 else ''}" if sites else ""
+        again = nid in printed
+        print(f"{prefix}{'#'+str(nid):<9} {lbl}  [{g.where(nid)}]{at}{'  (see above)' if again else flags(nid)}")
+        if again:
+            return
+        printed.add(nid)
+        for child, s, _ in sorted(kids.get(nid, []), key=lambda x: g.label(x[0])):
+            walk(child, depth + 1, s, prefix + "    ")
+
+    seeds = [n for n in nodes.values() if n.get("seed")] or [nodes[i] for i in ids if i in nodes]
+    for s in seeds:
+        walk(s["id"], 0, [], "")
+    print(f"-- {len(d.get('edges', []))} edges, depth {a.depth}" + (", TRUNCATED (raise --max-nodes)" if d.get("truncated") else "")
+          + (f", {hidden[0]} std/boost/fmt nodes hidden (--keep-std)" if hidden[0] else ""))
+
+
+# ---------------------------------------------------------------- overriders
+def cmd_overriders(repo, a):
+    g = Graph(repo)
+    ids = resolve(repo, a.symbol, allow_many=True)   # overloads + template instantiations = one family
+    shown = set()
+    if len(ids) > 1:
+        print(f"'{a.symbol}' matches {len(ids)} nodes (overloads / template instantiations); covering all of them")
+    for nid in ids:
+        print(f"#{nid} {g.label(nid)}  [{g.where(nid)}]")
+        rows = g.c.execute("""WITH RECURSIVE ov(id, parent, d) AS (
+              SELECT ?, NULL, 0
+              UNION SELECT e.source_node_id, ov.id, ov.d+1 FROM edge e JOIN ov ON e.target_node_id=ov.id
+              WHERE e.type=32 AND ov.d < 20)
+            SELECT id, parent, min(d) FROM ov WHERE d>0 GROUP BY id ORDER BY 3""", (nid,)).fetchall()
+        kids = defaultdict(list)
+        for i, p, d in rows:
+            kids[p].append(i)
+
+        def walk(x, ind):
+            for c in sorted(kids.get(x, []), key=lambda y: g.label(y)):
+                print(f"{'  ' * ind}#{c:<8} {g.label(c)}  [{g.where(c)}]")
+                shown.add(c)
+                walk(c, ind + 1)
+        walk(nid, 1)
+        print(f"-- {len(rows)} overrider(s) via OVERRIDE edges (transitive)")
+        if rows and not a.templates:
+            continue
+        # fallback: methods with the same leaf name in (transitively) derived classes
+        k, q, post = g.node(nid)
+        leaf = q.split("::")[-1]
+        owner = g.c.execute("SELECT source_node_id FROM edge WHERE target_node_id=? AND type=1", (nid,)).fetchone()
+        if not owner:
+            owner_q = "::".join(q.split("::")[:-1])
+            r = g.c.execute("SELECT id FROM node WHERE (type & ?)!=0 AND serialized_name LIKE ?",
+                            (CLASS_MASK, "%" + owner_q.split("::")[-1] + "\ts%")).fetchall()
+            owners = [x for (x,) in r if g.label(x, False) == owner_q]
+        else:
+            owners = [owner[0]]
+        if not owners:
+            continue
+        derived = g.c.execute(f"""WITH RECURSIVE dv(id) AS (SELECT id FROM node WHERE id IN ({','.join(map(str, owners))})
+              UNION SELECT e.source_node_id FROM edge e JOIN dv ON e.target_node_id=dv.id WHERE e.type=16)
+            SELECT id FROM dv""").fetchall()
+        hits = []
+        for (cid,) in derived:
+            if cid in owners:
+                continue
+            for (mid,) in g.c.execute("SELECT target_node_id FROM edge WHERE source_node_id=? AND type=1", (cid,)):
+                if g.node(mid)[0] in ("METHOD", "FUNCTION") and g.label(mid, False).split("::")[-1] == leaf and mid not in {r[0] for r in rows}:
+                    hits.append((cid, mid))
+        hits = [(c, m) for c, m in hits if m not in shown]
+        shown.update(m for _, m in hits)
+        if hits:
+            print(f"-- class-template fallback: same-named '{leaf}' in {len(derived) - len(owners)} derived class(es) "
+                  "(symhow records no OVERRIDE edges inside class templates):")
+            for cid, mid in hits:
+                w = g.where(mid)
+                if w.startswith("(no location") and repo.where:
+                    out = run_symwhere(["find", leaf, "--exact", "-t", "method,function", "--spans", "-n", "400", "-d", repo.where])
+                    cls = g.label(cid, False).split("::")[-1]
+                    w = next((l.split()[0] for l in out.splitlines() if f"[{cls}]" in l or f"::{cls}]" in l), w)
+                print(f"  #{mid:<8} {g.label(mid)}  [{w}]")
+
+
+# ---------------------------------------------------------------- writes
+WRITE_AFTER = re.compile(r"^\s*(\[[^\]]*\]\s*)*(([-+*/%|&^]|<<|>>)?=(?!=)|\+\+|--)")
+def cmd_writes(repo, a):
+    g = Graph(repo)
+    ids = resolve(repo, a.symbol, allow_many=True)
+    d = symhow_json(["query", "references", f"#{ids[0]}", "-d", repo.how])
+    leaf = g.label(ids[0], False).split("::")[-1]
+    cache, groups = {}, defaultdict(list)
+    for r in d.get("references", []):
+        if r.get("edge_kind") in ("DECLARATION", None):
+            continue
+        l = r["location"]
+        f = l["file"]
+        if f not in cache:
+            try:
+                cache[f] = open(f, errors="replace").read().splitlines()
+            except OSError:
+                cache[f] = []
+        lines = cache[f]
+        text = lines[l["start_line"] - 1] if l["start_line"] - 1 < len(lines) else ""
+        token = text[l["start_column"] - 1:l["end_column"] - 1]     # 1-based, end-exclusive
+        if token != leaf:          # spurious location (macro expansion attached to the edge) -> skip
+            groups["skipped"].append(None)
+            continue
+        before, after = text[:l["start_column"] - 1], text[l["end_column"] - 1:]
+        if WRITE_AFTER.match(after) or re.search(r"(\+\+|--)\s*$", before):
+            kind = "WRITE"
+        elif re.search(r"&\s*(\w+(\.|->))?$", before) or re.search(r"\b(std::)?(exchange|swap)\s*\(\s*(\w+(\.|->))?$", before):
+            kind = "WRITE?"   # address taken / exchange / swap / non-const ref
+        else:
+            kind = "read"
+        groups[kind].append((r.get("context"), f"{repo.rel(f)}:{l['start_line']}", text.strip()))
+    for kind in ("WRITE", "WRITE?", "read"):
+        if kind == "read" and not a.reads:
+            print(f"-- {len(groups['read'])} read site(s) hidden (--reads to show)"
+                  + (f"; {len(groups['skipped'])} spurious location(s) ignored" if groups.get('skipped') else ""))
+            continue
+        for ctx, where, text in groups.get(kind, []):
+            print(f"{kind:<6} {where:<45} {g.label(ctx, False) if ctx else '?':<50} | {text[:90]}")
+
+
+# ---------------------------------------------------------------- includers
+def cmd_includers(repo, a):
+    g = Graph(repo)
+    fids, ap = g.file_ids(a.header)
+    if not fids:
+        die(f"{a.header}: not in the symhow index")
+    rows = g.c.execute(f"""WITH RECURSIVE inc(id, d) AS (SELECT id, 0 FROM file WHERE id IN ({','.join(map(str, fids))})
+          UNION SELECT e.source_node_id, inc.d+1 FROM edge e JOIN inc ON e.target_node_id=inc.id WHERE e.type=256 AND inc.d<64)
+        SELECT f.path, min(inc.d) FROM inc JOIN file f ON f.id=inc.id GROUP BY f.path""").fetchall()
+    tus = {p for (p,) in g.c.execute("SELECT path FROM symhow_tu")}
+    total = len(tus)
+    hit_tus = sorted(repo.rel(p) for p, d in rows if p in tus)
+    direct = sorted(repo.rel(p) for p, d in rows if d == 1)
+    print(f"{repo.rel(ap)}: {len(rows) - 1} files include it transitively; {len(hit_tus)}/{total} TUs rebuild on change")
+    print(f"direct includers ({len(direct)}):")
+    for p in direct[: (None if a.list else 25)]:
+        print(f"  {p}")
+    if len(direct) > 25 and not a.list:
+        print(f"  … ({len(direct) - 25} more, --list)")
+    if a.list:
+        print("affected TUs:")
+        for p in hit_tus:
+            print(f"  {p}")
+    else:
+        dirs = defaultdict(int)
+        for p in hit_tus:
+            dirs[os.path.dirname(p)] += 1
+        print("affected TUs by directory: " + ", ".join(f"{k}({v})" for k, v in sorted(dirs.items(), key=lambda x: -x[1])[:10]))
+
+
+# ---------------------------------------------------------------- dispatch (C fn pointers)
+def cmd_dispatch(repo, a):
+    g = Graph(repo)
+    ids = resolve(repo, a.symbol, allow_many=True)
+    nid = ids[0]
+    leaf = g.label(nid, False).split("::")[-1]
+    direct = g.count("SELECT count(*) FROM edge WHERE target_node_id=? AND type=8", nid)
+    print(f"#{nid} {g.label(nid)}  [{g.where(nid)}]  direct static callers: {direct}")
+    d = symhow_json(["query", "references", f"#{nid}", "-d", repo.how])
+    fields = set()
+    for r in d.get("references", []):
+        if r.get("edge_kind") != "USAGE":
+            continue
+        l = r["location"]
+        try:
+            text = open(l["file"], errors="replace").read().splitlines()[l["start_line"] - 1]
+        except (OSError, IndexError):
+            text = ""
+        m = re.search(r"[.>]\s*(\w+)\s*=\s*\(?\s*[\w\s*()]*&?\s*" + re.escape(leaf) + r"\b", text) or \
+            re.search(r"\.(\w+)\s*=\s*" + re.escape(leaf), text)
+        ctx = g.label(r["context"], False) if r.get("context") else "?"
+        print(f"  address taken at {repo.rel(l['file'])}:{l['start_line']} (in {repo.rel(ctx) if ctx.startswith('/') else ctx})"
+              f"{'  -> stored in field .' + m.group(1) if m else ''}  | {text.strip()[:80]}")
+        if m:
+            fields.add(m.group(1))
+    if not fields:
+        print("-- no '.field = func' registration found; inspect the USAGE sites above manually")
+        return
+    for fld in sorted(fields):
+        fnodes = g.c.execute("SELECT id FROM node WHERE type=2048 AND serialized_name LIKE ?", (f"%\tn{fld}\ts%",)).fetchall()
+        for (fid,) in fnodes:
+            callers = g.c.execute("SELECT DISTINCT source_node_id FROM edge WHERE target_node_id=? AND type=8", (fid,)).fetchall()
+            users = g.count("SELECT count(*) FROM edge WHERE target_node_id=? AND type=4", fid)
+            print(f"field #{fid} {g.label(fid, False)}: {len(callers)} function(s) call through it, {users} other usage(s)")
+            for (c,) in callers:
+                print(f"  dispatcher #{c:<8} {g.label(c)}  [{g.where(c)}]  -> symx tree '#{c}' --callers")
+
+
+# ---------------------------------------------------------------- changed (git diff -> functions)
+SRC_RE = re.compile(r"\.(c|cc|cpp|cxx|h|hh|hpp|hxx|cu|cuh|inl|ipp|tcc)$")
+
+
+def cmd_changed(repo, a):
+    g = Graph(repo)
+    base = a.rev or (repo.con.execute("SELECT value FROM meta WHERE key='symhow_repo_commit'").fetchone() or [None])[0]
+    if not base:
+        die("no base revision (pass REV)")
+    diff = subprocess.run(["git", "-C", repo.root, "diff", "-U0", base], capture_output=True, text=True).stdout
+    hunks, old, new = defaultdict(list), None, None
+    for line in diff.splitlines():
+        if line.startswith("--- "):
+            old = None if line[4:] == "/dev/null" else line[6:]
+        elif line.startswith("+++ "):
+            new = None if line[4:] == "/dev/null" else line[6:]
+        elif line.startswith("@@"):
+            m = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
+            a0, b0, c0, d0 = int(m.group(1)), int(m.group(2) or 1), int(m.group(3)), int(m.group(4) or 1)
+            if SRC_RE.search(new or old or ""):
+                hunks[(old, new)].append((a0, max(b0, 1), c0, d0))
+    if not hunks:
+        print(f"no C/C++ changes vs {base[:12]}")
+        return
+    print(f"changes vs {base[:12]} (old-side lines map onto the index when it was built from {base[:12]}):")
+    changed = {}
+    for (old, new), hs in hunks.items():
+        fids = g.file_ids(os.path.join(repo.root, old))[0] if old else []
+        print(f"{new or old}{'  (deleted)' if not new else ''}{'  (new file)' if not old else ''}")
+        for a0, b0, c0, d0 in hs:
+            hit = None
+            if fids:
+                hit = g.c.execute(
+                    f"SELECT o.element_id FROM source_location l JOIN occurrence o ON o.source_location_id=l.id "
+                    f"JOIN node n ON n.id=o.element_id WHERE l.file_node_id IN ({','.join(map(str, fids))}) AND l.type=1 "
+                    f"AND l.start_line<=? AND l.end_line>=? AND (n.type & ?)!=0 ORDER BY (l.end_line-l.start_line) LIMIT 1",
+                    (a0 + b0 - 1, a0, FUNC_MASK)).fetchone()
+            if hit:
+                changed[hit[0]] = changed.get(hit[0], 0) + 1
+                print(f"  -{a0},{b0} +{c0},{d0}  #{hit[0]:<8} {g.label(hit[0])}")
+            elif new and os.path.exists(os.path.join(repo.root, new)):
+                args = ["symbols", os.path.join(repo.root, new), "--within", f"{c0}-{c0 + max(d0, 1) - 1}"]
+                if new.endswith(".h") and repo_is_cpp(repo):
+                    args += ["-l", "cpp"]
+                p = subprocess.run([SYMWHERE] + args, capture_output=True, text=True)
+                first = "" if "no symbols enclose" in p.stderr else (p.stdout.splitlines() or [""])[0]
+                print(f"  -{a0},{b0} +{c0},{d0}  (not in index: new code / file scope / #if-disabled) {first.strip()}")
+    if changed:
+        print(f"-- {len(changed)} indexed function(s) changed. Direct impact:")
+        allcallers = set()
+        for nid in changed:
+            callers = [c for (c,) in g.c.execute("SELECT DISTINCT source_node_id FROM edge WHERE target_node_id=? AND type=8", (nid,))]
+            ov = g.count("SELECT count(*) FROM edge WHERE target_node_id=? AND type=32", nid)
+            up = g.count("SELECT count(*) FROM edge WHERE source_node_id=? AND type=32", nid)
+            allcallers.update(callers)
+            print(f"  #{nid:<8} {g.label(nid, False):<60} callers={len(callers):<4}"
+                  f"{' overridden-by=' + str(ov) if ov else ''}{' (override: also reached via base)' if up else ''}")
+        print(f"-- {len(allcallers - set(changed))} distinct direct caller(s) outside the change; "
+              "expand with: symx tree '#ID' --callers --depth 3")
+        if getattr(a, "tests", False):
+            hits, prev, virt = find_tests(g, list(changed), 6)
+            direct = sorted({(g.loc(t)[0], g.label(t)) for t in hits if not virt[t]})
+            nv = len([t for t in hits if virt[t]])
+            files = sorted({f for f, _ in direct})
+            print(f"-- tests that call the changed code: {len(direct)} in {len(files)} file(s)"
+                  f"{f' (+{nv} only via base-class virtuals)' if nv else ''}")
+            for f in files:
+                print(f"  {f}")
+                for ff, lbl in direct:
+                    if ff == f:
+                        print(f"    {lbl}")
+
+
+# ---------------------------------------------------------------- chain (dominators)
+def cmd_chain(repo, a):
+    g = Graph(repo)
+    target = resolve(repo, a.symbol)[0]
+    entry = resolve(repo, a.entry)[0]
+    d = symhow_json(["graph", "dominators", "-d", repo.how, "--entry", f"#{entry}"])
+    idom = {i["node"]: i["idom"] for i in d.get("idoms", [])}
+    if target not in idom and target != entry:
+        print(f"#{target} {g.label(target, False)} is NOT statically reachable from #{entry} {g.label(entry, False)} "
+              "(CALL+USAGE graph). If it runs at runtime, the link is dynamic: virtual, fn-pointer, callback, or outside this build.")
+        sys.exit(3)
+    chain, x = [target], target
+    while x in idom and idom[x] != x and len(chain) < 200:
+        x = idom[x]
+        chain.append(x)
+    print(f"every static path from the entry to the target passes through (entry first):")
+    for i, nid in enumerate(reversed(chain)):
+        print(f"  {'  ' * min(i, 12)}#{nid:<8} {g.label(nid)}  [{g.where(nid)}]")
+    print("-- for one concrete route (not just mandatory waypoints): symhow graph path --from ENTRY --to TARGET")
+
+
+# ---------------------------------------------------------------- reach (devirtualized path)
+def cmd_reach(repo, a):
+    g = Graph(repo)
+    src = resolve(repo, a.src, allow_many=a.all)
+    dst = set(resolve(repo, a.dst, allow_many=True))
+    unsolved = {i for (i,) in g.c.execute("SELECT id FROM node WHERE type=1")}
+    adj = defaultdict(list)
+    kinds = (8, 4) if a.usage else (8,)
+    for s, t, et, eid in g.c.execute(f"SELECT source_node_id, target_node_id, type, id FROM edge WHERE type IN ({','.join(map(str, kinds))})"):
+        if t not in unsolved:
+            adj[s].append((t, "call" if et == 8 else "uses", eid))
+    has_ov = set()
+    for s, t, eid in g.c.execute("SELECT source_node_id, target_node_id, id FROM edge WHERE type=32"):
+        adj[t].append((s, "dispatch", eid))       # base method -> overrider
+        has_ov.add(t)
+    owner, members, derived = {}, defaultdict(list), defaultdict(list)
+    if not a.no_templates:
+        for s, t in g.c.execute("SELECT source_node_id, target_node_id FROM edge WHERE type=1"):
+            owner[t] = s
+            members[s].append(t)
+        for s, t in g.c.execute("SELECT source_node_id, target_node_id FROM edge WHERE type=16"):
+            derived[t].append(s)
+    leaf = lambda n: g.label(n, False).split("::")[-1]
+    texts, fn_by_leaf, fp_cache = [], None, {}
+
+    def fnptr_targets(x):
+        """C/C++ call through a fn-pointer FIELD -> functions assigned to that field anywhere
+        ('.field = fn', '->field = fn', '.field = &fn'), found by scanning indexed file text."""
+        nonlocal fn_by_leaf
+        if g.node(x)[0] != "FIELD":
+            return ()
+        name = leaf(x)
+        if name in fp_cache:
+            return fp_cache[name]
+        if not texts:
+            texts.extend(c for (c,) in g.c.execute("SELECT content FROM filecontent"))
+            fn_by_leaf = defaultdict(list)
+            for nid, sn in g.c.execute("SELECT id, serialized_name FROM node WHERE type=4096"):
+                fn_by_leaf[decode(sn)[0].split("::")[-1]].append(nid)
+        rx = re.compile(r"(?:\.|->)\s*" + re.escape(name) + r"\s*=\s*&?\s*([A-Za-z_]\w*)\s*[,;}\n]")
+        names = {m.group(1) for t in texts for m in rx.finditer(t)}
+        fp_cache[name] = [(f, "fnptr", None) for n in sorted(names) for f in fn_by_leaf.get(n, ())]
+        return fp_cache[name]
+
+    def template_dispatch(x):
+        """heuristic: method without OVERRIDE edges -> same-named methods of (transitively) derived classes."""
+        if a.no_templates or x in has_ov or x not in owner or g.node(x)[0] != "METHOD":
+            return ()
+        out, todo, seen, name = [], list(derived.get(owner[x], ())), set(), leaf(x)
+        while todo:
+            c = todo.pop()
+            if c in seen:
+                continue
+            seen.add(c)
+            todo += derived.get(c, ())
+            out += [(m, "tdispatch", None) for m in members.get(c, ()) if leaf(m) == name and g.node(m)[0] == "METHOD"]
+        return out
+
+    import heapq
+    COST = {"call": 1, "dispatch": 1, "uses": 3, "tdispatch": 3, "fnptr": 5}
+    expand = lambda x: list(adj.get(x, ())) + list(template_dispatch(x)) + (list(fnptr_targets(x)) if a.fnptr else [])
+    dist, prev, hops = {}, {}, {}
+    heap = [(0, x) for x in src]
+    for x in src:
+        dist[x], prev[x], hops[x] = 0, None, 0
+    found = None
+    while heap:
+        d, x = heapq.heappop(heap)
+        if d > dist.get(x, 1 << 30):
+            continue
+        if x in dst:
+            found = x
+            break
+        if hops[x] >= a.max_hops:
+            continue
+        for y, kind, eid in expand(x):
+            nd = d + COST[kind]
+            if nd < dist.get(y, 1 << 30):
+                dist[y], prev[y], hops[y] = nd, (x, kind, eid), hops[x] + 1
+                heapq.heappush(heap, (nd, y))
+    if found is None:
+        print(f"no path within {a.max_hops} hops following calls + virtual dispatch"
+              f"{' + address-taken uses' if a.usage else ''}{' + fn-pointer fields' if a.fnptr else ''} "
+              f"({len(prev)} nodes reachable). Still dynamic: "
+              + ("fn-pointer fields (--fnptr), " if not a.fnptr else "") + ("callback registration (--usage), " if not a.usage else "")
+              + "runtime registries, code outside this build. Absence of a static path is a lead, not proof.")
+        sys.exit(3)
+    path, x = [], found
+    while prev[x] is not None:
+        p, kind, eid = prev[x]
+        path.append((p, x, kind, eid))
+        x = p
+    path.reverse()
+    print(f"#{path[0][0] if path else found} {g.label(path[0][0] if path else found)}  [{g.where(path[0][0] if path else found)}]")
+    for p, x, kind, eid in path:
+        rows = eid and g.c.execute("SELECT f.path, l.start_line FROM occurrence o JOIN source_location l ON l.id=o.source_location_id "
+                                   "JOIN file f ON f.id=l.file_node_id WHERE o.element_id=?", (eid,)).fetchall()
+        sites = g.in_body(p, [(repo.rel(f), ln) for f, ln in rows]) if rows else []
+        at = f" @{sites[0][0]}:{sites[0][1]}" if sites and kind in ("call", "uses") else ""
+        arrow = {"call": "--calls-->", "dispatch": "==virtual==>", "uses": "--takes-address-of-->",
+                 "tdispatch": "~~virtual?~~>", "fnptr": "==fn-pointer==>"}[kind]
+        print(f"  {arrow:<22} #{x:<8} {g.label(x)}  [{g.where(x)}]{at}")
+    notes = []
+    if any(k == "dispatch" for _, _, k, _ in path):
+        notes.append("'==virtual==>' = runtime dispatch to a recorded override")
+    if any(k == "fnptr" for _, _, k, _ in path):
+        notes.append("'==fn-pointer==>' = call through a struct field that some code sets to this function "
+                     "(text match '.field = fn'; which one runs depends on the object's ops table)")
+    if any(k == "tdispatch" for _, _, k, _ in path):
+        notes.append("'~~virtual?~~>' = HEURISTIC (class template: same-named method in a derived class; verify it overrides)")
+    weak = sum(k in ("fnptr", "tdispatch", "uses") for _, _, k, _ in path)
+    if weak >= 2 or (weak and len(path) > 12):
+        notes.append(f"LOW CONFIDENCE: {weak} heuristic hop(s) in a {len(path)}-hop path; generic callback fields connect "
+                     "almost everything — verify each dynamic hop, or constrain with an intermediate target")
+    print(f"-- {len(path)} hop(s), cost {dist[found]}" + ("; " + "; ".join(notes) if notes else ""))
+
+
+# ---------------------------------------------------------------- tests (which tests reach SYM)
+TEST_PATH = re.compile(r"(^|/)(tests?|testing|unittests?)/|(_test|_tests|Test|Tests|_unittest)\.(c|cc|cpp|cxx|cu)$|(^|/)test_[^/]*\.(c|cc|cpp|cxx|cu)$")
+
+
+def find_tests(g, seeds, depth):
+    """reverse BFS over CALL edges (+ override -> base, since callers of the base can dispatch to it).
+    returns {test_node: (depth, path-of-ids)} for nodes whose definition lives in a test file."""
+    prev, frontier, hits, virt = {s: None for s in seeds}, list(seeds), {}, {s: False for s in seeds}
+    for d in range(1, depth + 1):
+        nxt = []
+        # direct callers first so a node reachable both ways is recorded as direct
+        for x in sorted(frontier, key=lambda n: virt[n]):
+            ups = [(c, False) for (c,) in g.c.execute("SELECT DISTINCT source_node_id FROM edge WHERE target_node_id=? AND type=8", (x,))]
+            ups += [(b, True) for (b,) in g.c.execute("SELECT target_node_id FROM edge WHERE source_node_id=? AND type=32", (x,))]
+            for y, is_ov in ups:
+                if y in prev:
+                    continue
+                prev[y], virt[y] = x, virt[x] or is_ov
+                l = g.loc(y)
+                if l and TEST_PATH.search(l[0]):
+                    lbl = g.label(y, False)
+                    entry = CATCH2_RE.search(lbl) or lbl.endswith("::TestBody") or not g.count(
+                        "SELECT count(*) FROM edge WHERE target_node_id=? AND type=8", y)
+                    if entry:
+                        hits[y] = d      # a test case (or an uncalled test-file function): report it
+                        continue
+                nxt.append(y)            # production code or a test helper: keep climbing
+        frontier = nxt
+    return hits, prev, virt
+
+
+def cmd_tests(repo, a):
+    g = Graph(repo)
+    seeds = resolve(repo, a.symbol, allow_many=True)
+    hits, prev, virt = find_tests(g, seeds, a.depth)
+    direct = {t: d for t, d in hits.items() if not virt[t]}
+    viav = {t: d for t, d in hits.items() if virt[t]}
+    print(f"{a.symbol}: {len(direct)} test function(s) call it (transitively, \u2264{a.depth} hops); "
+          f"{len(viav)} more only via a base-class virtual it overrides (may dispatch elsewhere)"
+          f"{'' if len(seeds) == 1 else f'; {len(seeds)} overloads/instantiations unioned'}")
+    shown = dict(direct)
+    if viav:
+        keep = sorted(viav.items(), key=lambda kv: kv[1])
+        shown.update(keep if a.all else keep[:10])
+    byfile = defaultdict(list)
+    for t, d in shown.items():
+        byfile[g.loc(t)[0]].append((d, t))
+    for f in sorted(byfile):
+        print(f)
+        for d, t in sorted(byfile[f]):
+            tag = " (via base virtual)" if virt[t] else ""
+            chain, x = [], prev[t]
+            while x is not None and x not in seeds:
+                chain.append(g.label(x, False).split("::")[-1])
+                x = prev[x]
+            via = f"  via {' <- '.join(chain[:4])}{' <- …' if len(chain) > 4 else ''}" if chain else ""
+            print(f"  d={d}{tag}  {g.label(t)}  [:{g.loc(t)[1]}]{via}")
+    if len(viav) > 10 and not a.all:
+        print(f"-- {len(viav) - 10} more via-base-virtual tests hidden (--all)")
+    if not hits:
+        print("no indexed test reaches it. Either the index has no tests (folly/velox are built without them), "
+              "the link is dynamic (callbacks/fn-pointers/templates), or raise --depth. Fallback: "
+              "$W find NAME -i '**/test*/**' / grep in test dirs.")
+
+
+# ---------------------------------------------------------------- name
+def cmd_name(repo, a):
+    g = Graph(repo)
+    for x in a.ids:
+        nid = int(x.lstrip("#"))
+        k, q, post = g.node(nid)
+        print(f"#{nid:<8} {k:<14} {q}{post}  [{g.where(nid)}]")
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="symx", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--repo", help="repo name under $SYMX_DBS (folly, velox, ucx, ...) or a path; default: cwd")
+    sp = ap.add_subparsers(dest="cmd", required=True)
+    sp.add_parser("status")
+    p = sp.add_parser("at"); p.add_argument("spec"); p.add_argument("--all", action="store_true", help="include namespaces/std types")
+    p = sp.add_parser("tree"); p.add_argument("symbol")
+    g = p.add_mutually_exclusive_group(required=True); g.add_argument("--callers", action="store_true"); g.add_argument("--callees", action="store_true")
+    p.add_argument("--depth", type=int, default=2); p.add_argument("--max-nodes", type=int, default=400)
+    p.add_argument("--keep-std", action="store_true"); p.add_argument("--all", action="store_true", help="union all overloads/instantiations")
+    p = sp.add_parser("overriders"); p.add_argument("symbol"); p.add_argument("--all", action="store_true")
+    p.add_argument("--templates", action="store_true", help="also run the class-template fallback when edges exist")
+    p = sp.add_parser("writes"); p.add_argument("symbol"); p.add_argument("--reads", action="store_true")
+    p = sp.add_parser("includers"); p.add_argument("header"); p.add_argument("--list", action="store_true")
+    p = sp.add_parser("dispatch"); p.add_argument("symbol")
+    p = sp.add_parser("changed"); p.add_argument("rev", nargs="?", help="base revision (default: the indexed commit)")
+    p.add_argument("--tests", action="store_true", help="also list indexed tests that reach the changed functions")
+    p = sp.add_parser("chain"); p.add_argument("symbol"); p.add_argument("--entry", required=True)
+    p = sp.add_parser("reach"); p.add_argument("src"); p.add_argument("dst")
+    p.add_argument("--usage", action="store_true", help="also follow address-taken/field/global USAGE edges")
+    p.add_argument("--all", action="store_true", help="start from every overload of SRC")
+    p.add_argument("--no-templates", action="store_true", help="disable the class-template dispatch heuristic")
+    p.add_argument("--fnptr", action="store_true", help="follow calls through fn-pointer fields to functions assigned "
+                   "to them ('.field = fn' text match; C ops tables). Can over-connect via generic callback fields")
+    p.add_argument("--max-hops", type=int, default=20)
+    p = sp.add_parser("tests"); p.add_argument("symbol"); p.add_argument("--depth", type=int, default=6)
+    p.add_argument("--all", action="store_true", help="list every via-base-virtual test too")
+    p = sp.add_parser("name"); p.add_argument("ids", nargs="+")
+    a = ap.parse_args()
+    repo = discover(a.repo)
+    {"status": cmd_status, "at": cmd_at, "tree": cmd_tree, "overriders": cmd_overriders, "writes": cmd_writes,
+     "includers": cmd_includers, "dispatch": cmd_dispatch, "changed": cmd_changed, "chain": cmd_chain, "reach": cmd_reach, "tests": cmd_tests,
+     "name": cmd_name}[a.cmd](repo, a)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        pass
