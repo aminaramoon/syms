@@ -1,14 +1,15 @@
 # symhow JSON output schema
 
+> The C++ client was removed; historical C++ source/test references below correspond to the Rust modules under `rust/src/` and tests under `rust/tests/`.
+
 `symhow query <verb> ... --json`, `symhow graph <verb> ... --json`, and `symhow index ... --json` print exactly one JSON
 object to stdout (never split across lines, never mixed with any other
 stdout output) and set the same process exit code text mode would have used
 (0 ok, 2 ambiguous symbol, 3 not found, 4 db missing/unreadable, etc. -- see
 `symhow --help`). This document is the schema reference for that output,
-implemented by `symhow::out::json::JsonWriter` (`cpp/include/symhow/out/JsonWriter.h`,
-`cpp/src/out/JsonWriter.cpp`); the `symhow.graph.*` schemas at the bottom are the
-one exception -- they are produced by the Rust-only `symhow graph` subcommand
-(`rust/src/out/graph_writer.rs`) and have no C++ counterpart.
+implemented by `rust/src/out/json_writer.rs`; the `symhow.graph.*` schemas
+at the bottom are produced by `symhow graph` through
+`rust/src/out/graph_writer.rs`.
 
 If a verb prints multiple results in text mode (`file` with `--all-matches`
 against several matching paths), JSON mode prints multiple JSON objects too,
@@ -141,7 +142,7 @@ different. `symhow.file/1`'s per-occurrence `node` field is intentionally
 **minimal** (`{"kind": ..., "qualified_name": ...}` only) rather than the
 full shape above -- see that section below.
 
-The `symhow.graph.*` schemas (Rust-only `symhow graph` subcommand, sections
+The `symhow.graph.*` schemas (`symhow graph` subcommand, sections
 at the bottom of this doc) use a further **reduced** node object: `{id,
 kind, name, qualified_name, signature, display_name?}` only -- the
 DB-hydrated `indexed`/`definition_kind`/`location` fields (and the BFS
@@ -149,7 +150,7 @@ DB-hydrated `indexed`/`definition_kind`/`location` fields (and the BFS
 only `{node id, kind, serialized_name}` per participant and re-querying the
 database for every ranked node would turn the ranked verbs into O(result)
 extra queries. Consumers join on `id` with `symhow.graph/1` /
-`symhow.definition/1` output instead. Unlike the C++ writer, `signature` is
+`symhow.definition/1` output instead. Unlike the other node objects, `signature` is
 always present (an empty string when the name has no signature postfix);
 `display_name` keeps the same "only when the TU-local disambiguator is
 actually present" rule.
@@ -536,7 +537,7 @@ by `(notes_path, line, kind)` from `symhow_note_problem`. Both are deliberately
 NOT keyed by `node.id` or an absolute file path -- see the notes cache's own
 "keyed by stable identity" principle -- so `--only note` between two
 independently-`symhow index`d databases (different node ids, different absolute
-paths) can still come back equal (see `ctest -R notes_cross_worktree`).
+paths) can still come back equal (see `flox activate -- bash -c 'cd rust && cargo test --test scenarios notes_cross_worktree'`).
 Exit codes (not specific to `--json`): `0` the databases are logically
 equivalent, `3` they differ, `4` one of the two databases couldn't be opened
 at all (e.g. missing file, wrong `storage_version`) -- in that last case
@@ -641,7 +642,7 @@ Notes:
   *how many* of `"deleted"`/`"changed"`/`"tus"."new"` were actually one
   side of a rename, for reporting. (Prior to Phase 4 this field was
   hardcoded to `0` -- a real gap, not a design choice; fixed alongside the
-  git-driven scenario test that caught it, `cpp/test/update/update_scenario.cmake`.)
+  git-driven scenario test that caught it, `rust/tests/scenarios/update_scenario.cmake`.)
 - `"files"."cleared_paths"`/`"unmatched_paths"` are always present (possibly
   empty arrays), even when `"dry_run"` or the "nothing to do" case leaves
   every count at `0`.
@@ -860,7 +861,7 @@ symbol (a `node` row with a `symbol` row), using the same overlay-aware
 
 Printed by `symhow notes symbols -d DB [--kind K]... [--file GLOB] [--json]`.
 Lists indexed symbols in exactly the shape
-`cpp/scripts/symhow-notes-fake.py --symbols-json` consumes (Phase 3's `scaffold`
+`rust/scripts/symhow-notes-fake.py --symbols-json` consumes (Phase 3's `scaffold`
 shares this same code path).
 
 ```json
@@ -973,7 +974,7 @@ DB involved (same as `lint`): a plain canonical re-render
 ## `symhow.graph.centrality/1`
 
 Printed by `symhow graph centrality -d DB [--top N] [--include-unsolved]
-[--json] [--dot FILE]` -- the Rust-only `symhow graph` subcommand (see
+[--json] [--dot FILE]` -- the `symhow graph` subcommand (see
 `docs/GRAPH_SCHEMA_NOTES.md` for the schema study behind it). Betweenness
 centrality (Brandes, unweighted) over the loaded call/usage graph: every
 FUNCTION/METHOD node plus every CALL edge, with USAGE edges on top, and the
@@ -987,7 +988,7 @@ reported nodes).
 
 ```json
 { "symhow_version": "0.1.0", "schema": "symhow.graph.centrality/1",
-  "query": { "verb": "centrality", "db": "cpp/build/fixture.srctrldb",
+  "query": { "verb": "centrality", "db": "rust/target/tmp/symhow-fixtures/fixture.srctrldb",
              "top": 3, "include_unsolved": false },
   "truncated": true,
   "stats": { "node_count": 48, "edge_count": 39, "shown": 3,
@@ -1016,7 +1017,7 @@ same way `centrality` does.
 
 ```json
 { "symhow_version": "0.1.0", "schema": "symhow.graph.pagerank/1",
-  "query": { "verb": "pagerank", "db": "cpp/build/fixture.srctrldb",
+  "query": { "verb": "pagerank", "db": "rust/target/tmp/symhow-fixtures/fixture.srctrldb",
              "seeds": [], "seed_ids": [206, 211], "seeds_explicit": false,
              "damping": 0.85, "top": 2 },
   "truncated": true,
@@ -1048,7 +1049,7 @@ pick one with `--entry SYMBOL` or `--entry '#<id>'`.
 
 ```json
 { "symhow_version": "0.1.0", "schema": "symhow.graph.dominators/1",
-  "query": { "verb": "dominators", "db": "cpp/build/fixture.srctrldb",
+  "query": { "verb": "dominators", "db": "rust/target/tmp/symhow-fixtures/fixture.srctrldb",
              "entry": "#206", "entry_id": 206, "entry_explicit": true },
   "truncated": false,
   "stats": { "node_count": 48, "edge_count": 39, "dominated_count": 1,
@@ -1083,7 +1084,7 @@ statement-level dependence (local variables have no edges at all).
 
 ```json
 { "symhow_version": "0.1.0", "schema": "symhow.graph.slice/1",
-  "query": { "verb": "slice", "db": "cpp/build/fixture.srctrldb",
+  "query": { "verb": "slice", "db": "rust/target/tmp/symhow-fixtures/fixture.srctrldb",
              "criterion": "level2", "criterion_id": 149, "lines": true },
   "truncated": false,
   "stats": { "member_count": 4, "edge_count": 3, "elapsed_ms": 0 },
@@ -1118,7 +1119,7 @@ database.
 
 ```json
 { "symhow_version": "0.1.0", "schema": "symhow.graph.path/1",
-  "query": { "verb": "path", "db": "cpp/build/fixture.srctrldb",
+  "query": { "verb": "path", "db": "rust/target/tmp/symhow-fixtures/fixture.srctrldb",
              "from": "runChain", "from_id": 155,
              "to": "level0", "to_id": 151, "weight": "calls" },
   "truncated": false,

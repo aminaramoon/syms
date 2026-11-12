@@ -5,21 +5,10 @@ use std::path::PathBuf;
 use symhow::index::arg_sanitizer::{sanitize, SanitizerOptions};
 use symhow::index::compile_db::{load, CompileDbOptions};
 
-/// The fixture lives at test/integration/data/cucs_cdb_samples.json, i.e.
-/// ../cpp/test/integration/data relative to the crate root (rust/), or resolved
-/// from SYMHOW_TEST_SOURCE_DIR when set.
+/// The fixture lives at tests/data/cucs_cdb_samples.json under the crate root.
 fn samples_path() -> PathBuf {
-    if let Ok(dir) = std::env::var("SYMHOW_TEST_SOURCE_DIR") {
-        return PathBuf::from(dir)
-            .join("integration")
-            .join("data")
-            .join("cucs_cdb_samples.json");
-    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("cpp")
-        .join("test")
-        .join("integration")
+        .join("tests")
         .join("data")
         .join("cucs_cdb_samples.json")
 }

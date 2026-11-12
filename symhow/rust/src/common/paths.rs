@@ -3,6 +3,54 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Source-path storage contract. An empty root means an unmarked legacy DB.
+#[derive(Clone, Debug, Default)]
+pub struct SourcePaths {
+    pub root: String,
+}
+
+impl SourcePaths {
+    pub fn from_conn(conn: &rusqlite::Connection) -> Self {
+        let format = crate::db::meta::get_meta(conn, "symhow_path_format").unwrap_or_default();
+        let root = if format == "relative-v1" {
+            crate::db::meta::get_meta(conn, "symhow_source_root").unwrap_or_default()
+        } else {
+            String::new()
+        };
+        Self { root }
+    }
+
+    pub fn encode(&self, path: &str) -> String {
+        encode_source_path(path, &self.root)
+    }
+
+    pub fn decode(&self, path: &str) -> String {
+        if self.root.is_empty() || path.is_empty() || Path::new(path).is_absolute() {
+            path.to_string()
+        } else {
+            lexical_normalize(&format!("{}/{}", self.root, path))
+        }
+    }
+}
+
+/// Lexical, component-boundary-aware encoding; external absolute paths stay absolute.
+/// Does not inspect the filesystem, so moved/deleted files have stable identities.
+pub fn encode_source_path(path: &str, root: &str) -> String {
+    if root.is_empty() || path.is_empty() {
+        return path.to_string();
+    }
+    let normalized = lexical_normalize(path);
+    let root = lexical_normalize(root);
+    if !Path::new(&normalized).is_absolute() {
+        return normalized;
+    }
+    if let Ok(relative) = Path::new(&normalized).strip_prefix(&root) {
+        let relative = relative.to_string_lossy();
+        return if relative.is_empty() { ".".into() } else { relative.into_owned() };
+    }
+    path.to_string()
+}
+
 /// Normalizes `path` for matching purposes ONLY (never for storage/output).
 /// Makes it absolute, then canonicalizes it if it exists on disk (resolving
 /// symlinks/`.`/`..`), else falls back to lexical normalization.

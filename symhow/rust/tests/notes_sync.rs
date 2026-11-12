@@ -6,6 +6,9 @@
 //! APIs directly (syncNotes() vs an independent oracle, the --json envelope,
 //! openNotes()'s overlay, determinism) is ported in full.
 
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
 use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
@@ -17,7 +20,7 @@ use symhow::notes::{
 };
 
 fn fixture_db_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../cpp/build/fixture.srctrldb".to_string())
+    fixtures::fixture_db()
 }
 
 fn read_file(path: &str) -> String {
@@ -188,7 +191,7 @@ fn notes_sync_end_to_end_sync_oracle_json_overlay_determinism() {
     let syms_path = tmp.join("symbols.json");
     write_file(&syms_path.to_string_lossy(), &syms_json);
 
-    let generator_path = "../cpp/scripts/symhow-notes-fake.py";
+    let generator_path = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/symhow-notes-fake.py");
     let gen = Command::new("python3")
         .args([
             generator_path,

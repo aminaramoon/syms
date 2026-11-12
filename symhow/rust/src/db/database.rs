@@ -69,6 +69,7 @@ pub struct Database {
     path: String,
     conn: Connection,
     storage_version: i32,
+    source_paths: crate::common::paths::SourcePaths,
 }
 
 impl Database {
@@ -110,7 +111,8 @@ impl Database {
             )));
         }
 
-        let db = Database { path, conn, storage_version };
+        let source_paths = crate::common::paths::SourcePaths::from_conn(&conn);
+        let db = Database { path, conn, storage_version, source_paths };
 
         if verbosity > 0 {
             for name in missing_index_names(&db) {
@@ -130,6 +132,10 @@ impl Database {
 
     pub fn storage_version(&self) -> i32 {
         self.storage_version
+    }
+
+    pub fn source_paths(&self) -> &crate::common::paths::SourcePaths {
+        &self.source_paths
     }
 
     pub fn conn(&self) -> &Connection {

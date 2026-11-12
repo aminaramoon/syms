@@ -55,7 +55,7 @@ fn file_path_for(db: &Database, file_id: i64) -> Result<String> {
         path = row.get::<_, Option<String>>(0)?.unwrap_or_default();
         Ok(())
     })?;
-    Ok(path)
+    Ok(db.source_paths().decode(&path))
 }
 
 /// Splits `content` into 1-based lines (no trailing newline kept; a '\r'

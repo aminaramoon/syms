@@ -3,16 +3,19 @@
 //! `env!("CARGO_BIN_EXE_symhow")` and assert on exit codes, stdout/stderr,
 //! the five `symhow.graph.*/1` JSON envelopes, and `--dot` file output.
 //! Like tests/query_fixture.rs, the fixture database is located via
-//! $SYMHOW_FIXTURE_DB with a `../cpp/build/fixture.srctrldb` fallback.
+//! $SYMHOW_FIXTURE_DB, defaulting to the generated fixture (tests/support/fixtures.rs).
 
 use std::path::PathBuf;
 use std::process::Command;
 
 use serde_json::Value;
 
-fn fixture_db_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../cpp/build/fixture.srctrldb".to_string())
-}
+#[path = "support/fixtures.rs"]
+mod fixtures;
+#[path = "support/fixture_ids.rs"]
+mod fixture_ids;
+
+use fixture_ids::{fixture_db_path, fixture_ids, sorted_ids};
 
 /// Runs the real `symhow` binary and returns (exit code, stdout, stderr).
 fn run_symhow(args: &[&str]) -> (i32, String, String) {
@@ -52,7 +55,7 @@ fn fresh_dir(name: &str) -> PathBuf {
 }
 
 // Fixture ground truth (docs/GRAPH_SCHEMA_NOTES.md §6, re-verified): 48
-// nodes / 39 edges with the unsolved hub (#141) excluded.
+// nodes / 39 edges with the unsolved hub excluded.
 const NODE_COUNT: i64 = 48;
 const EDGE_COUNT: i64 = 39;
 
@@ -115,22 +118,26 @@ fn centrality_json_envelope_has_the_expected_shape_and_counts() {
 
 #[test]
 fn centrality_include_unsolved_reincludes_the_hub() {
+    let ids = fixture_ids();
     let j = stdout_json(&["centrality", "--json", "--top", "0", "--include-unsolved"]);
     assert_eq!(j["query"]["include_unsolved"], true);
     assert_eq!(j["stats"]["node_count"], NODE_COUNT + 1);
     assert_eq!(j["stats"]["edge_count"], EDGE_COUNT + 3);
-    // The hub is a participant now (id 141).
-    let ids: Vec<i64> = j["nodes"]
+    // The hub is a participant now.
+    let node_ids: Vec<i64> = j["nodes"]
         .as_array()
         .unwrap()
         .iter()
         .map(|n| n["id"].as_i64().unwrap())
         .collect();
-    assert!(ids.contains(&141));
+    assert!(node_ids.contains(&ids.unsolved_hub));
 }
 
 #[test]
 fn centrality_top_caps_both_json_and_text_output() {
+    let ids = fixture_ids();
+    let unsolved_hub_spec = format!("#{}", ids.unsolved_hub);
+    let level2_spec = format!("#{}", ids.level2);
     let j = stdout_json(&["centrality", "--json", "--top", "3"]);
     let nodes = j["nodes"].as_array().unwrap();
     assert_eq!(nodes.len(), 3);
@@ -145,22 +152,39 @@ fn centrality_top_caps_both_json_and_text_output() {
         stdout
     );
     assert!(
-        stdout.contains("#149"),
-        "top scorer #149 expected: {}",
+        stdout.contains(&level2_spec),
+        "top scorer {} expected: {}",
+        level2_spec,
         stdout
     );
-    assert!(!stdout.contains("#141"),);
+    assert!(!stdout.contains(&unsolved_hub_spec),);
 }
 
 #[test]
 fn pagerank_json_echoes_seeds_and_scores_sum_to_one() {
+    let ids = fixture_ids();
+    let main_tu_a_spec = format!("#{}", ids.main_tu_a);
+    let main_tu_b_spec = format!("#{}", ids.main_tu_b);
     let j = stdout_json(&[
-        "pagerank", "--json", "--top", "0", "--seed", "#206", "--seed", "#211",
+        "pagerank",
+        "--json",
+        "--top",
+        "0",
+        "--seed",
+        &main_tu_a_spec,
+        "--seed",
+        &main_tu_b_spec,
     ]);
     assert_eq!(j["schema"], "symhow.graph.pagerank/1");
-    assert_eq!(j["query"]["seeds"], serde_json::json!(["#206", "#211"]));
+    assert_eq!(
+        j["query"]["seeds"],
+        serde_json::json!([&main_tu_a_spec, &main_tu_b_spec])
+    );
     assert_eq!(j["query"]["seeds_explicit"], true);
-    assert_eq!(j["query"]["seed_ids"], serde_json::json!([206, 211]));
+    assert_eq!(
+        j["query"]["seed_ids"],
+        serde_json::json!(sorted_ids([ids.main_tu_a, ids.main_tu_b]))
+    );
     assert_eq!(j["query"]["damping"], 0.85);
     assert_eq!(j["stats"]["seed_count"], 2);
     assert_eq!(j["stats"]["node_count"], NODE_COUNT);
@@ -171,8 +195,13 @@ fn pagerank_json_echoes_seeds_and_scores_sum_to_one() {
     let total: f64 = nodes.iter().map(|n| n["score"].as_f64().unwrap()).sum();
     assert!((total - 1.0).abs() < 1e-6, "rank mass sums to {}", total);
     // The two TU-local mains tie at the top.
-    assert_eq!(nodes[0]["id"], 206);
-    assert_eq!(nodes[1]["id"], 211);
+    assert_eq!(
+        vec![
+            nodes[0]["id"].as_i64().unwrap(),
+            nodes[1]["id"].as_i64().unwrap()
+        ],
+        sorted_ids([ids.main_tu_a, ids.main_tu_b])
+    );
     assert!(
         (nodes[0]["score"].as_f64().unwrap() - nodes[1]["score"].as_f64().unwrap()).abs() < 1e-9
     );
@@ -181,10 +210,14 @@ fn pagerank_json_echoes_seeds_and_scores_sum_to_one() {
 
 #[test]
 fn pagerank_without_seeds_falls_back_to_the_main_heuristic() {
+    let ids = fixture_ids();
     let j = stdout_json(&["pagerank", "--json", "--top", "4"]);
     assert_eq!(j["query"]["seeds"], serde_json::json!([]));
     assert_eq!(j["query"]["seeds_explicit"], false);
-    assert_eq!(j["query"]["seed_ids"], serde_json::json!([206, 211]));
+    assert_eq!(
+        j["query"]["seed_ids"],
+        serde_json::json!(sorted_ids([ids.main_tu_a, ids.main_tu_b]))
+    );
     assert_eq!(j["stats"]["seed_count"], 2);
 }
 
@@ -206,13 +239,19 @@ fn pagerank_unknown_seed_is_a_clean_not_found_error() {
 
 #[test]
 fn pagerank_damping_out_of_range_is_a_clean_error() {
-    let (code, _stdout, stderr) = run_graph(&["pagerank", "--damping", "1.5", "--seed", "#206"]);
+    let ids = fixture_ids();
+    let main_tu_a_spec = format!("#{}", ids.main_tu_a);
+    let (code, _stdout, stderr) =
+        run_graph(&["pagerank", "--damping", "1.5", "--seed", &main_tu_a_spec]);
     assert_eq!(code, 1);
     assert!(stderr.contains("outside [0, 1]"), "stderr: {}", stderr);
 }
 
 #[test]
 fn dominators_without_entry_lists_candidates_and_exits_2() {
+    let ids = fixture_ids();
+    let main_tu_a_spec = format!("#{}", ids.main_tu_a);
+    let main_tu_b_spec = format!("#{}", ids.main_tu_b);
     let (code, _stdout, stderr) = run_graph(&["dominators"]);
     assert_eq!(code, 2);
     assert!(
@@ -220,18 +259,20 @@ fn dominators_without_entry_lists_candidates_and_exits_2() {
         "stderr: {}",
         stderr
     );
-    assert!(stderr.contains("#206"), "stderr: {}", stderr);
-    assert!(stderr.contains("#211"), "stderr: {}", stderr);
+    assert!(stderr.contains(&main_tu_a_spec), "stderr: {}", stderr);
+    assert!(stderr.contains(&main_tu_b_spec), "stderr: {}", stderr);
 }
 
 #[test]
 fn dominators_json_from_runchain_has_the_eight_expected_idoms() {
-    let j = stdout_json(&["dominators", "--json", "--entry", "#155"]);
+    let ids = fixture_ids();
+    let run_chain_spec = format!("#{}", ids.run_chain);
+    let j = stdout_json(&["dominators", "--json", "--entry", &run_chain_spec]);
     assert_eq!(j["schema"], "symhow.graph.dominators/1");
-    assert_eq!(j["query"]["entry"], "#155");
-    assert_eq!(j["query"]["entry_id"], 155);
+    assert_eq!(j["query"]["entry"], run_chain_spec.as_str());
+    assert_eq!(j["query"]["entry_id"], ids.run_chain);
     assert_eq!(j["query"]["entry_explicit"], true);
-    assert_eq!(j["root_id"], 155);
+    assert_eq!(j["root_id"], ids.run_chain);
     assert_eq!(j["truncated"], false);
     assert_eq!(j["stats"]["dominated_count"], 8);
 
@@ -242,41 +283,55 @@ fn dominators_json_from_runchain_has_the_eight_expected_idoms() {
         .map(|p| (p["node"].as_i64().unwrap(), p["idom"].as_i64().unwrap()))
         .collect();
     let expected: std::collections::BTreeSet<(i64, i64)> = [
-        (151, 155), // level0 <- runChain
-        (152, 155), // factorial <- runChain
-        (154, 155), // ping <- runChain
-        (150, 151), // level1 <- level0
-        (149, 150), // level2 <- level1
-        (148, 149), // level3 <- level2
-        (147, 148), // level4 <- level3
-        (153, 154), // pong <- ping
+        (ids.level0, ids.run_chain),    // level0 <- runChain
+        (ids.factorial, ids.run_chain), // factorial <- runChain
+        (ids.ping, ids.run_chain),      // ping <- runChain
+        (ids.level1, ids.level0),       // level1 <- level0
+        (ids.level2, ids.level1),       // level2 <- level1
+        (ids.level3, ids.level2),       // level3 <- level2
+        (ids.level4, ids.level3),       // level4 <- level3
+        (ids.pong, ids.ping),           // pong <- ping
     ]
     .into_iter()
     .collect();
     assert_eq!(got, expected);
 
     // nodes[] is the root plus every dominated node, sorted by id.
-    let ids: Vec<i64> = j["nodes"]
+    let node_ids: Vec<i64> = j["nodes"]
         .as_array()
         .unwrap()
         .iter()
         .map(|n| n["id"].as_i64().unwrap())
         .collect();
-    let expected_ids: Vec<i64> = [147, 148, 149, 150, 151, 152, 153, 154, 155].to_vec();
-    assert_eq!(ids, expected_ids);
+    let expected_ids = sorted_ids([
+        ids.level4,
+        ids.level3,
+        ids.level2,
+        ids.level1,
+        ids.level0,
+        ids.factorial,
+        ids.pong,
+        ids.ping,
+        ids.run_chain,
+    ]);
+    assert_eq!(node_ids, expected_ids);
 }
 
 #[test]
 fn dominators_text_mode_prints_an_indented_tree() {
-    let (code, stdout, _stderr) = run_graph(&["dominators", "--entry", "#155"]);
+    let ids = fixture_ids();
+    let run_chain_spec = format!("#{}", ids.run_chain);
+    let (code, stdout, _stderr) = run_graph(&["dominators", "--entry", &run_chain_spec]);
     assert_eq!(code, 0);
     assert!(
-        stdout.contains("dominator tree from runChain() (#155) -- 9 of 48 nodes dominated"),
+        stdout.contains(&format!(
+            "dominator tree from runChain() ({run_chain_spec}) -- 9 of 48 nodes dominated"
+        )),
         "stdout: {}",
         stdout
     );
     assert!(
-        stdout.contains("  #147"),
+        stdout.contains(&format!("  #{}", ids.level4)),
         "indented level4 expected: {}",
         stdout
     );
@@ -284,26 +339,29 @@ fn dominators_text_mode_prints_an_indented_tree() {
 
 #[test]
 fn dominators_dot_writes_idom_tree_edges() {
+    let ids = fixture_ids();
+    let run_chain_spec = format!("#{}", ids.run_chain);
     let dir = fresh_dir("dom_dot");
     let dot_path = dir.join("dominators.dot");
     let (code, _stdout, stderr) = run_graph(&[
         "dominators",
         "--entry",
-        "#155",
+        &run_chain_spec,
         "--dot",
         &dot_path.to_string_lossy(),
     ]);
     assert_eq!(code, 0, "stderr: {}", stderr);
     let dot = std::fs::read_to_string(&dot_path).unwrap();
     assert!(dot.contains("digraph dominators"));
-    for edge in [
-        "155 -> 151;",
-        "155 -> 152;",
-        "155 -> 154;",
-        "150 -> 149;",
-        "148 -> 147;",
+    for (from, to) in [
+        (ids.run_chain, ids.level0),
+        (ids.run_chain, ids.factorial),
+        (ids.run_chain, ids.ping),
+        (ids.level1, ids.level2),
+        (ids.level3, ids.level4),
     ] {
-        assert!(dot.contains(edge), "dot must contain '{}':\n{}", edge, dot);
+        let edge = format!("{from} -> {to};");
+        assert!(dot.contains(&edge), "dot must contain '{}':\n{}", edge, dot);
     }
     assert!(
         dot.contains("label=\"level4() (FUNCTION)\""),
@@ -314,26 +372,30 @@ fn dominators_dot_writes_idom_tree_edges() {
 
 #[test]
 fn slice_json_of_global_counter_is_the_pair_with_its_site() {
+    let ids = fixture_ids();
     let j = stdout_json(&["slice", "--json", "--criterion", "gGlobalCounter"]);
     assert_eq!(j["schema"], "symhow.graph.slice/1");
     assert_eq!(j["query"]["criterion"], "gGlobalCounter");
-    assert_eq!(j["query"]["criterion_id"], 59);
+    assert_eq!(j["query"]["criterion_id"], ids.g_global_counter);
     assert_eq!(j["truncated"], false);
     assert_eq!(j["stats"]["member_count"], 2);
     assert_eq!(j["stats"]["edge_count"], 1);
 
-    let ids: Vec<i64> = j["nodes"]
+    let node_ids: Vec<i64> = j["nodes"]
         .as_array()
         .unwrap()
         .iter()
         .map(|n| n["id"].as_i64().unwrap())
         .collect();
-    assert_eq!(ids, vec![59, 60]);
+    assert_eq!(
+        node_ids,
+        sorted_ids([ids.g_global_counter, ids.use_everything])
+    );
 
     let edges = j["edges"].as_array().unwrap();
     assert_eq!(edges.len(), 1);
-    assert_eq!(edges[0]["source"], 60);
-    assert_eq!(edges[0]["target"], 59);
+    assert_eq!(edges[0]["source"], ids.use_everything);
+    assert_eq!(edges[0]["target"], ids.g_global_counter);
     assert_eq!(edges[0]["kind"], "USAGE");
     assert_eq!(edges[0]["call_sites"], 1);
     let locations = edges[0]["locations"].as_array().unwrap();
@@ -344,16 +406,23 @@ fn slice_json_of_global_counter_is_the_pair_with_its_site() {
 
 #[test]
 fn slice_text_with_lines_annotates_reference_sites() {
+    let ids = fixture_ids();
+    let square_area_spec = format!("#{}", ids.square_area);
+    let square_perimeter_spec = format!("#{}", ids.square_perimeter);
     // Without --lines: no site annotations.
-    let (code, stdout, _stderr) = run_graph(&["slice", "--criterion", "#27"]);
+    let (code, stdout, _stderr) = run_graph(&["slice", "--criterion", &square_area_spec]);
     assert_eq!(code, 0);
     assert!(
         stdout
-            .contains("backward slice of fixture::Square::area() const (#27) -- 3 nodes, 4 edges"),
+            .contains(&format!("backward slice of fixture::Square::area() const ({square_area_spec}) -- 3 nodes, 4 edges")),
         "stdout: {}",
         stdout
     );
-    assert!(stdout.contains("#33"), "stdout: {}", stdout);
+    assert!(
+        stdout.contains(&square_perimeter_spec),
+        "stdout: {}",
+        stdout
+    );
     assert!(
         !stdout.contains(" @ "),
         "--lines off must not annotate: {}",
@@ -361,7 +430,8 @@ fn slice_text_with_lines_annotates_reference_sites() {
     );
 
     // With --lines: each edge carries its ns.cpp site.
-    let (code, stdout, _stderr) = run_graph(&["slice", "--criterion", "#27", "--lines"]);
+    let (code, stdout, _stderr) =
+        run_graph(&["slice", "--criterion", &square_area_spec, "--lines"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("@ "), "stdout: {}", stdout);
     assert!(stdout.contains("ns.cpp:55"), "stdout: {}", stdout);
@@ -370,12 +440,14 @@ fn slice_text_with_lines_annotates_reference_sites() {
 
 #[test]
 fn slice_dot_contains_the_induced_edges() {
+    let ids = fixture_ids();
+    let square_area_spec = format!("#{}", ids.square_area);
     let dir = fresh_dir("slice_dot");
     let dot_path = dir.join("slice.dot");
     let (code, _stdout, stderr) = run_graph(&[
         "slice",
         "--criterion",
-        "#27",
+        &square_area_spec,
         "--dot",
         &dot_path.to_string_lossy(),
     ]);
@@ -383,8 +455,19 @@ fn slice_dot_contains_the_induced_edges() {
     let dot = std::fs::read_to_string(&dot_path).unwrap();
     assert!(dot.contains("digraph slice"));
     // Node names are DB ids; both members of the parallel CALL+USAGE pair.
-    assert!(dot.contains("60 -> 33"), "dot: {}", dot);
-    assert!(dot.contains("33 -> 27"), "dot: {}", dot);
+    assert!(
+        dot.contains(&format!(
+            "{} -> {}",
+            ids.use_everything, ids.square_perimeter
+        )),
+        "dot: {}",
+        dot
+    );
+    assert!(
+        dot.contains(&format!("{} -> {}", ids.square_perimeter, ids.square_area)),
+        "dot: {}",
+        dot
+    );
     assert!(dot.contains("[label=\"USAGE\"]"), "dot: {}", dot);
     assert!(
         dot.contains("[label=\"fixture::Square::area() const (METHOD)\"]"),
@@ -395,6 +478,8 @@ fn slice_dot_contains_the_induced_edges() {
 
 #[test]
 fn slice_missing_or_foreign_criterion_errors_cleanly() {
+    let ids = fixture_ids();
+    let unsolved_hub_spec = format!("#{}", ids.unsolved_hub);
     // Missing --criterion: usage error.
     let (code, _stdout, stderr) = run_graph(&["slice"]);
     assert_eq!(code, 1);
@@ -410,7 +495,7 @@ fn slice_missing_or_foreign_criterion_errors_cleanly() {
     assert!(stderr.contains("symbol not found"), "stderr: {}", stderr);
 
     // The unsolved hub is excluded from the graph (exit 3 + hint).
-    let (code, _stdout, stderr) = run_graph(&["slice", "--criterion", "#141"]);
+    let (code, _stdout, stderr) = run_graph(&["slice", "--criterion", &unsolved_hub_spec]);
     assert_eq!(code, 3);
     assert!(
         stderr.contains("not a participant") && stderr.contains("unsolved"),
@@ -421,25 +506,47 @@ fn slice_missing_or_foreign_criterion_errors_cleanly() {
 
 #[test]
 fn path_json_reports_all_three_weight_schemes() {
+    let ids = fixture_ids();
+    let level4_spec = format!("#{}", ids.level4);
+    let run_chain_spec = format!("#{}", ids.run_chain);
     for (weight, cost) in [("hops", 5.0), ("calls", 5.0), ("lines", 20.0)] {
         let j = stdout_json(&[
-            "path", "--json", "--from", "#155", "--to", "#147", "--weight", weight,
+            "path",
+            "--json",
+            "--from",
+            &run_chain_spec,
+            "--to",
+            &level4_spec,
+            "--weight",
+            weight,
         ]);
         assert_eq!(j["schema"], "symhow.graph.path/1");
-        assert_eq!(j["query"]["from_id"], 155);
-        assert_eq!(j["query"]["to_id"], 147);
+        assert_eq!(j["query"]["from_id"], ids.run_chain);
+        assert_eq!(j["query"]["to_id"], ids.level4);
         assert_eq!(j["query"]["weight"], weight);
         assert_eq!(j["found"], true);
         assert_eq!(j["truncated"], false);
         assert_eq!(j["stats"]["total_cost"], cost, "weight {}", weight);
         assert_eq!(j["stats"]["hop_count"], 5);
-        let ids: Vec<i64> = j["nodes"]
+        let node_ids: Vec<i64> = j["nodes"]
             .as_array()
             .unwrap()
             .iter()
             .map(|n| n["id"].as_i64().unwrap())
             .collect();
-        assert_eq!(ids, vec![155, 151, 150, 149, 148, 147], "weight {}", weight);
+        assert_eq!(
+            node_ids,
+            vec![
+                ids.run_chain,
+                ids.level0,
+                ids.level1,
+                ids.level2,
+                ids.level3,
+                ids.level4
+            ],
+            "weight {}",
+            weight
+        );
         let edges = j["edges"].as_array().unwrap();
         assert_eq!(edges.len(), 5);
         for edge in edges {
@@ -450,12 +557,23 @@ fn path_json_reports_all_three_weight_schemes() {
 
 #[test]
 fn path_unreachable_target_is_a_result_not_an_error() {
+    let ids = fixture_ids();
+    let run_chain_spec = format!("#{}", ids.run_chain);
+    let helper_tu_a_spec = format!("#{}", ids.helper_tu_a);
     // runChain's component never reaches the TU-local helper.
-    let (code, stdout, _stderr) = run_graph(&["path", "--from", "#155", "--to", "#205"]);
+    let (code, stdout, _stderr) =
+        run_graph(&["path", "--from", &run_chain_spec, "--to", &helper_tu_a_spec]);
     assert_eq!(code, 0);
     assert!(stdout.contains("no path from"), "stdout: {}", stdout);
 
-    let (code, stdout, _stderr) = run_graph(&["path", "--json", "--from", "#155", "--to", "#205"]);
+    let (code, stdout, _stderr) = run_graph(&[
+        "path",
+        "--json",
+        "--from",
+        &run_chain_spec,
+        "--to",
+        &helper_tu_a_spec,
+    ]);
     assert_eq!(code, 0);
     let j: Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(j["schema"], "symhow.graph.path/1");
@@ -467,15 +585,19 @@ fn path_unreachable_target_is_a_result_not_an_error() {
 
 #[test]
 fn path_dot_writes_the_walked_chain_or_an_empty_digraph() {
+    let ids = fixture_ids();
+    let level4_spec = format!("#{}", ids.level4);
+    let run_chain_spec = format!("#{}", ids.run_chain);
+    let helper_tu_a_spec = format!("#{}", ids.helper_tu_a);
     let dir = fresh_dir("path_dot");
 
     let dot_path = dir.join("chain.dot");
     let (code, _stdout, stderr) = run_graph(&[
         "path",
         "--from",
-        "#155",
+        &run_chain_spec,
         "--to",
-        "#147",
+        &level4_spec,
         "--dot",
         &dot_path.to_string_lossy(),
     ]);
@@ -487,13 +609,14 @@ fn path_dot_writes_the_walked_chain_or_an_empty_digraph() {
         "dot: {}",
         dot
     );
-    for edge in [
-        "155 -> 151 [label=\"CALL\"];",
-        "151 -> 150 [label=\"CALL\"];",
-        "149 -> 148 [label=\"CALL\"];",
-        "148 -> 147 [label=\"CALL\"];",
+    for (from, to) in [
+        (ids.run_chain, ids.level0),
+        (ids.level0, ids.level1),
+        (ids.level2, ids.level3),
+        (ids.level3, ids.level4),
     ] {
-        assert!(dot.contains(edge), "dot must contain '{}':\n{}", edge, dot);
+        let edge = format!("{from} -> {to} [label=\"CALL\"];");
+        assert!(dot.contains(&edge), "dot must contain '{}':\n{}", edge, dot);
     }
 
     // Unreachable: a valid, empty digraph.
@@ -501,9 +624,9 @@ fn path_dot_writes_the_walked_chain_or_an_empty_digraph() {
     let (code, _stdout, stderr) = run_graph(&[
         "path",
         "--from",
-        "#155",
+        &run_chain_spec,
         "--to",
-        "#205",
+        &helper_tu_a_spec,
         "--dot",
         &dot_path.to_string_lossy(),
     ]);
@@ -514,8 +637,11 @@ fn path_dot_writes_the_walked_chain_or_an_empty_digraph() {
 
 #[test]
 fn path_usage_errors_are_clean() {
+    let ids = fixture_ids();
+    let level4_spec = format!("#{}", ids.level4);
+    let run_chain_spec = format!("#{}", ids.run_chain);
     // Missing --to.
-    let (code, _stdout, stderr) = run_graph(&["path", "--from", "#155"]);
+    let (code, _stdout, stderr) = run_graph(&["path", "--from", &run_chain_spec]);
     assert_eq!(code, 1);
     assert!(
         stderr.contains("missing required option --to"),
@@ -525,7 +651,13 @@ fn path_usage_errors_are_clean() {
 
     // Unknown --weight value.
     let (code, _stdout, stderr) = run_graph(&[
-        "path", "--from", "#155", "--to", "#147", "--weight", "bogus",
+        "path",
+        "--from",
+        &run_chain_spec,
+        "--to",
+        &level4_spec,
+        "--weight",
+        "bogus",
     ]);
     assert_eq!(code, 1);
     assert!(
@@ -536,7 +668,7 @@ fn path_usage_errors_are_clean() {
 
     // Unknown symbol for --from: not found (exit 3).
     let (code, _stdout, stderr) =
-        run_graph(&["path", "--from", "no_such_symbol_xyz", "--to", "#147"]);
+        run_graph(&["path", "--from", "no_such_symbol_xyz", "--to", &level4_spec]);
     assert_eq!(code, 3);
     assert!(stderr.contains("symbol not found"), "stderr: {}", stderr);
 }

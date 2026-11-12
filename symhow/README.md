@@ -4,7 +4,7 @@
 Sourcetrail-schema-compatible SQLite database (`.srctrldb`), and queries
 that database — call graphs, class hierarchies, overrides, references,
 definitions, fuzzy symbol/file search, and corpus-wide stats — as either
-human-readable text or machine-readable JSON. The Rust backend additionally
+human-readable text or machine-readable JSON. It also
 exposes `symhow graph <verb>`: whole-graph analysis over the indexed
 call/usage graph (betweenness centrality, personalized PageRank, dominator
 trees, backward slices, weighted shortest paths).
@@ -12,23 +12,22 @@ trees, backward slices, weighted shortest paths).
 **Status: feature-complete (all 6 phases done).** `symhow index` is a real
 libclang-backed indexer (including CUDA support, with a rung-retry ladder
 for `.cu` files), and `symhow query <verb>` is a full read-only query engine
-with both text and `--json` output for every verb. The Rust backend adds
+with both text and `--json` output for every verb. It also provides
 `symhow graph <verb>` — whole-graph analysis over the indexed call/usage
-graph (Rust-only subcommand, see "Graph analysis" below). See
+graph (see "Graph analysis" below). See
 `docs/KNOWN_LIMITATIONS.md` for known gaps and edge cases, and
 `docs/JSON_SCHEMA.md` for the JSON output contract.
 
-The reference implementation is C++ (`cpp/src/`, `cpp/include/symhow/`). A complete,
-faithful Rust migration lives in `rust/` — every layer (cli, common, db,
-model, index, notes, out, query, update) is ported, with the vendored
-SourcetrailDB *writer* remaining C++ behind a small C ABI shim, exactly as
-in the C++ build. The two implementations produce logically identical
-databases and byte-identical query output (see "The Rust backend" below).
+The client is implemented in Rust under `rust/`. The only C++ code it links
+is the vendored SourcetrailDB *writer*, compiled by `rust/build.rs` behind a
+small C ABI shim. Database reads, indexing orchestration, queries, graph
+analysis, notes, and updates are implemented in Rust.
 
 ## Requirements
 
 symhow uses [flox](https://flox.dev) to provide a pinned, reproducible
-toolchain — gcc, cmake, ninja, libclang, sqlite, nlohmann_json, and Catch2
+toolchain — Rust (cargo/rustc/rustfmt/clippy), gcc (for the vendored writer),
+libclang, sqlite, and nlohmann_json, plus cmake and ninja for test fixtures,
 all come from the project's flox environment (`.flox/`), so no system-wide
 install of any of these is required (or expected to be used). Every command
 below assumes you're running it through `flox activate` (or inside a shell
@@ -36,30 +35,23 @@ already `flox activate`d) from the repository root.
 
 ## Building
 
+Run from the `symhow/` project directory, using its flox environment:
+
 ```sh
 cd symhow
-flox activate -- bash -c '
-  cmake -S cpp -B cpp/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
-  cmake --build cpp/build -j
-'
+flox activate -- bash -c 'cd rust && cargo build --release'
+flox activate -- ./rust/target/release/symhow --version
+flox activate -- ./rust/target/release/symhow --help
 ```
 
-Or, using the checked-in CMake presets (they run from the `cpp/` directory):
+The release binary is `rust/target/release/symhow`. For a debug build, use
+`flox activate -- bash -c 'cd rust && cargo build'`; the binary is then
+`rust/target/debug/symhow`. Cargo compiles the vendored C++ writer through
+`rust/build.rs` and the `cc` crate; no CMake client build is needed.
 
-```sh
-flox activate -- bash -c 'cd cpp && cmake --preset dev && cmake --build --preset dev'
-```
-
-A `release` preset (optimized, tests off) is also available:
-`cd cpp && cmake --preset release && cmake --build --preset release`.
-
-The resulting `symhow` binary lands at `cpp/build/symhow` (or `cpp/build-release/symhow` for the
-release preset).
-
-```sh
-flox activate -- ./cpp/build/symhow --version
-flox activate -- ./cpp/build/symhow --help
-```
+Use the **symhow** flox environment, not a parent-workspace environment:
+the vendored writer needs flox's `nlohmann/json.hpp`, and libclang is loaded
+via `LIBCLANG_PATH`.
 
 ## Usage tour
 
@@ -67,11 +59,10 @@ flox activate -- ./cpp/build/symhow --help
 
 Point `symhow index` at any `compile_commands.json` (the standard clang
 compilation database format — CMake produces one automatically with
-`CMAKE_EXPORT_COMPILE_COMMANDS=ON`, already the default for this project's
-own build):
+`CMAKE_EXPORT_COMPILE_COMMANDS=ON`, as used by the synthetic test fixture):
 
 ```sh
-flox activate -- ./cpp/build/symhow index \
+flox activate -- ./rust/target/release/symhow index \
   -c /path/to/compile_commands.json \
   -o out.srctrldb --force -v
 ```
@@ -123,13 +114,62 @@ database (read-only), with a one-line stderr notice
 by `-q`/`--json`). `symhow index` itself refuses (exit 2) to overwrite an
 in-progress output without `--force`, pointing at `symhow update` instead.
 
+### Moving a database to another checkout or machine
+
+New databases store project source paths **relative to a source root**, rather
+than baking the indexing machine's absolute checkout path into every location.
+The root defaults to the discovered Git
+repository root, or the directory containing `compile_commands.json` outside
+Git. Pass `index --repo /path/to/project` to select a root explicitly (also
+supported for non-Git projects). Files outside that root, such as system and
+external dependency headers, retain absolute paths and are not relocated.
+
+After copying the database and checking out the same source tree elsewhere:
+
+```sh
+symhow --rebind /new/path/to/project -d out.srctrldb
+symhow query definition 'my::function' -d out.srctrldb --json
+
+# Or rebind and query in one invocation:
+symhow query definition 'my::function' -d out.srctrldb --rebind /new/path/to/project
+```
+
+`--rebind DIR` **persists** the new root in the database; subsequent query,
+graph, notes, and update commands use it without repeating the option.
+Query locations are resolved absolute paths under the current root, and
+`query file` accepts either the root-relative path or its resolved absolute
+path. Rebinding does not re-index or verify that the new checkout's source
+bytes match the indexed version; use the same revision for accurate locations.
+It requires an existing directory and a writable database, and refuses active
+updates or unresolved SQLite journals/WALs. Supply `-d/--db` explicitly when
+rebinding. With a command, rebinding
+happens before that command runs;
+`--help` does not change the binding. `index`, `dbdiff`, and database-independent
+`notes lint`/`notes fmt` cannot be combined with `--rebind`.
+
+Rebinding also relocates in-root compile-database/notes metadata and records
+component-aware root mappings for subsequent updates when `compile_commands.json`
+still contains old checkout paths. These mappings are separate from explicit
+`--remap` options and also accept compilation databases regenerated at the new
+root. Roots are canonicalized; if compiler arguments use a separate symlink
+alias for the checkout, pass `--remap /alias=/canonical/root` when indexing so
+those arguments remain updateable after the alias disappears.
+External dependency/toolchain paths still
+need to exist on the target machine or be explicitly overridden when updating.
+The `file.path` and `symhow_tu.path` rows remain relative after an update.
+
+Older databases without the relative-path format marker remain readable and
+updateable as before. `--rebind` refuses them with re-index guidance: their
+path-derived symbol identities cannot safely be converted by replacing a path
+prefix. Re-index once with this version to obtain a portable database.
+
 ### Updating
 
 Once a database exists, `symhow update` re-indexes only what changed since the
 last `symhow index`/`symhow update`, instead of re-indexing the whole corpus:
 
 ```sh
-flox activate -- ./cpp/build/symhow update -d out.srctrldb -v
+flox activate -- ./rust/target/release/symhow update -d out.srctrldb -v
 ```
 
 Everything else — the git repo root, the baseline commit, the
@@ -198,24 +238,24 @@ integration-test corpus; see "Testing" below):
 
 ```sh
 # Corpus-wide stats: node/edge counts by kind, file counts, recorded errors.
-flox activate -- ./cpp/build/symhow query stats -d cucs.srctrldb
+flox activate -- ./rust/target/release/symhow query stats -d cucs.srctrldb
 
 # Who derives from a base class?
-flox activate -- ./cpp/build/symhow query derived 'cucascade::memory::reservation_limit_policy' \
+flox activate -- ./rust/target/release/symhow query derived 'cucascade::memory::reservation_limit_policy' \
   -d cucs.srctrldb --depth 0
 # -> cucascade::memory::ignore_reservation_limit_policy
 #    cucascade::memory::fail_reservation_limit_policy
 #    cucascade::memory::increase_reservation_limit_policy
 
 # Who calls a given function, two hops out, as JSON?
-flox activate -- ./cpp/build/symhow query callers 'cucascade::data_batch::make' \
+flox activate -- ./rust/target/release/symhow query callers 'cucascade::data_batch::make' \
   -d cucs.srctrldb --depth 2 --json
 
 # Fuzzy symbol search.
-flox activate -- ./cpp/build/symhow query search reslimpol -d cucs.srctrldb --kind CLASS
+flox activate -- ./rust/target/release/symhow query search reslimpol -d cucs.srctrldb --kind CLASS
 
 # Where is a file, what does it look like, what's in it?
-flox activate -- ./cpp/build/symhow query file 'memory_reservation.hpp' \
+flox activate -- ./rust/target/release/symhow query file 'memory_reservation.hpp' \
   -d cucs.srctrldb --occurrences
 ```
 
@@ -223,48 +263,46 @@ The full verb list: `callers callees bases derived overrides overridden-by
 members neighbors references definition search file stats`. Run
 `symhow query --help` (or `symhow --help`) for the complete flag reference.
 
-### Graph analysis (Rust backend only)
+### Graph analysis
 
 `symhow graph <VERB>` runs whole-graph algorithms over the indexed call/usage
 graph — every FUNCTION/METHOD node plus every CALL edge, with USAGE edges
 (field/global accesses, carrying their source-line sites) on top, and the
 shared unsolved-symbol hub node excluded. This is the layer for questions
-about the *shape* of the graph rather than one symbol's neighborhood, and it
-is implemented **only in the Rust backend** (there is no C++ `Cli.cpp`
-counterpart — the C++ binary rejects `graph`): run
-`./rust/target/debug/symhow graph ...` instead of `./cpp/build/symhow ...`. The
-verb comes **before** the flags.
+about the *shape* of the graph rather than one symbol's neighborhood.
+The verb comes **before** the flags. The examples below use the debug
+binary (`cargo build`, or generated when running `cargo test`).
 
 ```sh
 # Which functions are the orchestrators / decision hubs?
 # (Brandes betweenness; raw dependency sums — divide by
 # stats.normalized_denominator = (n-1)(n-2) for a 0-1 value)
 flox activate -- ./rust/target/debug/symhow graph centrality \
-  -d cpp/build/fixture.srctrldb --top 10 --json
+  -d rust/target/tmp/symhow-fixtures/fixture.srctrldb --top 10 --json
 
 # Which load-bearing logic is reachable from the entry points?
 # (personalized PageRank; --seed is repeatable, default seeds are the
 # `main` functions then root-file functions)
 flox activate -- ./rust/target/debug/symhow graph pagerank \
-  -d cpp/build/fixture.srctrldb --seed runChain --top 10
+  -d rust/target/tmp/symhow-fixtures/fixture.srctrldb --seed runChain --top 10
 
 # What is the execution backbone from an entry point — which functions
 # run on EVERY path to a node? (call-graph dominator tree; --entry
 # defaults to the `main` heuristic — if several `main` candidates exist
 # it lists them and exits 2, pick one with --entry '#<id>')
 flox activate -- ./rust/target/debug/symhow graph dominators \
-  -d cpp/build/fixture.srctrldb --entry '#206' --dot /tmp/dominators.dot
+  -d rust/target/tmp/symhow-fixtures/fixture.srctrldb --entry '#206' --dot /tmp/dominators.dot
 
 # What does this function depend on — everything that can affect it?
 # (backward slice over USAGE+CALL edges, function granularity;
 # --lines annotates each edge with its source-line sites)
 flox activate -- ./rust/target/debug/symhow graph slice \
-  -d cpp/build/fixture.srctrldb --criterion level2 --lines
+  -d rust/target/tmp/symhow-fixtures/fixture.srctrldb --criterion level2 --lines
 
 # What's the happy path from A to B? (weighted shortest path;
 # --weight hops|calls|lines, default hops)
 flox activate -- ./rust/target/debug/symhow graph path \
-  -d cpp/build/fixture.srctrldb --from runChain --to level0 --weight calls
+  -d rust/target/tmp/symhow-fixtures/fixture.srctrldb --from runChain --to level0 --weight calls
 ```
 
 Shared flags: `-d/--db PATH` (default `$SYMHOW_DB` or `./symhow.srctrldb`),
@@ -297,11 +335,10 @@ suggestions) to symbols, stored as markdown in git so it's versioned,
 diffable, and shared across worktrees/sessions. See `docs/NOTES_DESIGN.md`
 for the full design and markdown format.
 
-Phase 1 shipped the parser/renderer (`symhow_notes` library, `cpp/include/symhow/notes/`)
-and a DB-free lint:
+The parser/renderer lives in `rust/src/notes/` and provides a DB-free lint:
 
 ```sh
-flox activate -- ./cpp/build/symhow notes lint --notes-dir notes/ --strict --json
+flox activate -- ./rust/target/release/symhow notes lint --notes-dir notes/ --strict --json
 ```
 
 Phase 2 (this codebase) adds the DB-backed cache and read paths: a
@@ -312,13 +349,13 @@ current definition body) and an overlay so querying never has to write the
 DB even when a note file changed on disk since the last sync:
 
 ```sh
-flox activate -- ./cpp/build/symhow notes sync -d symhow.srctrldb --notes-dir notes/ --json
-flox activate -- ./cpp/build/symhow notes show -d symhow.srctrldb some::qualified::name --section what
-flox activate -- ./cpp/build/symhow notes status -d symhow.srctrldb --stale --json
-flox activate -- ./cpp/build/symhow notes symbols -d symhow.srctrldb --json   # feeds cpp/scripts/symhow-notes-fake.py --symbols-json
+flox activate -- ./rust/target/release/symhow notes sync -d symhow.srctrldb --notes-dir notes/ --json
+flox activate -- ./rust/target/release/symhow notes show -d symhow.srctrldb some::qualified::name --section what
+flox activate -- ./rust/target/release/symhow notes status -d symhow.srctrldb --stale --json
+flox activate -- ./rust/target/release/symhow notes symbols -d symhow.srctrldb --json   # feeds rust/scripts/symhow-notes-fake.py --symbols-json
 ```
 
-`cpp/scripts/symhow-notes-fake.py` generates deterministic fake notes trees, either
+`rust/scripts/symhow-notes-fake.py` generates deterministic fake notes trees, either
 from a bare JSON symbol list or directly from `symhow notes symbols --json`'s
 own output; `--stale-ratio`/`--drop-hash-ratio` inject deterministic
 staleness/unanchored-note scenarios for testing.
@@ -332,17 +369,17 @@ at the end of every run so staleness tracks the code without a separate
 step:
 
 ```sh
-flox activate -- ./cpp/build/symhow notes scaffold -d symhow.srctrldb --notes-dir notes/ --all --json
-flox activate -- ./cpp/build/symhow notes scaffold -d symhow.srctrldb --notes-dir notes/ --class my::Widget
-flox activate -- ./cpp/build/symhow notes scaffold -d symhow.srctrldb --notes-dir notes/ some::qualified::function
-flox activate -- ./cpp/build/symhow notes accept -d symhow.srctrldb some::qualified::function --json
-flox activate -- ./cpp/build/symhow notes fmt --notes-dir notes/ --check
-flox activate -- ./cpp/build/symhow index -c compile_commands.json -o symhow.srctrldb --notes-dir notes/ --force
-flox activate -- ./cpp/build/symhow update -d symhow.srctrldb --json   # re-indexes, then re-syncs notes and reports newly-stale
+flox activate -- ./rust/target/release/symhow notes scaffold -d symhow.srctrldb --notes-dir notes/ --all --json
+flox activate -- ./rust/target/release/symhow notes scaffold -d symhow.srctrldb --notes-dir notes/ --class my::Widget
+flox activate -- ./rust/target/release/symhow notes scaffold -d symhow.srctrldb --notes-dir notes/ some::qualified::function
+flox activate -- ./rust/target/release/symhow notes accept -d symhow.srctrldb some::qualified::function --json
+flox activate -- ./rust/target/release/symhow notes fmt --notes-dir notes/ --check
+flox activate -- ./rust/target/release/symhow index -c compile_commands.json -o symhow.srctrldb --notes-dir notes/ --force
+flox activate -- ./rust/target/release/symhow update -d symhow.srctrldb --json   # re-indexes, then re-syncs notes and reports newly-stale
 ```
 
 The realistic demo/test path for a fresh notes tree is `scaffold --all` (real
-symbols, real hashes) → `python3 cpp/scripts/symhow-notes-fake.py --fill-existing
+symbols, real hashes) → `python3 rust/scripts/symhow-notes-fake.py --fill-existing
 notes/ --seed N` (fills `_TODO_` placeholders in place, preserving
 headings/signatures/hashes byte-for-byte) → `sync`.
 
@@ -350,10 +387,10 @@ Phase 4 (final, this codebase) embeds notes directly into the call graph and
 proves they travel with git, independent of any one `.srctrldb`:
 
 ```sh
-flox activate -- ./cpp/build/symhow query context 'my::qualified::function' -d symhow.srctrldb --json
-flox activate -- ./cpp/build/symhow query context 'my::qualified::function' -d symhow.srctrldb --notes-full   # text mode, full note body under each node
-flox activate -- ./cpp/build/symhow query context 'my::qualified::function' -d symhow.srctrldb --no-notes      # omit the "notes" field entirely
-flox activate -- ./cpp/build/symhow dbdiff a.srctrldb b.srctrldb --only note                                # compare ONLY the notes cache
+flox activate -- ./rust/target/release/symhow query context 'my::qualified::function' -d symhow.srctrldb --json
+flox activate -- ./rust/target/release/symhow query context 'my::qualified::function' -d symhow.srctrldb --notes-full   # text mode, full note body under each node
+flox activate -- ./rust/target/release/symhow query context 'my::qualified::function' -d symhow.srctrldb --no-notes      # omit the "notes" field entirely
+flox activate -- ./rust/target/release/symhow dbdiff a.srctrldb b.srctrldb --only note                                # compare ONLY the notes cache
 ```
 
 `symhow query context SYMBOL` returns the seed plus its callers/callees (to
@@ -372,20 +409,23 @@ read-a-note / write-a-note / accept-a-stale-note workflow.
 `symhow dbdiff` also grew a `note`/`note_problem` category (from `symhow_note`/
 `symhow_note_problem`, keyed by `serialized_name` -- never by `node.id` or a
 file path) and a `--only CATEGORY` flag to restrict a diff to just one
-category -- used by the `notes_cross_worktree` test (`ctest -R
-notes_cross_worktree`) to prove that two independently-`symhow index`d clones of
-the same git history end up with an identical notes cache even though their
-node/edge/location rows (which embed each worktree's own absolute paths)
-legitimately do not.
+category -- used by the `notes_cross_worktree` scenario test (run with
+`flox activate -- bash -c 'cd rust && cargo test --test scenarios notes_cross_worktree'`)
+to prove that two independently-`symhow index`d clones of
+the same git history end up with an identical notes cache. New databases also
+use root-relative source paths and path-derived identities; compilation-option
+fingerprints and external paths can still differ across machines.
 
 ## Layout
 
-- `cpp/cmake/` — CMake helper modules (`FindLibClang.cmake`, `SymhowWarnings.cmake`, `SymhowFixtures.cmake`).
-- `cpp/third_party/sourcetraildb/` — vendored (Apache-2.0) SourcetrailDB core writer library. See `PROVENANCE.md` there.
-- `cpp/include/symhow/`, `cpp/src/` — symhow's C++ reference implementation, organized by module: `common`, `model`, `index`, `db`, `query`, `out`, `cli`, `notes`.
-- `rust/` — the Rust backend: a complete, faithful migration of the C++ implementation. See "The Rust backend" below.
-- `cpp/scripts/symhow-notes-fake.py` — deterministic fake `symhow notes` markdown generator (see `docs/NOTES_DESIGN.md`).
-- `cpp/test/unit/`, `cpp/test/integration/`, `cpp/test/fixtures/` — Catch2-based tests (see "Testing" below).
+- `rust/src/` — the Rust client, organized by module: `cli`, `common`, `db`, `graph`, `index`, `model`, `notes`, `out`, `query`, `update`.
+- `rust/build.rs`, `rust/ffi/` — build wiring and the C ABI shim for the vendored writer.
+- `rust/third_party/sourcetraildb/` — vendored (Apache-2.0) SourcetrailDB core writer library. See `PROVENANCE.md` there.
+- `rust/scripts/symhow-notes-fake.py` — deterministic fake `symhow notes` markdown generator (see `docs/NOTES_DESIGN.md`).
+- `rust/tests/` — Rust integration tests, automatic fixture support, and scenario tests.
+- `rust/tests/fixtures/{synthetic,cuda}/` — hermetic source corpora; the synthetic fixture uses CMake only to generate its compilation database.
+- `rust/tests/scenarios/` — update, cross-worktree notes, portable-path, and real-corpus scenario scripts, driven by `rust/tests/scenarios.rs`.
+- `rust/tests/data/cucs_cdb_samples.json` — compile-command samples for argument-sanitizer tests.
 - `docs/JSON_SCHEMA.md` — the `--json` output contract for every `symhow index`/`symhow query`/`symhow notes`/`symhow graph` invocation.
 - `docs/KNOWN_LIMITATIONS.md` — known gaps, edge cases, and implementation notes, organized by phase.
 - `docs/NOTES_DESIGN.md` — the `symhow notes` design (markdown format, cache schema, CLI, phases).
@@ -393,46 +433,59 @@ legitimately do not.
 
 ## Testing
 
-The default test suite (89 original + several Phase 6 additions, all
-hermetic — no external corpus or CUDA toolkit required) runs via:
+The default suite runs through Cargo; no external corpus or CUDA toolkit is
+required:
 
 ```sh
-flox activate -- ctest --test-dir cpp/build --output-on-failure -LE integration
+flox activate -- bash -c 'cd rust && cargo test'
 ```
 
-A separate, `"integration"`-labeled pair of tests exercises the full
-pipeline against a real ~200-translation-unit C++/CUDA corpus
-(`/home/aaramoon/workspace/oss/cucs` by default, overridable via the
-`SYMHOW_CUCS_DIR` CMake cache variable): `cucs_integration` (a fresh `symhow index`
-of the whole corpus) and `cucs_update_integration` (`symhow update` over a real
-commit range in that same corpus, inside a throwaway clone — never the
-real checkout — verified against a fresh re-index via `symhow dbdiff`). Both are
-excluded from the default run above and skip themselves (CTest `SKIPPED`,
-not `FAILED`) on any machine that doesn't have the corpus (or `git`/
-`sqlite3`) available:
+Fixture databases are generated automatically on first use by
+`rust/tests/support/fixtures.rs`: CMake configures the synthetic fixture's
+`compile_commands.json`, then the crate's own `symhow` binary indexes it.
+Generated artifacts live under `rust/target/tmp/symhow-fixtures/`:
+
+- `fixture.srctrldb`
+- `fixture_build/compile_commands.json`
+- `cuda_fixture.srctrldb`
+
+`SYMHOW_FIXTURE_DB`, `SYMHOW_FIXTURE_CDB`, and `SYMHOW_CUDA_FIXTURE_DB`
+overrides are still honored. The fixture setup needs cmake, ninja, and
+libclang from the flox environment; no separate client build is required.
+The `update_scenario`, `notes_cross_worktree`, and `portable_paths_cli`
+scenario tests in `rust/tests/scenarios.rs` run by default.
+
+**Known baseline issue:** nine `graph_analysis`/`graph_cli` count assertions
+fail with the libclang 21 fixture shape; this was reproduced on the original
+baseline and is not a client-removal regression.
+
+Real-corpus tests are `#[ignore]` and exercise a real ~200-translation-unit
+C++/CUDA project: `cucs_integration` (`rust/tests/cucs_integration.rs`) and
+`cucs_update_integration` (`rust/tests/scenarios.rs`). They require
+`SYMHOW_CUCS_DIR`, which the flox environment sets. The update scenario uses
+a throwaway clone — never the real checkout — and compares its result with
+a fresh re-index via `symhow dbdiff`:
 
 ```sh
-flox activate -- ctest --test-dir cpp/build --output-on-failure -L integration
+flox activate -- bash -c 'cd rust && cargo test --release -- --ignored'
 ```
 
-`cucs_update_integration` is also labeled `"update"`, alongside the
-synthetic-fixture `update_scenario` test, so `ctest -L update` runs both:
+Run one scenario directly, or opt into only the real-corpus update test:
 
 ```sh
-flox activate -- ctest --test-dir cpp/build --output-on-failure -L update
+flox activate -- bash -c 'cd rust && cargo test --test scenarios update_scenario'
+flox activate -- bash -c 'cd rust && cargo test --release --test scenarios cucs_update_integration -- --ignored'
 ```
 
-`cucs_update_integration` defaults to the commit range `HEAD~1..HEAD` in
-the cucs corpus; override with `SYMHOW_CUCS_UPDATE_FROM` (read directly by the
-test script at run time, so no reconfigure is needed) for a bigger range:
+`cucs_update_integration` defaults to `HEAD~1..HEAD`; override the start
+revision with `SYMHOW_CUCS_UPDATE_FROM`:
 
 ```sh
-SYMHOW_CUCS_UPDATE_FROM=HEAD~5 flox activate -- ctest --test-dir cpp/build --output-on-failure -R cucs_update_integration
+SYMHOW_CUCS_UPDATE_FROM=HEAD~5 flox activate -- bash -c 'cd rust && cargo test --release --test scenarios cucs_update_integration -- --ignored'
 ```
 
-Both real-corpus update runs take roughly 4 minutes (three full indexes of
-the corpus plus the update itself) and print a timing/equivalence summary
-at the end.
+The real-corpus update scenario takes roughly four minutes (three full
+indexes plus the update) and prints a timing/equivalence summary at the end.
 
 What `cucs_update_integration` asserts about equivalence, in order:
 
@@ -453,81 +506,24 @@ What `cucs_update_integration` asserts about equivalence, in order:
 4. The single-file speed run's `symhow dbdiff` is checked with **no**
    `--ignore` at all and must be exactly equivalent.
 
-## The Rust backend
+### Portable-path regression
 
-`rust/` contains a complete, faithful migration of the C++ implementation
-to modern Rust (edition 2021), mirroring the C++ module structure
-one-to-one:
-
-| Rust module (under `rust/`) | C++ counterpart (under `cpp/`) |
-|---|---|
-| `rust/src/common/` (error, log, content_hash, paths, glob, process, shell) | `cpp/src/common/` |
-| `rust/src/db/` (database, writable_db, meta, enums, name_decode) — via `rusqlite` | `cpp/src/db/` (raw sqlite3) |
-| `rust/src/model/` (enums, facts, fact_sink incl. `BatchSink`/`IndexBackend`) | `cpp/src/model/` |
-| `rust/src/index/` (compile_db, arg_sanitizer, cuda_support, progress, provenance, file_registry, clangutil, name_builder, tu_parser, ast_walker — via `clang-sys` — srctrldb_backend, index_driver) | `cpp/src/index/` |
-| `rust/src/query/` (query_engine, bfs, fuzzy_matcher, symbol_resolver, results) | `cpp/src/query/` |
-| `rust/src/graph/` (loader, centrality, pagerank, dominators, slicing, path, render) | — (Rust-only; no C++ counterpart — see "Graph analysis" above) |
-| `rust/src/out/` (text_writer, json_writer, graph_writer) | `cpp/src/out/` (graph_writer is Rust-only) |
-| `rust/src/notes/` (markdown, body_hash, notes_store, scaffold, sync, note_model) | `cpp/src/notes/` |
-| `rust/src/update/` (git, git_diff, file_matcher, snapshot, invalidator, update_driver) | `cpp/src/update/` |
-| `rust/src/cli/` (mod, index_cmd, query_cmd, update_cmd, notes_cmd, dbdiff_cmd, graph_cmd) | `cpp/src/cli/` (graph_cmd is Rust-only) |
-
-The **only** C++ code the Rust binary links is the vendored
-SourcetrailDB writer (`cpp/third_party/sourcetraildb/`, which stays C++,
-untouched, as in the C++ build): `build.rs` compiles it together with a
-~200-line C ABI shim (`rust/ffi/symhow_srctrldb_bridge.cpp`) that the
-Rust indexer drives through `src/srctrldb.rs`. Reads and every
-symhow-private side table are pure Rust (`rusqlite`, linking the same
-sqlite3 the flox env provides).
-
-### Building and testing the Rust backend
+The real-CLI portability regression is part of the default scenario suite,
+and can also be run on its own:
 
 ```sh
-flox activate -- bash -c 'cd rust && cargo build && cargo test'
-flox activate -- ./rust/target/debug/symhow --version
-# symhow 0.1.0, libclang 21.1.8, sqlite 3.51.2, srctrldb v4.db25.p1
+flox activate -- bash -c 'cd rust && cargo test --test scenarios portable_paths_cli'
 ```
 
-The flox env provides the Rust toolchain (cargo/rustc/rustfmt/clippy),
-libclang (for `clang-sys`'s runtime loading, via `LIBCLANG_PATH`), and
-sqlite3 (linked by both `rusqlite` and the C++ writer shim). Run cargo with
-the **symhow** flox env active (as above, or `flox activate -d symhow` from
-`rust/`) — a parent-workspace flox env lacks `nlohmann/json.hpp`, which the
-vendored SourcetrailDB writer's build needs, and breaks the build.
-
-The Rust suite (327 tests) ports the Catch2 cases layer by layer —
-including the fixture-driven ones, which run against the same
-`cpp/build/fixture.srctrldb` the C++ suite builds (`SYMHOW_FIXTURE_DB`, default
-`../cpp/build/fixture.srctrldb`, and `SYMHOW_FIXTURE_CDB`) — plus an
-end-to-end **parity test** (`tests/parity_fixture.rs`) that indexes the
-fixture CDB with the Rust pipeline and asserts the result is logically
-identical to the C++-built database.
-
-### The parity harness
-
-`rust/parity.sh` is the full C++-vs-Rust proof. It builds both binaries,
-indexes the same `compile_commands.json` with each, then:
-
-1. Logically diffs the two `.srctrldb` files (`rust/examples/
-   parity_compare.rs`, built on the same `take_snapshot`/`diff_snapshots`
-   core as `symhow dbdiff` — id-independent, multiset-exact across all 11
-   categories), and
-2. Byte-diffs `query --json` output for a battery of verbs (normalizing
-   only the echoed db path and `elapsed_ms` timing).
-
-```sh
-flox activate -- ./rust/parity.sh   # optionally pass a different CDB
-```
-
-Current state: **green** — the two implementations produce logically
-identical databases and byte-identical query output on the synthetic
-fixture corpus.
+It indexes a temporary project, moves the checkout (removing the original),
+rebinds it twice, checks queries and notes, and verifies that an incremental
+header update agrees with a fresh index.
 
 ## License
 
 symhow's own code is licensed under the Apache License, Version 2.0 (see
 `LICENSE`). The vendored SourcetrailDB core writer library
-(`cpp/third_party/sourcetraildb/`) is also Apache-2.0, unmodified from upstream.
+(`rust/third_party/sourcetraildb/`) is also Apache-2.0, unmodified from upstream.
 symhow's own indexing and query-engine logic is an original, clean-room
 implementation, informed by (but not derived from) the externally observable
 behavior of the Sourcetrail application (which is itself GPLv3-licensed) —

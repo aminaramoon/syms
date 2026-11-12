@@ -2,14 +2,17 @@
 //! `dbdiff` smoke tests and the notes-cache tests are TODO(parity) until the
 //! CLI/notes layers land).
 
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
 use symhow::update::snapshot::{diff_snapshots, take_snapshot, Snapshot, SnapshotOptions};
 
 fn fixture_db_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../cpp/build/fixture.srctrldb".to_string())
+    fixtures::fixture_db()
 }
 
 fn cuda_fixture_db_path() -> String {
-    std::env::var("SYMHOW_CUDA_FIXTURE_DB").unwrap_or_else(|_| "../cpp/build/cuda_fixture.srctrldb".to_string())
+    fixtures::cuda_fixture_db()
 }
 
 #[test]

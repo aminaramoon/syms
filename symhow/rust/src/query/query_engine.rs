@@ -66,7 +66,7 @@ impl<'a> QueryEngine<'a> {
         db.run("SELECT id, path FROM file", [], |row| {
             self.file_by_id.insert(
                 row.get::<_, i64>(0)?,
-                row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                db.source_paths().decode(&row.get::<_, Option<String>>(1)?.unwrap_or_default()),
             );
             Ok(())
         })
@@ -452,7 +452,7 @@ impl<'a> QueryEngine<'a> {
             "SELECT path, language, indexed, complete, line_count FROM file WHERE id = ?",
             [file_id],
             |row| {
-                result.path = row.get::<_, Option<String>>(0)?.unwrap_or_default();
+                result.path = self.db.source_paths().decode(&row.get::<_, Option<String>>(0)?.unwrap_or_default());
                 result.language = row.get::<_, Option<String>>(1)?.unwrap_or_default();
                 result.indexed = row.get::<_, i32>(2)? != 0;
                 result.complete = row.get::<_, i32>(3)? != 0;

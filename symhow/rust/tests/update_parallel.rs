@@ -1,7 +1,6 @@
 //! Port of test/unit/test_parallel_fixture.cpp: `--parallel`/`-j`
-//! equivalence tests -- indexes the real synthetic fixture CDB (env
-//! SYMHOW_FIXTURE_CDB, falling back to ../cpp/build/fixture_build/
-//! compile_commands.json) through run_index() with different `parallel`
+//! equivalence tests -- indexes the real synthetic fixture CDB
+//! (tests/support/fixtures.rs; env SYMHOW_FIXTURE_CDB overrides) through run_index() with different `parallel`
 //! values into separate temp databases, and asserts the RESULT is
 //! identical regardless of N -- both at the logical-snapshot level
 //! (diff_snapshots, id-independent) and, crucially, at the raw sqlite
@@ -10,12 +9,15 @@
 //! ids to) TUs in the exact same CDB order no matter how many worker
 //! threads raced to produce them.
 
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
 use symhow::db::Database;
 use symhow::index::index_driver::{run_index, IndexRunOptions};
 use symhow::update::snapshot::{diff_snapshots, take_snapshot, Snapshot, SnapshotOptions};
 
 fn fixture_cdb_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_CDB").unwrap_or_else(|_| "../cpp/build/fixture_build/compile_commands.json".to_string())
+    fixtures::fixture_cdb()
 }
 
 fn test_output_dir(name: &str) -> String {

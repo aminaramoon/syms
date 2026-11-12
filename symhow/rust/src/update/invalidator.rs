@@ -39,8 +39,9 @@ fn create_path_temp_table(db: &WritableDb, table_name: &str) -> Result<()> {
 
 fn insert_paths(db: &WritableDb, table_name: &str, paths: &[String]) -> Result<()> {
     let sql = format!("INSERT OR IGNORE INTO {}(path) VALUES(?1)", table_name);
+    let source_paths = crate::common::paths::SourcePaths::from_conn(db.conn());
     for p in paths {
-        db.exec_bound(&sql, [p])?;
+        db.exec_bound(&sql, [source_paths.encode(p)])?;
     }
     Ok(())
 }
@@ -109,11 +110,12 @@ pub fn compute_clear_set(
          AND e.source_node_id NOT IN (SELECT id FROM symhow_clear));",
     )? as u32;
 
+    let source_paths = crate::common::paths::SourcePaths::from_conn(db.conn());
     db.query("SELECT c.id, f.path FROM symhow_clear c JOIN file f ON f.id = c.id", |row| {
         let id: i64 = row.get(0)?;
         let path: Option<String> = row.get(1)?;
         plan.cleared_file_ids.push(id);
-        plan.cleared_paths.push(path.unwrap_or_default());
+        plan.cleared_paths.push(source_paths.decode(&path.unwrap_or_default()));
         Ok(())
     })?;
 

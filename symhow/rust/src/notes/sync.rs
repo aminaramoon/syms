@@ -379,7 +379,7 @@ pub fn sync_notes(db_path: &str, notes_dir: &str, strict: bool) -> Result<SyncRe
                     lexical_normalize(&format!("{}/{}", repo_root_for_orphan_check, source_path))
                 };
                 let mut exists = false;
-                rdb.run("SELECT 1 FROM file WHERE path = ?", [abs_source.as_str()], |_row| {
+                rdb.run("SELECT 1 FROM file WHERE path = ?", [rdb.source_paths().encode(&abs_source)], |_row| {
                     exists = true;
                     Ok(())
                 })?;

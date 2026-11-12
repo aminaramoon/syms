@@ -6,6 +6,9 @@
 //! name, required top-level keys, and that every "kind" field anywhere in
 //! the tree is a JSON string (never a number).
 
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
 use std::collections::HashMap;
 
 use serde_json::{json, Value};
@@ -17,7 +20,7 @@ use symhow::query::{
 };
 
 fn fixture_db_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../cpp/build/fixture.srctrldb".to_string())
+    fixtures::fixture_db()
 }
 
 fn resolve_one(db: &Database, spec: &str) -> i64 {

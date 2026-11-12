@@ -2,6 +2,9 @@
 //! `compute_clear_set`/`invalidate`/`sweep_orphans` against private copies
 //! of the synthetic fixture database.
 
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
 use std::collections::HashSet;
 
 use symhow::common::paths::normalize;
@@ -10,7 +13,7 @@ use symhow::db::WritableDb;
 use symhow::update::invalidator::{compute_clear_set, invalidate, sweep_orphans};
 
 fn fixture_db_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../cpp/build/fixture.srctrldb".to_string())
+    fixtures::fixture_db()
 }
 
 fn copy_fixture(tag: &str) -> String {
@@ -25,7 +28,7 @@ fn all_tu_paths(db_path: &str) -> Vec<String> {
     let mut paths = Vec::new();
     db.run("SELECT path FROM symhow_tu", [], |row| {
         if let Some(p) = row.get::<_, Option<String>>(0)? {
-            paths.push(p);
+            paths.push(db.source_paths().decode(&p));
         }
         Ok(())
     })
@@ -36,7 +39,7 @@ fn all_tu_paths(db_path: &str) -> Vec<String> {
 /// Resolves a fixture source path (relative to test/fixtures/synthetic) to
 /// its exact `file.path` spelling, matched via normalization.
 fn resolve_fixture_path(db_path: &str, relative_to_synthetic: &str) -> String {
-    let synthetic = std::path::Path::new("../cpp/test/fixtures/synthetic").join(relative_to_synthetic);
+    let synthetic = fixtures::synthetic_src().join(relative_to_synthetic);
     let wanted = normalize(&synthetic.to_string_lossy());
 
     let db = Database::open(db_path, 0).unwrap();
@@ -46,8 +49,9 @@ fn resolve_fixture_path(db_path: &str, relative_to_synthetic: &str) -> String {
             return Ok(());
         }
         if let Some(p) = row.get::<_, Option<String>>(0)? {
-            if normalize(&p) == wanted {
-                found = p;
+            let physical = db.source_paths().decode(&p);
+            if normalize(&physical) == wanted {
+                found = physical;
             }
         }
         Ok(())
@@ -150,7 +154,7 @@ fn invalidate_chain_plan_clears_facts_and_stays_fk_consistent() {
     after
         .run(
             "SELECT COUNT(*) FROM source_location l JOIN file f ON f.id = l.file_node_id WHERE f.path = ?1",
-            [&chain_path],
+            [after.source_paths().encode(&chain_path)],
             |row| {
                 remaining_locations = row.get(0)?;
                 Ok(())

@@ -1,10 +1,12 @@
 # Graph-algorithm inputs from the `.srctrldb` schema
 
+> The C++ client was removed; historical C++ source/test references below correspond to the Rust modules under `rust/src/` and tests under `rust/tests/`.
+
 Task-1 deliverable: what the Sourcetrail-schema SQLite database written by
 `symhow index` can (and cannot) supply for the five planned graph analyses.
 Everything below was verified against the real databases
-`cpp/build/fixture.srctrldb` (C++ synthetic corpus, 83 nodes / 106 edges) and
-`cpp/build/cuda_fixture.srctrldb` (CUDA corpus, 27 nodes / 29 edges), and
+`rust/target/tmp/symhow-fixtures/fixture.srctrldb` (C++ synthetic corpus, 83 nodes / 106 edges) and
+`rust/target/tmp/symhow-fixtures/cuda_fixture.srctrldb` (CUDA corpus, 27 nodes / 29 edges), and
 cross-checked against `rust/src/db/{database,enums,name_decode,meta}.rs`,
 `rust/src/query/{bfs,query_engine,results}.rs`, and the C++ indexer
 (`cpp/src/index/AstWalker.cpp`, `cpp/src/model/Facts.h`).
@@ -68,7 +70,7 @@ bulk edge scans will be fast.
 
 ## 2. Enum tables (integer codes actually on disk)
 
-From `rust/src/db/enums.rs` (mirrors `cpp/third_party/sourcetraildb/include/*.h`).
+From `rust/src/db/enums.rs` (mirrors `rust/third_party/sourcetraildb/include/*.h`).
 All kinds are **single bits**; symhow filters with `(col & mask) != 0`
 (see `bfs.rs:120`), so reuse that idiom.
 
@@ -145,7 +147,7 @@ The existing query engine treats `l.type IN (0,1,3,9)` as reference-worthy
 
 ## 3. `serialized_name` decoding (needed for every node label)
 
-Format (inverse implemented in `rust/src/db/name_decode.rs`; C++ twin
+Format (inverse implemented in `rust/src/db/name_decode.rs`; historical C++ twin
 `symhow::db::NameDecode`):
 
 ```
@@ -378,7 +380,7 @@ feature required).
 
 ## 6. Fixture ground truth for tests
 
-Useful small graphs inside `cpp/build/fixture.srctrldb` (CALL edges), ideal for
+Useful small graphs inside `rust/target/tmp/symhow-fixtures/fixture.srctrldb` (CALL edges), ideal for
 unit tests of the new verbs:
 
 ```
@@ -434,7 +436,7 @@ JOIN (SELECT 1 v, 'MEMBER' name UNION ALL SELECT 2,'TYPE_USAGE'
 Everything above is the study; the study is now implemented. The five
 algorithms of §5 live in `rust/src/graph/` (loader, centrality, pagerank,
 dominators, slicing, path, render — petgraph-backed, hand-rolled Brandes),
-exposed as the Rust-only `symhow graph <verb>` CLI subcommand
+exposed as the `symhow graph <verb>` CLI subcommand
 (`rust/src/cli/graph_cmd.rs`, JSON/DOT in `rust/src/out/graph_writer.rs`,
 schemas `symhow.graph.centrality/1` … `symhow.graph.path/1` in
 `docs/JSON_SCHEMA.md`). The open questions above were resolved as follows:
@@ -445,7 +447,7 @@ weight schemes are exactly `--weight {hops,calls,lines}` (#4); slicing stays
 function-granularity, with `--lines` exposing per-edge source-line sites
 (#5); loading stays behind the loader module for a future CSR swap (#6).
 Tests are in `rust/tests/graph_analysis.rs` and `rust/tests/graph_cli.rs`
-(full Rust suite: 327 passed). One known caveat discovered in
+(original verification: 327 tests passed; see README for current baseline caveats). One known caveat discovered in
 implementation: personalized PageRank with `--damping 1.0` (no teleport
 term) provably oscillates on graphs with dangling nodes and runs to
 `max_iterations`; the default damping 0.85 is unaffected.

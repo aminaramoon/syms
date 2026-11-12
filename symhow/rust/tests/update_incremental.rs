@@ -3,13 +3,16 @@
 //! fixture database (build/fixture.srctrldb, via env SYMHOW_FIXTURE_DB --
 //! the same env-var pattern as tests/query_fixture.rs).
 
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
 use std::collections::BTreeSet;
 
 use symhow::db::Database;
 use symhow::index::provenance::{read_provenance, K_WALKER_VERSION};
 
 fn fixture_db_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../cpp/build/fixture.srctrldb".to_string())
+    fixtures::fixture_db()
 }
 
 fn scalar_i64(db: &Database, sql: &str) -> i64 {

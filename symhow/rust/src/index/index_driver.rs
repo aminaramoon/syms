@@ -839,6 +839,20 @@ pub fn run_index(options: &IndexRunOptions, summary_out: Option<&mut IndexSummar
         return 1;
     }
 
+    // A new database chooses its root once; append must retain the stored
+    // marker (including the absence of a marker on legacy databases).
+    if !options.append_to_existing {
+        let parent = crate::cli::absolute_parent(&options.compile_commands_path);
+        let root = options.provenance.as_ref()
+            .filter(|p| !p.repo_root.is_empty()).map(|p| p.repo_root.clone())
+            .or_else(|| crate::update::git::top_level(&parent))
+            .unwrap_or(parent);
+        if let Err(e) = backend.set_source_root(&crate::common::paths::normalize(&root)) {
+            eprintln!("symhow index: failed to set source root: {}", e.0);
+            return 1;
+        }
+    }
+
     // Provenance (+ symhow_index_in_progress="1") up front: written via its
     // own tiny WritableDb transaction, BEFORE the writer's first transaction
     // -- so it's durable even if this run is interrupted before a single TU
@@ -857,6 +871,7 @@ pub fn run_index(options: &IndexRunOptions, summary_out: Option<&mut IndexSummar
         include_globs: options.db_options.include_globs.clone(),
         exclude_globs: options.db_options.exclude_globs.clone(),
         system_file_rows: options.system_file_rows,
+        source_root: backend.source_root().to_string(),
     };
 
     let start_time = Instant::now();

@@ -1,11 +1,14 @@
 //! Port of test/unit/test_bfs.cpp (fixture-dependent).
 
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
 use symhow::db::enums::edge_kind;
 use symhow::db::Database;
 use symhow::query::{run_bfs, resolve_symbol, BfsParams, BfsResult, ResolveOutcome};
 
 fn fixture_db_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../cpp/build/fixture.srctrldb".to_string())
+    fixtures::fixture_db()
 }
 
 fn resolve_one(db: &Database, spec: &str) -> i64 {

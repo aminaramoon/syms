@@ -130,13 +130,15 @@ fn assert_database_contents(out: &std::path::Path, tu_paths: &[String], expected
     let fingerprints = query_count(&conn, "symhow_file_fingerprint");
     assert!(fingerprints >= 2, "expected at least 2 fingerprints, got {}", fingerprints);
 
+    // Decode portable storage before comparing the physical CDB paths.
+    let source_paths = symhow::common::paths::SourcePaths::from_conn(&conn);
     // symhow_tu: exactly one row per CDB path, with a resolved file node id.
     let tu_rows: Vec<(String, Option<i64>, String)> = conn
         .prepare("SELECT path, file_node_id, status FROM symhow_tu ORDER BY path;")
         .unwrap()
         .query_map([], |row| {
             Ok((
-                row.get::<_, String>(0)?,
+                source_paths.decode(&row.get::<_, String>(0)?),
                 row.get::<_, Option<i64>>(1)?,
                 row.get::<_, String>(2)?,
             ))

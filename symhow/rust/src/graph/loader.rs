@@ -257,7 +257,7 @@ pub fn load_call_graph(db: &Database, options: &GraphLoadOptions) -> Result<Call
         |row| {
             file_paths.insert(
                 row.get::<_, i64>(0)?,
-                row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                db.source_paths().decode(&row.get::<_, Option<String>>(1)?.unwrap_or_default()),
             );
             Ok(())
         },

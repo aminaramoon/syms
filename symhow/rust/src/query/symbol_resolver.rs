@@ -146,11 +146,11 @@ pub fn resolve_symbol(
 
 pub fn resolve_file_path(db: &Database, spec: &str) -> Result<ResolveResult> {
     let mut exact = Vec::new();
-    db.run("SELECT id, path FROM file WHERE path = ?", [spec], |row| {
+    db.run("SELECT id, path FROM file WHERE path = ?", [db.source_paths().encode(spec)], |row| {
         exact.push(ResolvedSymbol {
             id: row.get::<_, i64>(0)?,
             kind: node_kind::FILE,
-            serialized_name: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            serialized_name: db.source_paths().decode(&row.get::<_, Option<String>>(1)?.unwrap_or_default()),
         });
         Ok(())
     })?;
@@ -159,11 +159,11 @@ pub fn resolve_file_path(db: &Database, spec: &str) -> Result<ResolveResult> {
     }
 
     let mut suffix = Vec::new();
-    db.run("SELECT id, path FROM file WHERE path LIKE '%' || ?", [spec], |row| {
+    db.run("SELECT id, path FROM file WHERE path LIKE '%' || ?", [db.source_paths().encode(spec)], |row| {
         suffix.push(ResolvedSymbol {
             id: row.get::<_, i64>(0)?,
             kind: node_kind::FILE,
-            serialized_name: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            serialized_name: db.source_paths().decode(&row.get::<_, Option<String>>(1)?.unwrap_or_default()),
         });
         Ok(())
     })?;

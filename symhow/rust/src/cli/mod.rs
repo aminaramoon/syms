@@ -14,6 +14,7 @@ pub mod graph_cmd;
 pub mod index_cmd;
 pub mod notes_cmd;
 pub mod query_cmd;
+pub mod rebind;
 pub mod update_cmd;
 
 use crate::index::clangutil::{cx_string_to_string, ensure_libclang_loaded};
@@ -214,6 +215,12 @@ Exit codes: 0 ok, 1 usage error, 2 ambiguous symbol / refused (legacy db / updat
 /// Runs the symhow CLI over `args` (where `args[0]` is argv[0], the program
 /// name as invoked). Returns the process exit code. Mirrors Cli.cpp's run().
 pub fn run(args: &[String]) -> i32 {
+    let args = match rebind::preprocess(args) {
+        Ok(Some(args)) => args,
+        Ok(None) => return 0,
+        Err(code) => return code,
+    };
+    let args = args.as_slice();
     let program_name = args
         .first()
         .cloned()

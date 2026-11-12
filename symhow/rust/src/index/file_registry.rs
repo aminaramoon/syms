@@ -41,6 +41,8 @@ pub struct FileRegistryOptions {
     pub include_globs: Vec<String>,
     pub exclude_globs: Vec<String>,
     pub system_file_rows: SystemFileRows,
+    /// Bound physical source root; empty preserves legacy absolute identities.
+    pub source_root: String,
 }
 
 impl Default for FileRegistryOptions {
@@ -49,6 +51,7 @@ impl Default for FileRegistryOptions {
             include_globs: Vec::new(),
             exclude_globs: Vec::new(),
             system_file_rows: SystemFileRows::Direct,
+            source_root: String::new(),
         }
     }
 }
@@ -84,6 +87,10 @@ impl FileRegistry {
         }
     }
 
+    pub fn source_root(&self) -> &str {
+        &self.options.source_root
+    }
+
     fn matches_any(globs: &[String], path: &str) -> bool {
         globs.iter().any(|g| matches(g, path))
     }
@@ -109,18 +116,35 @@ impl FileRegistry {
         system: bool,
         content_hash: Option<String>,
     ) -> &Info {
-        let indexed = self.is_indexed(system, path);
-        self.files.entry(key).or_insert_with(|| Info {
-            path: path.to_string(),
+        if !self.files.contains_key(&key) {
+            let info = self.new_info(path, system, content_hash);
+            self.files.insert(key, info);
+        }
+        &self.files[&key]
+    }
+
+    /// The already-resolved Info for `key`, if it was seen before.
+    pub fn get(&self, key: FileKey) -> Option<&Info> {
+        self.files.get(&key)
+    }
+
+    /// First-sight resolution. Portable databases store canonical paths
+    /// (matching the canonical source root); legacy ones keep libclang's
+    /// spelling. Canonicalization hits the filesystem, so never per call.
+    fn new_info(&self, path: &str, system: bool, content_hash: Option<String>) -> Info {
+        let path = if !self.options.source_root.is_empty() && !path.is_empty() {
+            crate::common::paths::normalize(path)
+        } else {
+            path.to_string()
+        };
+        let indexed = self.is_indexed(system, &path);
+        Info {
+            path,
             system,
             indexed,
             direct_include_of_indexed: false,
-            content_hash: if indexed {
-                content_hash.unwrap_or_default()
-            } else {
-                String::new()
-            },
-        })
+            content_hash: if indexed { content_hash.unwrap_or_default() } else { String::new() },
+        }
     }
 
     /// Records that `file` was seen as the direct #include target of an
@@ -136,18 +160,11 @@ impl FileRegistry {
         system: bool,
         content_hash: Option<String>,
     ) -> &Info {
-        let indexed = self.is_indexed(system, path);
-        let info = self.files.entry(key).or_insert_with(|| Info {
-            path: path.to_string(),
-            system,
-            indexed,
-            direct_include_of_indexed: false,
-            content_hash: if indexed {
-                content_hash.unwrap_or_default()
-            } else {
-                String::new()
-            },
-        });
+        if !self.files.contains_key(&key) {
+            let info = self.new_info(path, system, content_hash);
+            self.files.insert(key, info);
+        }
+        let info = self.files.get_mut(&key).unwrap();
         info.direct_include_of_indexed = true;
         info
     }

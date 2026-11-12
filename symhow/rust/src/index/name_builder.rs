@@ -209,18 +209,18 @@ fn is_local_scope(canonical: CXCursor) -> bool {
         || (spelling == "main" && parent_is_tu)
 }
 
-fn disambiguator_for(canonical: CXCursor) -> String {
+fn disambiguator_for(canonical: CXCursor, source_root: &str) -> String {
     let loc = unsafe { clang_getCursorLocation(canonical) };
     let mut file: CXFile = std::ptr::null_mut();
     let mut line: u32 = 0;
     let mut col: u32 = 0;
     let mut offset: u32 = 0;
     unsafe { clang_getFileLocation(loc, &mut file, &mut line, &mut col, &mut offset) };
-    let decl_file = normalized_file_name(file);
+    let decl_file = paths::encode_source_path(&normalized_file_name(file), source_root);
     format!(" [{}#{}]", basename_of(&decl_file), hex8(fnv1a64(&decl_file)))
 }
 
-fn normalize_lambda_paths_in_text(text: &str) -> String {
+fn normalize_lambda_paths_in_text(text: &str, source_root: &str) -> String {
     static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let re = RE.get_or_init(|| Regex::new(r"\(lambda at ([^():]+):(\d+):(\d+)\)").unwrap());
     let mut result = String::with_capacity(text.len());
@@ -230,7 +230,7 @@ fn normalize_lambda_paths_in_text(text: &str) -> String {
         result.push_str(&text[last_pos..m.start()]);
         result.push_str(&format!(
             "(lambda at {}:{}:{})",
-            paths::normalize(&caps[1]),
+            paths::encode_source_path(&paths::normalize(&caps[1]), source_root),
             &caps[2],
             &caps[3]
         ));
@@ -240,34 +240,44 @@ fn normalize_lambda_paths_in_text(text: &str) -> String {
     result
 }
 
-fn identity_element(canonical: CXCursor) -> NameElement {
+fn identity_element(canonical: CXCursor, source_root: &str) -> NameElement {
     let mut el = element_for_cursor(canonical);
     if is_local_scope(canonical) {
-        el.postfix.push_str(&disambiguator_for(canonical));
+        el.postfix.push_str(&disambiguator_for(canonical, source_root));
     }
-    el.prefix = normalize_lambda_paths_in_text(&el.prefix);
-    el.name = normalize_lambda_paths_in_text(&el.name);
-    el.postfix = normalize_lambda_paths_in_text(&el.postfix);
+    el.prefix = normalize_lambda_paths_in_text(&el.prefix, source_root);
+    el.name = normalize_lambda_paths_in_text(&el.name, source_root);
+    el.postfix = normalize_lambda_paths_in_text(&el.postfix, source_root);
     el
 }
 
 /// Builds the `Name` hierarchy for `cursor` (canonicalized internally).
 pub fn build_name(cursor: CXCursor) -> Name {
+    build_name_with_root(cursor, "")
+}
+
+/// Root-relative identities for portable databases; empty root preserves legacy names.
+pub fn build_name_with_root(cursor: CXCursor, source_root: &str) -> Name {
     let canonical = unsafe { clang_getCanonicalCursor(cursor) };
 
     let mut name = Name::new("::");
     for ancestor in ancestor_chain_root_to_leaf(canonical) {
-        name.elements.push(identity_element(ancestor));
+        name.elements.push(identity_element(ancestor, source_root));
     }
-    name.elements.push(identity_element(canonical));
+    name.elements.push(identity_element(canonical, source_root));
     name
 }
 
 /// Computes the SymbolKey + Name for `cursor`.
 pub fn build_symbol_identity(cursor: CXCursor) -> SymbolIdentity {
+    build_symbol_identity_with_root(cursor, "")
+}
+
+/// As `build_symbol_identity`, using root-relative path components.
+pub fn build_symbol_identity_with_root(cursor: CXCursor, source_root: &str) -> SymbolIdentity {
     let canonical = unsafe { clang_getCanonicalCursor(cursor) };
 
-    let mut identity = SymbolIdentity { key: String::new(), name: build_name(canonical) };
+    let mut identity = SymbolIdentity { key: String::new(), name: build_name_with_root(canonical, source_root) };
 
     let mut usr = cx_string_to_string(unsafe { clang_getCursorUSR(canonical) });
     if usr.is_empty() {
@@ -280,7 +290,7 @@ pub fn build_symbol_identity(cursor: CXCursor) -> SymbolIdentity {
         usr = format!(
             "no-usr:{}:{}:{}",
             unsafe { clang_getCursorKind(canonical) } as i32,
-            normalized_file_name(file),
+            paths::encode_source_path(&normalized_file_name(file), source_root),
             offset
         );
     }
@@ -294,7 +304,7 @@ pub fn build_symbol_identity(cursor: CXCursor) -> SymbolIdentity {
         let mut offset: u32 = 0;
         unsafe { clang_getFileLocation(loc, &mut file, &mut line, &mut col, &mut offset) };
         identity.key.push('\u{1f}');
-        identity.key.push_str(&normalized_file_name(file));
+        identity.key.push_str(&paths::encode_source_path(&normalized_file_name(file), source_root));
     }
 
     identity
@@ -302,6 +312,11 @@ pub fn build_symbol_identity(cursor: CXCursor) -> SymbolIdentity {
 
 /// Name for a local symbol: "<canonical decl file path>:<line>:<col>".
 pub fn build_local_symbol_name(cursor: CXCursor) -> String {
+    build_local_symbol_name_with_root(cursor, "")
+}
+
+/// Local-symbol locations use the same logical path as file nodes.
+pub fn build_local_symbol_name_with_root(cursor: CXCursor, source_root: &str) -> String {
     let canonical = unsafe { clang_getCanonicalCursor(cursor) };
     let loc = unsafe { clang_getCursorLocation(canonical) };
     let mut file: CXFile = std::ptr::null_mut();
@@ -309,6 +324,84 @@ pub fn build_local_symbol_name(cursor: CXCursor) -> String {
     let mut col: u32 = 0;
     let mut offset: u32 = 0;
     unsafe { clang_getFileLocation(loc, &mut file, &mut line, &mut col, &mut offset) };
-    let path = if file.is_null() { "<unknown>".to_string() } else { normalized_file_name(file) };
+    let path = if file.is_null() { "<unknown>".to_string() } else {
+        paths::encode_source_path(&normalized_file_name(file), source_root)
+    };
     format!("{}:{}:{}", path, line, col)
+}
+#[cfg(test)]
+mod portable_identity_tests {
+    use super::*;
+    use crate::index::ast_walker::AstWalker;
+    use crate::index::file_registry::{FileRegistry, FileRegistryOptions};
+    use crate::index::tu_parser::parse_tu;
+    use crate::model::{BatchSink, SymbolKind};
+
+    fn identities(source: &std::path::Path, root: &str) -> (Vec<(String, String)>, Vec<String>) {
+        let parsed = parse_tu(&[
+            "-x".into(), "c++".into(), "-std=c++17".into(),
+            source.to_string_lossy().into_owned(),
+        ]);
+        assert!(parsed.ok, "{:?}", parsed.diagnostics);
+        let mut files = FileRegistry::new(FileRegistryOptions {
+            source_root: root.to_string(),
+            ..Default::default()
+        });
+        let mut sink = BatchSink::default();
+        AstWalker::new(parsed.tu.get(), &mut files, &mut sink).run();
+        let batch = sink.batch();
+        let mut symbols: Vec<_> = batch.symbols.iter()
+            .filter(|s| s.kind != SymbolKind::File)
+            .map(|s| (s.key.clone(), format!("{:?}", s.name)))
+            .collect();
+        symbols.sort();
+        let mut locals = batch.local_symbols.clone();
+        locals.sort();
+        (symbols, locals)
+    }
+
+    #[test]
+    fn identities_are_root_relative_and_context_is_not_cached() {
+        let temp = std::env::temp_dir().join(format!("symhow_portable_names_{}", std::process::id()));
+        let first = temp.join("first");
+        let second = temp.join("second");
+        for root in [&first, &second] {
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            std::fs::write(root.join("src/unit.cpp"),
+                "template<class F> int invoke(F f) { return f(); }\n\
+                 namespace { static int local(int v) { return invoke([v]() { return v; }); } }\n\
+                 int main() { return local(3); }\n").unwrap();
+        }
+        let first = first.canonicalize().unwrap();
+        let second = second.canonicalize().unwrap();
+        let first_file = first.join("src/unit.cpp");
+        let a = identities(&first_file, first.to_str().unwrap());
+        let b = identities(&second.join("src/unit.cpp"), second.to_str().unwrap());
+        assert!(!a.0.is_empty());
+        assert!(!a.1.is_empty());
+        assert_eq!(a, b, "identities differ between relocated source trees");
+        assert!(a.1.iter().all(|n| n.starts_with("src/unit.cpp:")));
+
+        // Reuse the same physical-file cache with a different explicit root.
+        let wider = identities(&first_file, temp.to_str().unwrap());
+        assert!(wider.1.iter().all(|n| n.starts_with("first/src/unit.cpp:")));
+        assert_ne!(a, wider);
+        let legacy = identities(&first_file, "");
+        assert!(legacy.1.iter().all(|n| n.starts_with(first_file.to_str().unwrap())));
+        assert_ne!(a, legacy);
+        assert_eq!(a, identities(&first_file, first.to_str().unwrap()));
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn lambda_paths_use_component_containment() {
+        assert_eq!(
+            normalize_lambda_paths_in_text("(lambda at /project/src/a.cpp:2:3)", "/project"),
+            "(lambda at src/a.cpp:2:3)"
+        );
+        assert_eq!(
+            normalize_lambda_paths_in_text("(lambda at /project-other/a.cpp:2:3)", "/project"),
+            "(lambda at /project-other/a.cpp:2:3)"
+        );
+    }
 }

@@ -11,6 +11,9 @@
 //! `symhow query stats` CLI-verb smoke check is left to the CLI layer's
 //! own tests.
 
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
 use std::path::Path;
 
 use symhow::db::meta::get_meta;
@@ -21,11 +24,11 @@ use symhow::update::snapshot::{diff_snapshots, take_snapshot, Snapshot, Snapshot
 use symhow::update::{run_update, UpdateRunOptions, UpdateSummary};
 
 fn fixture_db_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_DB").unwrap_or_else(|_| "../cpp/build/fixture.srctrldb".to_string())
+    fixtures::fixture_db()
 }
 
 fn fixture_cdb_path() -> String {
-    std::env::var("SYMHOW_FIXTURE_CDB").unwrap_or_else(|_| "../cpp/build/fixture_build/compile_commands.json".to_string())
+    fixtures::fixture_cdb()
 }
 
 fn test_output_dir(name: &str) -> String {

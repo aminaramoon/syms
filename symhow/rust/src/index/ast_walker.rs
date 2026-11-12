@@ -16,7 +16,7 @@ use crate::model::{
 
 use super::clangutil::file_name;
 use super::file_registry::{Info as FileInfo, FileKey, FileRegistry};
-use super::name_builder::{build_local_symbol_name, build_symbol_identity};
+use super::name_builder::{build_local_symbol_name_with_root, build_symbol_identity_with_root};
 
 fn is_record_like_kind(k: CXCursorKind) -> bool {
     k == CXCursor_StructDecl
@@ -223,6 +223,11 @@ impl<'a> AstWalker<'a> {
 
     fn file_info(&mut self, file: CXFile) -> FileInfo {
         let key = Self::file_key(file);
+        // Resolve path/system/content hash only at first sight of a file
+        // (like the C++ mutableInfoFor); this runs for every cursor.
+        if let Some(info) = self.files.get(key) {
+            return info.clone();
+        }
         let path = file_name(file);
         let system = self.file_is_system(file);
         let content_hash = if system {
@@ -260,10 +265,10 @@ impl<'a> AstWalker<'a> {
                 // the included file's full info (including its content hash
                 // when indexed) is resolved NOW, at first sight of the key.
                 let key = Self::file_key(included_file);
-                let path = file_name(included_file);
-                let system = self.file_is_system(included_file);
-                let content_hash = if system { None } else { Some(self.file_content_hash(included_file)) };
-                self.files.mark_direct_include_of_indexed(key, &path, system, content_hash);
+                if self.files.get(key).is_none() {
+                    self.file_info(included_file);
+                }
+                self.files.mark_direct_include_of_indexed(key, "", false, None);
             }
         }
 
@@ -457,7 +462,7 @@ impl<'a> AstWalker<'a> {
     }
 
     fn handle_local_decl(&mut self, c: CXCursor) {
-        let name = build_local_symbol_name(c);
+        let name = build_local_symbol_name_with_root(c, self.files.source_root());
         let id = self.sink.local_symbol(name);
         self.emit_occurrence_for_range(ElementClass::LocalSymbol, id, unsafe { clang_Cursor_getSpellingNameRange(c, 0, 0) }, LocationKind::LocalSymbol);
     }
@@ -623,7 +628,7 @@ impl<'a> AstWalker<'a> {
         }
 
         if is_local_decl_kind(referenced) {
-            let name = build_local_symbol_name(referenced);
+            let name = build_local_symbol_name_with_root(referenced, self.files.source_root());
             let id = self.sink.local_symbol(name);
             self.emit_occurrence_for_range(ElementClass::LocalSymbol, id, range, LocationKind::LocalSymbol);
             return;
@@ -716,7 +721,7 @@ impl<'a> AstWalker<'a> {
     }
 
     fn register_one(&mut self, canonical_cursor: CXCursor) -> LocalId {
-        let identity = build_symbol_identity(canonical_cursor);
+        let identity = build_symbol_identity_with_root(canonical_cursor, self.files.source_root());
 
         let fact = SymbolFact {
             key: identity.key,

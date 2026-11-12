@@ -3,7 +3,7 @@
 //! `symhow::index::index_driver::run_index`.
 
 use crate::cli::{
-    absolute_lexically_normal, absolute_parent, cpp_stoi, cpp_stol, print_help, symhow_version,
+    absolute_parent, cpp_stoi, cpp_stol, print_help, symhow_version,
     trim_trailing_newline, utc_timestamp_now,
 };
 use crate::common::process;
@@ -24,10 +24,9 @@ fn print_index_usage_error(message: &str) {
 
 /// Resolves the git repo root/HEAD/dirty-paths for `cdb_path`'s provenance.
 /// If `repo_dir_flag` is non-empty, that's used as the repo root directly
-/// (still validated via `git -C <dir> rev-parse --show-toplevel`); otherwise
-/// the parent directory of `cdb_path` is used as the starting point for git
-/// discovery. If git isn't on PATH or the directory isn't inside a repo at
-/// all, every field is left empty -- NOT an error (just a warning at -v).
+/// (including a non-git directory); otherwise the parent directory of
+/// `cdb_path` is used as the starting point for git discovery. If git is
+/// unavailable, only git-specific fields are left empty (warning at -v).
 /// Mirrors Cli.cpp's buildProvenance().
 fn build_provenance(
     cdb_path: &str,
@@ -38,7 +37,7 @@ fn build_provenance(
     let mut prov = Provenance {
         symhow_version: symhow_version().to_string(),
         walker_version: K_WALKER_VERSION,
-        cdb_path: absolute_lexically_normal(cdb_path),
+        cdb_path: crate::common::paths::normalize(cdb_path),
         db_options: run_options.db_options.clone(),
         sanitizer_options: run_options.sanitizer_options.clone(),
         system_file_rows: run_options.system_file_rows,
@@ -47,6 +46,9 @@ fn build_provenance(
         ..Default::default()
     };
 
+    if !repo_dir_flag.is_empty() {
+        prov.repo_root = crate::common::paths::normalize(repo_dir_flag);
+    }
     let start_dir = if !repo_dir_flag.is_empty() {
         repo_dir_flag.to_string()
     } else {
@@ -65,7 +67,9 @@ fn build_provenance(
         }
         return prov;
     }
-    prov.repo_root = trim_trailing_newline(&toplevel.out);
+    if prov.repo_root.is_empty() {
+        prov.repo_root = crate::common::paths::normalize(&trim_trailing_newline(&toplevel.out));
+    }
 
     let head = git(&["git", "-C", &prov.repo_root, "rev-parse", "HEAD"]);
     if head.exit_code == 0 {
@@ -372,6 +376,11 @@ pub fn run_index_cmd(args: &[String], start_idx: usize) -> i32 {
         }
     }
 
+    if !parsed.repo_dir.is_empty() && !std::path::Path::new(&parsed.repo_dir).is_dir() {
+        print_index_usage_error("--repo must name an existing directory");
+        return 2;
+    }
+
     if parsed.exclude_submodules {
         let start_dir = if !parsed.repo_dir.is_empty() {
             parsed.repo_dir.clone()
@@ -455,7 +464,7 @@ pub fn run_index_cmd(args: &[String], start_idx: usize) -> i32 {
         parsed.verbosity,
     );
     if !parsed.notes_dir_flag.is_empty() {
-        provenance.notes_dir = absolute_lexically_normal(&parsed.notes_dir_flag);
+        provenance.notes_dir = crate::common::paths::normalize(&parsed.notes_dir_flag);
     }
     run_options.provenance = Some(provenance);
 

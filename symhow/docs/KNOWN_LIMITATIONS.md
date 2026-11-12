@@ -1,5 +1,7 @@
 # Known limitations
 
+> The C++ client was removed; historical C++ source/test references below correspond to the Rust modules under `rust/src/` and tests under `rust/tests/`.
+
 ## Incremental-update performance improvements
 
 - Update planning now shares a single operation-scoped normalization cache
@@ -42,8 +44,8 @@
   library itself (`symhow_db` is a stub).
 - `symhow_integration_tests` is a placeholder executable; the real cucs-corpus
   integration test lands in Phase 6.
-- `third_party/sourcetraildb` is built at C++17, not the project-wide
-  C++20; see `third_party/sourcetraildb/PROVENANCE.md` for rationale.
+- `rust/third_party/sourcetraildb` is built at C++17 by `rust/build.rs`;
+  see `rust/third_party/sourcetraildb/PROVENANCE.md` for rationale.
 
 ## Phase 3
 
@@ -212,14 +214,14 @@ feature-complete against the original 6-phase design; see the project
 status summary in the Phase 6 completion report for the full picture. Notes
 for future maintainers:
 
-### The hermetic CUDA fixture header (`test/fixtures/cuda/fake_cuda.h`)
+### The hermetic CUDA fixture header (`rust/tests/fixtures/cuda/fake_cuda.h`)
 
 Getting clang's `-x cuda -nocudainc -nocudalib --cuda-host-only` mode (the
 "nowrapper" rung -- `symhow::index::cuda::synthesize()`) to accept a
 `kernel<<<grid,block>>>(args)` launch with zero real CUDA toolkit installed
 took three iterations against clang directly (`clang -x cuda -nocudainc
 -nocudalib --cuda-host-only -fsyntax-only -include fake_cuda.h kernels.cu`,
-run standalone before anything was wired into `symhow`/CTest -- see the Phase 6
+run standalone before anything was wired into the `symhow` test suite -- see the Phase 6
 completion report for the full transcript), converging on:
 
 1. **`threadIdx`/`blockIdx`/`blockDim`/`gridDim` are NOT provided
@@ -689,7 +691,7 @@ document against.
 Replaces Phase 3's over-broad "no outgoing INCLUDE edge, or an
 INDEXER_ERROR occurrence" retry heuristic with exact per-TU status
 tracking, and adds the git-driven acceptance test Phase 3 explicitly left
-open (`test/update/update_scenario.cmake`).
+open (`rust/tests/scenarios/update_scenario.cmake`).
 
 - **`symhow_tu` gained a `status` column** (`symhow::index::kSymhowTuDdl`,
   `include/symhow/index/Provenance.h`): `'ok'` (produced content, no fatal
@@ -754,11 +756,10 @@ open (`test/update/update_scenario.cmake`).
   "just relabel, skip re-parsing" fast path for a pure rename with
   identical content), so this is a reporting fix only, not a performance
   one; see `docs/JSON_SCHEMA.md`'s updated `symhow.update-summary/1` notes.
-- **`test/update/update_scenario.cmake`**: a git-driven acceptance test
-  (registered as the `update_scenario` CTest test, `LABELS "update"`,
-  `TIMEOUT 600`, `SKIP_RETURN_CODE 77` if `git`/`sqlite3` aren't found at
-  configure time), driving a real throwaway git repo (a copy of
-  `test/fixtures/synthetic`, rewritten to `file(GLOB_RECURSE ...)` its
+- **`rust/tests/scenarios/update_scenario.cmake`**: a git-driven acceptance test
+  (run by `rust/tests/scenarios.rs` via
+  `flox activate -- bash -c 'cd rust && cargo test --test scenarios update_scenario'`), driving a real throwaway git repo (a copy of
+  `rust/tests/fixtures/synthetic`, rewritten to `file(GLOB_RECURSE ...)` its
   sources so add/delete/rename need no `CMakeLists.txt` edits) through a
   commit sequence -- edit a `.cpp`, edit a shared header, delete a file,
   add a file, rename a file, a project-wide compiler-flag change, an
@@ -830,8 +831,9 @@ for a future phase, not blockers):
 
 ## Phase 5 (final): `symhow update` validated against the real cucs corpus
 
-Adds `test/update/cucs_update_scenario.cmake` (registered as the
-`cucs_update_integration` CTest test, labels `integration;update`) --
+Adds `rust/tests/scenarios/cucs_update_scenario.cmake` (registered as the
+ignored `cucs_update_integration` test in `rust/tests/scenarios.rs`, run via
+`flox activate -- bash -c 'cd rust && cargo test --test scenarios cucs_update_integration -- --ignored'`) --
 `update_scenario`'s (Phase 4) real-git-commit correctness contract, but
 against the REAL cucs corpus (the same 200-TU corpus `cucs_integration`
 indexes fresh) over a real commit range in that repo's own history, inside
@@ -950,7 +952,7 @@ not `-isystem`, so `clang_Location_isInSystemHeader()` is false and symhow
 walked ~20k-line toolkit headers from every one of the ~200 TUs. That is
 symhow's `-I`-vs-`-isystem` classification working as designed, but it is not
 the realistic configuration for this corpus, and it accounted for the large
-majority of the remaining divergence. `test/update/cucs_update_scenario.cmake`
+majority of the remaining divergence. `rust/tests/scenarios/cucs_update_scenario.cmake`
 now passes `--exclude '**/.pixi/**' --exclude '**/_deps/**'` to `symhow index`;
 `symhow update` inherits them from the database's stored provenance
 (`Provenance.cpp`'s `symhow_db_options` meta), which the scenario exercises
@@ -1031,9 +1033,9 @@ case (`T_small`, the realistic edit-loop scenario) is the one that matters
 and is ~15x faster than a full re-index -- the scenario asserts `T_small <
 T_full_head` hard and warns below the `1/5` bar.
 
-**Docs**: this section; `README.md`'s `## Testing` (`ctest -L update`,
-`SYMHOW_CUCS_UPDATE_FROM`); `test/CMakeLists.txt`'s `cucs_update_integration`
-registration comment.
+**Docs**: this section; `README.md`'s `## Testing` (`cargo test --test scenarios`,
+`SYMHOW_CUCS_UPDATE_FROM`); `rust/tests/scenarios.rs`'s ignored
+`cucs_update_integration` test.
 
 ## Phase 7: `symhow index` progress display + `--parallel`/`-j`
 
@@ -1204,7 +1206,7 @@ periodically and resumable via `symhow update`.
   right after that, letting the re-index that's about to run re-derive
   `node.type` from scratch via the normal upgrade-only ladder, exactly like
   a fresh `symhow index` of the same edited source would. Verified by
-  `test/update/update_scenario.cmake`'s new step 4b2 (`class Square ->
+  `rust/tests/scenarios/update_scenario.cmake`'s new step 4b2 (`class Square ->
   struct Square`, asserting `node.type` is STRUCT's int post-update, and
   `symhow dbdiff` against a fresh index of the same commit is empty).
   **Residual caveat** (same TU-provenance limitation class as every other
@@ -1372,7 +1374,7 @@ node a given real-world entity resolves to, and what NameHierarchy it
 gets), complementary to the `node.type` merge-order fix documented above
 (which kind a given, already-identified node ends up with). Verified: (a)
 `test_kind_determinism.cpp` (reverse-CDB-order equivalence on the synthetic
-fixture) and `test/update/update_scenario.cmake`'s new `class Square ->
+fixture) and `rust/tests/scenarios/update_scenario.cmake`'s new `class Square ->
 struct Square` commit (the node.type reset in Invalidator's step 4, see
 below, is what makes THAT specific edit take effect at all); (b) directly
 against the real cucs corpus, per the "Tests" section below.
@@ -1392,7 +1394,7 @@ database). `test/unit/test_parallel_fixture.cpp` gained a `-j 4` +
 REVERSED entry order and asserts both an empty `diffSnapshots()` and an
 identical raw `serialized_name -> type` mapping -- the direct regression
 test for the `node.type` merge-order fix above.
-`test/update/update_scenario.cmake` gained step 4b2 (`class Square ->
+`rust/tests/scenarios/update_scenario.cmake` gained step 4b2 (`class Square ->
 struct Square`), asserting `node.type` reflects the edit (not the stale
 CLASS kind) and `symhow dbdiff` against a fresh index of the same commit is
 empty -- the regression test for the `Invalidator` `symhow_lost` node.type
@@ -1547,7 +1549,7 @@ order) was just consumed" instead of "any entry was just consumed" (see
 `test/unit/test_compiledb_dupes.cpp` (new): `pathArgsHashes()` unit
 coverage -- order independence, sensitivity to any one entry's flags
 changing, `entry_count` counting raw entries (not deduped hashes), and
-per-path isolation. `test/fixtures/synthetic/CMakeLists.txt` gained a
+per-path isolation. `rust/tests/fixtures/synthetic/CMakeLists.txt` gained a
 `fixture_lib_dup` target compiling `templates.cpp` a second time with
 `-DKG_DUP=1` (unused by the source -- same AST content, different flags,
 matching what a real duplicated-but-differently-configured TU usually looks
@@ -1637,7 +1639,7 @@ above).
   carry over via `serialized_name` alone the way a normal (externally
   linked) function's note does -- `symhow dbdiff --only note` between two such
   worktrees will show these as one-sided differences even though the
-  underlying markdown is byte-identical. `test/update/
+  underlying markdown is byte-identical. `rust/tests/scenarios/
   notes_cross_worktree.cmake` documents and works around this by only
   exercising the cross-worktree identity guarantee on `chain.cpp`'s
   externally-linked functions, which is the overwhelmingly common case for

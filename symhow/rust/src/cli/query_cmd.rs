@@ -392,6 +392,15 @@ fn millis_since(t0: Instant) -> i64 {
 /// dispatches to QueryEngine, rendering results via the out layer. Mirrors
 /// Cli.cpp's runQuery().
 pub fn run_query_cmd(args: &[String], start_idx: usize) -> i32 {
+    run_query_cmd_impl(args, start_idx, false)
+}
+
+/// Validate CLI arguments without opening or modifying the database.
+pub(super) fn validate_query_cmd(args: &[String], start_idx: usize) -> i32 {
+    run_query_cmd_impl(args, start_idx, true)
+}
+
+fn run_query_cmd_impl(args: &[String], start_idx: usize, validate_only: bool) -> i32 {
     const KNOWN_VERBS: [&str; 14] = [
         "callers",
         "callees",
@@ -470,6 +479,10 @@ pub fn run_query_cmd(args: &[String], start_idx: usize) -> i32 {
         )
     {
         return 1;
+    }
+
+    if validate_only {
+        return 0;
     }
 
     // The C++ has ensureIndices() inside the same try as the Database open,

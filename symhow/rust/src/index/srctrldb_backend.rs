@@ -223,6 +223,10 @@ struct BufferedKindDef {
 /// The write-path backend. Mirrors `symhow::index::SrctrldbBackend`.
 pub struct SrctrldbBackend {
     writer: Option<Writer>,
+    source_paths: paths::SourcePaths,
+    pending_file_contents: HashMap<i32, Vec<u8>>,
+    /// Memoized canonicalization for portable file paths (hit per fact).
+    portable_path_cache: paths::NormalizationCache,
     no_vacuum: bool,
     verbose: bool,
 
@@ -250,8 +254,9 @@ pub struct SrctrldbBackend {
     /// permanently disables that file's skip optimization for this session.
     file_fingerprints: HashMap<i32, String>,
     pending_file_fingerprints: HashSet<i32>,
-    has_existing_files: bool,
-    has_existing_fingerprints: bool,
+    /// Snapshot taken before the writer transaction; never query side_db
+    /// during consume(), since a writer cache spill can hold EXCLUSIVE.
+    existing_file_fingerprints: HashMap<i32, Option<String>>,
 
     /// paths::normalize(path) -> real node id, kept in lockstep with
     /// file_node_id_by_path -- lets the symhow_tu upsert resolve a
@@ -297,6 +302,9 @@ impl SrctrldbBackend {
     pub fn new() -> SrctrldbBackend {
         SrctrldbBackend {
             writer: None,
+            source_paths: paths::SourcePaths::default(),
+            pending_file_contents: HashMap::new(),
+            portable_path_cache: paths::NormalizationCache::default(),
             no_vacuum: false,
             verbose: false,
             side_db: None,
@@ -305,8 +313,7 @@ impl SrctrldbBackend {
             any_non_indexed_files: false,
             file_fingerprints: HashMap::new(),
             pending_file_fingerprints: HashSet::new(),
-            has_existing_files: false,
-            has_existing_fingerprints: false,
+            existing_file_fingerprints: HashMap::new(),
             normalized_file_node_id: HashMap::new(),
             saw_unsolved_reference: false,
             symhow_touched_initialized: false,
@@ -319,6 +326,19 @@ impl SrctrldbBackend {
             ref_by_triple: HashMap::new(),
             summary: IndexSummary::default(),
         }
+    }
+
+    /// Set only after begin() and before consume(), for a new portable index.
+    pub fn set_source_root(&mut self, root: &str) -> Result<()> {
+        let db = self.side_db.as_ref().ok_or_else(|| Error::new("set_source_root before begin"))?;
+        crate::db::meta::set_meta(db, "symhow_source_root", root)?;
+        crate::db::meta::set_meta(db, "symhow_path_format", "relative-v1")?;
+        self.source_paths.root = root.to_string();
+        Ok(())
+    }
+
+    pub fn source_root(&self) -> &str {
+        &self.source_paths.root
     }
 
     pub fn set_no_vacuum(&mut self, value: bool) {
@@ -413,6 +433,19 @@ impl SrctrldbBackend {
     /// caller's transaction on `db`. Drains every pending buffer.
     fn flush_pending(&mut self, db: &WritableDb, tu_rows: &[PendingTuRow]) -> Result<()> {
         db.exec(K_SYMHOW_FILE_FINGERPRINT_DDL)?;
+
+        // record_file must receive the stored relative spelling, but the
+        // vendored writer reads content relative to CWD. Supply physical
+        // bytes for newly-created portable files at the side-write boundary.
+        for (id, content) in self.pending_file_contents.drain() {
+            let line_count = content.iter().filter(|&&b| b == b'\n').count() as i64;
+            db.exec_bound("UPDATE file SET line_count=?2 WHERE id=?1", params![id, line_count])?;
+            db.exec_bound("DELETE FROM filecontent WHERE id=?1", params![id])?;
+            if !content.is_empty() {
+                db.exec_bound("INSERT INTO filecontent(id,content) VALUES(?1,?2)",
+                    params![id, String::from_utf8_lossy(&content)])?;
+            }
+        }
 
         // Non-indexed files touched since the last flush: the vendored writer
         // always creates a `file` row as indexed=1/complete=1, so every file
@@ -552,7 +585,7 @@ impl SrctrldbBackend {
             let file_node_id = self.normalized_file_node_id.get(&normalized_path).copied();
             db.exec_bound(
                 K_UPSERT_TU_SQL,
-                params![row.path, row.args_hash, file_node_id, row.status, row.entry_count as i64],
+                params![self.source_paths.encode(if self.source_paths.root.is_empty() { &row.path } else { &normalized_path }), row.args_hash, file_node_id, row.status, row.entry_count as i64],
             )?;
         }
 
@@ -562,6 +595,11 @@ impl SrctrldbBackend {
     // --- node ensure/lookup helpers ------------------------------------------
 
     fn ensure_file_node_by_path(&mut self, path: &str, language: &str, indexed: bool) -> i32 {
+        let normalized;
+        let path = if !self.source_paths.root.is_empty() && !path.is_empty() {
+            normalized = self.portable_path_cache.resolve(path);
+            normalized.as_str()
+        } else { path };
         let mut id = 0;
         let mut cache_hit = false;
         if let Some(&existing) = self.file_node_id_by_path.get(path) {
@@ -570,10 +608,15 @@ impl SrctrldbBackend {
         }
         if !cache_hit {
             id = match self.writer.as_ref() {
-                Some(writer) => writer.record_file(path),
+                Some(writer) => writer.record_file(&self.source_paths.encode(path)),
                 None => 0,
             };
             if id != 0 {
+                if indexed && self.source_paths.encode(path) != path {
+                    if !self.existing_file_fingerprints.contains_key(&id) {
+                        self.pending_file_contents.insert(id, std::fs::read(path).unwrap_or_default());
+                    }
+                }
                 if let Some(writer) = self.writer.as_ref() {
                     writer.record_file_language(id, if language.is_empty() { "cpp" } else { language });
                 }
@@ -602,28 +645,11 @@ impl SrctrldbBackend {
                 None => {
                     // Newly materialized (or first-seen-this-session) file.
                     self.file_fingerprints.insert(id, fact.content_hash.clone());
-                    if self.has_existing_files {
-                        // A surviving shared header may still have facts from
-                        // TUs NOT re-indexed this pass. Never certify new
-                        // bytes over old/mixed facts. Only a newly
-                        // materialized file, or a surviving file with an
-                        // identical prior hash, can get a trusted fingerprint.
-                        let sql = if self.has_existing_fingerprints {
-                            "SELECT fp.sha256 FROM file f LEFT JOIN symhow_file_fingerprint fp ON fp.file_node_id=f.id WHERE f.id=?1"
-                        } else {
-                            "SELECT NULL FROM file WHERE id=?1"
-                        };
-                        let mut clear = false;
-                        if let Some(db) = self.side_db.as_ref() {
-                            db.query_bound(sql, params![id], |row| {
-                                let previous: Option<String> = row.get(0).ok();
-                                if previous.is_none() || previous.as_deref() != Some(fact.content_hash.as_str()) {
-                                    clear = true;
-                                }
-                                Ok(())
-                            })?;
-                        }
-                        if clear {
+                    // A surviving shared header can retain facts from TUs
+                    // not re-indexed this pass. Certify only identical prior
+                    // bytes, or a file absent from the pre-transaction snapshot.
+                    if let Some(previous) = self.existing_file_fingerprints.get(&id) {
+                        if previous.as_deref() != Some(fact.content_hash.as_str()) {
                             self.file_fingerprints.insert(id, String::new());
                         }
                     }
@@ -789,12 +815,6 @@ impl IndexBackend for SrctrldbBackend {
         self.writer = Some(writer);
 
         let side_db = WritableDb::open(db_path, /* foreign_keys= */ false)?;
-        let mut has_existing_files = false;
-        side_db.query("SELECT 1 FROM file LIMIT 1", |_row| {
-            has_existing_files = true;
-            Ok(())
-        })?;
-        self.has_existing_files = has_existing_files;
         let mut has_existing_fingerprints = false;
         side_db.query(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='symhow_file_fingerprint'",
@@ -803,7 +823,17 @@ impl IndexBackend for SrctrldbBackend {
                 Ok(())
             },
         )?;
-        self.has_existing_fingerprints = has_existing_fingerprints;
+        let sql = if has_existing_fingerprints {
+            "SELECT f.id, fp.sha256 FROM file f LEFT JOIN symhow_file_fingerprint fp ON fp.file_node_id=f.id"
+        } else {
+            "SELECT id, NULL FROM file"
+        };
+        self.existing_file_fingerprints.clear();
+        side_db.query(sql, |row| {
+            self.existing_file_fingerprints.insert(row.get(0)?, row.get(1)?);
+            Ok(())
+        })?;
+        self.source_paths = paths::SourcePaths::from_conn(side_db.conn());
         self.side_db = Some(side_db);
 
         Ok(())

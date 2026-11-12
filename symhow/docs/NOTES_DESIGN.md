@@ -1,5 +1,7 @@
 # symhow notes — function-level knowledge attached to the symbol graph
 
+> The C++ client was removed; historical C++ source/test references below correspond to the Rust modules under `rust/src/` and tests under `rust/tests/`.
+
 ## Goal
 
 Let agents (and humans) attach durable, reviewable knowledge to functions —
@@ -179,7 +181,7 @@ update) and the summary/stderr report which notes went newly stale.
 
 ## Test data
 
-`scripts/symhow-notes-fake.py --symbols-json FILE --notes-dir DIR --seed N
+`rust/scripts/symhow-notes-fake.py --symbols-json FILE --notes-dir DIR --seed N
 [--fill-ratio R]`: generates a notes tree from a `symhow notes symbols --json`
 (or bare-array) symbol list, filling placeholders with deterministic
 pseudo-random text (seeded) for a fraction of blocks/sections; used by
@@ -187,7 +189,7 @@ Phase 1/2 tests, and to inject synthetic overloads/stale/unanchored blocks
 (`--overloads`/`--stale-ratio`/`--drop-hash-ratio`) no real corpus would
 reliably have.
 
-`scripts/symhow-notes-fake.py --fill-existing DIR --seed N [--fill-ratio R]`
+`rust/scripts/symhow-notes-fake.py --fill-existing DIR --seed N [--fill-ratio R]`
 (Phase 3): the realistic path -- parses an ALREADY-scaffolded (real `symhow
 notes scaffold --all`, real symbols, real `symhow-hash`) notes tree in place and
 replaces `_TODO_` placeholders with the same deterministic lorem text,
@@ -198,7 +200,7 @@ realistic test/demo sequence.
 ## Phases
 
 1. **Parser + model + lint + fake generator** (`symhow_notes` lib: `Markdown.{h,cpp}`,
-   `NoteModel.h`, `Lint`; `symhow notes lint`; `scripts/symhow-notes-fake.py` scaffold
+   `NoteModel.h`, `Lint`; `symhow notes lint`; `rust/scripts/symhow-notes-fake.py` scaffold
    part depends on phase 3, so the script initially generates from a symbol
    list produced by `symhow query`… see phase 1 brief). Unit tests: goldens,
    overload disambiguation, fences, CRLF, malformed input, fixed point.
@@ -214,10 +216,10 @@ realistic test/demo sequence.
    `orphaned-file` sync problem; `symhow index --notes-dir` (own
    `meta.symhow_notes_dir` key); `symhow update`'s post-update notes sync (report-only,
    `notes{noted,stale,newly_stale,problems}` in `symhow.update-summary/1`);
-   `scripts/symhow-notes-fake.py --fill-existing`. Scenario test steps (edit
+   `rust/scripts/symhow-notes-fake.py --fill-existing`. Scenario test steps (edit
    function body → stale; edit an unrelated function → nothing new stale;
    accept → clears, byte-identical except the hash; `git mv` → orphaned-file;
-   delete function → unmatched) in `test/update/update_scenario.cmake`; unit
+   delete function → unmatched) in `rust/tests/scenarios/update_scenario.cmake`; unit
    coverage in `test/unit/test_notes_scaffold.cpp`.
 4. **`symhow query context` + docs + proofs -- DONE.** `symhow query context SYMBOL
    [--depth N] [--no-notes] [--notes-full]` reuses `symhow.graph/1` exactly
@@ -236,8 +238,8 @@ realistic test/demo sequence.
    `note`/`note_problem` category (keyed by `serialized_name`, never
    `node.id` or a path -- see the cache schema's own stability principle)
    and a `--only CATEGORY` flag to restrict a diff to exactly one category,
-   used by `test/update/notes_cross_worktree.cmake`'s CTest
-   (`notes_cross_worktree`, label `update`): two independently-`symhow index`d
+   used by `rust/tests/scenarios/notes_cross_worktree.cmake`, run by the Cargo
+   scenario test `notes_cross_worktree`: two independently-`symhow index`d
    clones of the same git history (a real `git clone` to a second
    worktree), each syncing notes against their own `notes/` directory
    (arrived via the clone, never re-scaffolded in the second worktree),
@@ -245,7 +247,7 @@ realistic test/demo sequence.
    even though a plain `symhow dbdiff` (node/edge/location rows, which embed
    each worktree's own absolute paths) is very much not equal -- proving
    notes travel with git, independent of any one `.srctrldb`. Real-corpus
-   coverage in `test/update/cucs_update_scenario.cmake`'s
+   coverage in `rust/tests/scenarios/cucs_update_scenario.cmake`'s
    `cucs_update_integration` (scaffolds/fills/syncs notes for
    `cucascade::memory::reservation_limit_policy` and its three derived
    policies on the real cucs corpus, asserts `symhow notes sync` stays well

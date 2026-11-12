@@ -234,6 +234,15 @@ fn parse_update_flags(args: &[String], start_idx: usize, opts: &mut UpdateRunOpt
 
 /// Mirrors Cli.cpp's runUpdateCmd().
 pub fn run_update_cmd(args: &[String], start_idx: usize) -> i32 {
+    run_update_cmd_impl(args, start_idx, false)
+}
+
+/// Parse CLI arguments without running the update driver.
+pub(super) fn validate_update_cmd(args: &[String], start_idx: usize) -> i32 {
+    run_update_cmd_impl(args, start_idx, true)
+}
+
+fn run_update_cmd_impl(args: &[String], start_idx: usize, validate_only: bool) -> i32 {
     let mut opts = UpdateRunOptions {
         symhow_version: symhow_version().to_string(),
         ..Default::default()
@@ -251,6 +260,10 @@ pub fn run_update_cmd(args: &[String], start_idx: usize) -> i32 {
     if opts.db_path.is_empty() {
         print_update_usage_error("missing required option -d/--db PATH");
         return 1;
+    }
+
+    if validate_only {
+        return 0;
     }
 
     run_update(&opts, None)

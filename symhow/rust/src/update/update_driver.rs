@@ -19,7 +19,7 @@ use crate::common::{Error, Result};
 use crate::db::meta::{delete_meta, get_meta, set_meta};
 use crate::db::{Database, WritableDb};
 use crate::index::arg_sanitizer::SanitizerOptions;
-use crate::index::compile_db::{load, path_args_hashes, CompileDbOptions, CompileEntry};
+use crate::index::compile_db::{load_relocated, path_args_hashes, CompileDbOptions, CompileEntry};
 use crate::index::cuda_support::CudaMode;
 use crate::index::file_registry::SystemFileRows;
 use crate::index::index_driver::{run_index, IndexRunOptions};
@@ -726,7 +726,22 @@ pub fn run_update(options: &UpdateRunOptions, out: Option<&mut UpdateSummary>) -
     summary.to_rev = new_baseline.clone();
 
     // --- load CDB, existing symhow_tu rows ---------------------------------------
-    let cdb: Vec<CompileEntry> = match load(&cdb_path, &eff.db_options) {
+    let load_cdb = || -> Result<Vec<CompileEntry>> {
+        let db = Database::open(options.db_path.as_str(), 0)?;
+        let root = &db.source_paths().root;
+        let mut remaps = Vec::new();
+        if !root.is_empty() {
+            if let Some(raw) = get_meta(db.conn(), "symhow_root_remaps") {
+                #[derive(serde::Deserialize)]
+                struct RootRemap { from: String, to: String }
+                let mappings: Vec<RootRemap> = serde_json::from_str(&raw)
+                    .map_err(|e| Error::new(format!("invalid root relocation metadata: {}", e)))?;
+                remaps = mappings.into_iter().map(|m| (m.from, m.to)).collect();
+            }
+        }
+        load_relocated(&cdb_path, &eff.db_options, root, &remaps)
+    };
+    let cdb: Vec<CompileEntry> = match load_cdb() {
         Ok(cdb) => cdb,
         Err(e) => {
             report_error(options, &format!("failed to load compile database '{}': {}", cdb_path, e.0));
@@ -788,7 +803,7 @@ pub fn run_update(options: &UpdateRunOptions, out: Option<&mut UpdateSummary>) -
 
             if let Err(e) = db.run("SELECT path, args_hash, file_node_id, status FROM symhow_tu", [], |row| {
                 let path: Option<String> = row.get(0)?;
-                let path = path.unwrap_or_default();
+                let path = db.source_paths().decode(&path.unwrap_or_default());
                 let hash: Option<String> = row.get(1)?;
                 let status: Option<String> = row.get(3)?;
                 let row = TuRow {
@@ -807,7 +822,7 @@ pub fn run_update(options: &UpdateRunOptions, out: Option<&mut UpdateSummary>) -
         if let Err(e) = db.run("SELECT id, path FROM file", [], |row| {
             let id: i64 = row.get(0)?;
             let path: Option<String> = row.get(1)?;
-            file_path_by_id.insert(id, path.unwrap_or_default());
+            file_path_by_id.insert(id, db.source_paths().decode(&path.unwrap_or_default()));
             Ok(())
         }) {
             report_error(options, &e.0);
@@ -1220,11 +1235,18 @@ pub fn run_update(options: &UpdateRunOptions, out: Option<&mut UpdateSummary>) -
         reindex_norm.insert(normalize_path.resolve(p));
     }
 
+    // Failed TUs and the untracked suffix of an interrupted index may be
+    // genuinely absent on disk. Indexing still emits their minimal failed
+    // batch; skipping them here would lose the rows just invalidated above
+    // and make an update/resume differ from a fresh index of the same CDB.
+    let retry_norm: HashSet<String> = retry_tu_files.iter()
+        .map(|path| normalize_path.resolve(path)).collect();
     let preset_entries = select_entries_with(&cdb, &reindex_norm, &mut normalize_path);
     let mut filtered_entries: Vec<CompileEntry> = Vec::with_capacity(preset_entries.len());
     let mut skipped_missing: u32 = 0;
     for entry in preset_entries {
-        if !Path::new(&entry.file).exists() {
+        if !Path::new(&entry.file).exists()
+            && !retry_norm.contains(&normalize_path.resolve(&entry.file)) {
             skipped_missing += 1;
             if options.verbose > 0 {
                 eprintln!("symhow update: warning: skipping missing file '{}'", entry.file);
@@ -1290,7 +1312,7 @@ pub fn run_update(options: &UpdateRunOptions, out: Option<&mut UpdateSummary>) -
     let mut idx_summary = IndexSummary::default();
     let index_start = Instant::now();
     if !filtered_entries.is_empty() {
-        let run_opts = IndexRunOptions {
+        let mut run_opts = IndexRunOptions {
             compile_commands_path: cdb_path.clone(),
             output_path: work.clone(),
             append_to_existing: true,
@@ -1319,6 +1341,7 @@ pub fn run_update(options: &UpdateRunOptions, out: Option<&mut UpdateSummary>) -
         updated.dirty_paths = current_dirty_paths(&repo_root, &dirty_paths);
         updated.last_update_at_utc = utc_timestamp_now();
 
+        run_opts.provenance = Some(updated);
         let rc = run_index(&run_opts, Some(&mut idx_summary));
         if rc == 1 {
             report_error(options, "re-indexing failed");
